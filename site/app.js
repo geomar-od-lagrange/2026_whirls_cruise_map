@@ -133,12 +133,14 @@ async function main() {
 
   const bounds = latestLayer.getBounds();
   if (bounds.isValid()) {
-    map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+    map.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 });
   }
 
-  // Trajectories (off by default).
-  const tracks = await fetchJSON(DATA.tracks);
-  overlays["Trajectories"] = buildTracksLayer(tracks);
+  // Trajectories (off by default; optional so a missing file can't blank the map).
+  const tracks = await fetchJSON(DATA.tracks, { optional: true });
+  if (tracks) {
+    overlays["Trajectories"] = buildTracksLayer(tracks);
+  }
 
   // Awaiting-first-fix sidebar.
   renderAwaiting(await fetchJSON(DATA.awaiting, { optional: true }));

@@ -14,7 +14,9 @@ def latest_geojson(tracks: pd.DataFrame) -> dict:
     Coordinates are [Longitude, Latitude]. Properties: ``D_number``,
     ``date_UTC`` (ISO 8601 string), ``batteryState``, ``batch``.
     """
-    latest = tracks.sort_values("date_UTC").groupby("D_number", as_index=False).last()
+    # tail(1), not last(): .last() fills each column's last *non-null* value
+    # independently, which would mix fields across fixes once any field is null.
+    latest = tracks.sort_values("date_UTC").groupby("D_number").tail(1)
     features = [
         {
             "type": "Feature",
