@@ -8,15 +8,14 @@ From one CMEMS field (the single time nearest now) we derive two things at two
 resolutions:
 
 - ``to_velocity_json`` — a coarsened leaflet-velocity ``[u, v]`` grid for the
-  animated flow trails (the vector grid ships to the browser, so it is coarsened
-  for size/animation; the trail texture does not need full resolution).
+  animated flow trails. Its magnitude is compressed sub-linearly (see
+  ``VELOCITY_GAMMA``) so the slow eddies animate visibly while the Agulhas jet
+  does not run away; direction is preserved.
 - ``to_speed_png`` — a near-native speed raster (cmocean ``speed``, Web-Mercator
-  warped, land transparent) plus small metadata that drives the client overlay
-  and legend.
+  warped, land transparent) plus small metadata for the client.
 """
 from __future__ import annotations
 
-import io
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,9 +26,10 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.colors as mcolors  # noqa: E402
-import matplotlib.image as mpimg  # noqa: E402
 import numpy as np  # noqa: E402
 import xarray as xr  # noqa: E402
+
+from . import _raster  # noqa: E402
 
 BBOX = {"lon_min": -10.0, "lon_max": 35.0, "lat_min": -55.0, "lat_max": -15.0}
 
@@ -38,6 +38,10 @@ DATASET_ID = "cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i"
 # Coarsen the native 1/12-deg grid for the animated trails only. The speed raster
 # stays near-native (it is a small image either way and looks markedly sharper).
 COARSEN_STRIDE = 3
+
+# Sub-linear compression of the trail-animation velocity magnitude (gamma < 1).
+# gamma=0.5 (sqrt) lifts the slow eddies relative to the fast jet (~10x -> ~3x).
+VELOCITY_GAMMA = 0.5
 
 # Speed shading.
 SPEED_CMAP = cmocean.cm.speed
@@ -123,12 +127,24 @@ def _component(field: xr.DataArray, number: int, name: str) -> dict:
     }
 
 
+def _scale_for_animation(coarse: xr.Dataset) -> xr.Dataset:
+    """Compress the velocity magnitude sub-linearly, keeping direction, so the
+    slow eddies animate. ``m' = vref * (m/vref)**gamma`` => factor ``(m/vref)**
+    (gamma-1)``; ``vref`` is the field's 99th-percentile speed (its fixed point)."""
+    spd = np.hypot(coarse["uo"], coarse["vo"])
+    ocean = np.where(spd.values > 0, spd.values, np.nan)
+    vref = float(np.nanpercentile(ocean, 99))
+    factor = xr.where(spd > 0, (spd / vref) ** (VELOCITY_GAMMA - 1.0), 0.0)
+    return coarse.assign(uo=coarse["uo"] * factor, vo=coarse["vo"] * factor)
+
+
 def to_velocity_json(field: xr.Dataset, stride: int = COARSEN_STRIDE) -> list[dict]:
-    """Coarsened leaflet-velocity ``[u_object, v_object]`` for the flow trails."""
+    """Coarsened, magnitude-compressed leaflet-velocity ``[u, v]`` for the trails."""
     coarse = field.isel(
         latitude=slice(None, None, stride),
         longitude=slice(None, None, stride),
     )
+    coarse = _scale_for_animation(coarse)
     return [
         _component(coarse["uo"], number=2, name="Eastward current"),
         _component(coarse["vo"], number=3, name="Northward current"),
@@ -137,28 +153,6 @@ def to_velocity_json(field: xr.Dataset, stride: int = COARSEN_STRIDE) -> list[di
 
 # --- speed shading (Mercator-warped PNG) -----------------------------------
 
-def _mercator_y(lat_deg: np.ndarray) -> np.ndarray:
-    """Web-Mercator (EPSG:3857) y for a latitude in degrees (unscaled)."""
-    lat = np.radians(lat_deg)
-    return np.log(np.tan(np.pi / 4 + lat / 2))
-
-
-def _warp_to_mercator(speed: np.ndarray, lats: np.ndarray) -> np.ndarray:
-    """Resample rows from even latitude to even Mercator-y so a plain imageOverlay
-    (which stretches linearly in the map's Mercator CRS) registers correctly.
-    ``lats`` ascending; returned rows are evenly spaced in Mercator y, south->north.
-    """
-    y = _mercator_y(lats)
-    y_even = np.linspace(y[0], y[-1], lats.size)
-    lat_targets = np.degrees(2.0 * np.arctan(np.exp(y_even)) - np.pi / 2)
-    warped = np.empty((lat_targets.size, speed.shape[1]), dtype=float)
-    for j in range(speed.shape[1]):
-        # np.interp spreads land NaN into the adjacent target rows, so coastlines
-        # mask a half-cell wider than the true coast — fine (no green onto land).
-        warped[:, j] = np.interp(lat_targets, lats, speed[:, j])
-    return warped
-
-
 def _colorbar_stops(n: int = COLORBAR_STOPS) -> list[str]:
     """Hex stops sampled along the speed colour map, low -> high."""
     return [mcolors.to_hex(SPEED_CMAP(i / (n - 1))) for i in range(n)]
@@ -166,35 +160,24 @@ def _colorbar_stops(n: int = COLORBAR_STOPS) -> list[str]:
 
 def to_speed_png(field: xr.Dataset) -> tuple[bytes, dict]:
     """Render |velocity| as a Mercator-warped RGBA PNG (cmocean ``speed``, clipped
-    at the 99th percentile, land transparent) and return ``(png_bytes, meta)``.
-
-    ``meta`` carries the latlng ``bounds`` for ``L.imageOverlay`` plus ``vmax``,
-    ``units``, ``valid_time`` and ``colorbar`` stops for the client legend.
-    """
+    at the 99th percentile, land transparent) and return ``(png_bytes, meta)``."""
     f = field.sortby("latitude").sortby("longitude")  # both ascending
     lats = f["latitude"].values
     lons = f["longitude"].values
     speed = np.hypot(f["uo"].values, f["vo"].values)  # land NaN preserved
-
     vmax = float(np.nanpercentile(speed, SPEED_CLIP_PERCENTILE))
-    warped = _warp_to_mercator(speed, lats)  # south -> north
 
-    norm = np.clip(warped / vmax, 0.0, 1.0)
-    rgba = SPEED_CMAP(norm)
-    rgba[np.isnan(warped), 3] = 0.0  # land transparent
-    rgba = rgba[::-1, :, :]  # PNG rows north -> south (top -> bottom)
+    def to_rgba(warped):
+        rgba = SPEED_CMAP(np.clip(warped / vmax, 0.0, 1.0))
+        rgba[np.isnan(warped), 3] = 0.0  # land transparent
+        return rgba
 
-    buf = io.BytesIO()
-    mpimg.imsave(buf, rgba, format="png")
-
+    png, bounds = _raster.mercator_rgba_png(speed, lats, lons, to_rgba)
     meta = {
         "valid_time": valid_time(field),
-        "bounds": [
-            [float(lats.min()), float(lons.min())],  # SW
-            [float(lats.max()), float(lons.max())],  # NE
-        ],
+        "bounds": bounds,
         "vmax": vmax,
         "units": "m/s",
         "colorbar": _colorbar_stops(),
     }
-    return buf.getvalue(), meta
+    return png, meta

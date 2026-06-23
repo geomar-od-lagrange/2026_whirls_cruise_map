@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import json
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
-from . import _clean, _currents, _fetch, _geojson
+from . import _clean, _currents, _fetch, _ftle, _geojson
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SITE_DATA = REPO_ROOT / "site" / "data"
@@ -48,18 +49,42 @@ def main() -> None:
 
     # Currents are best-effort: positions/tracks still build if CMEMS is down.
     # One field -> coarse vector grid (trails) + near-native speed raster + meta.
+    currents_valid = None
     try:
         field = _currents.fetch_field()
         _write_json(SITE_DATA / "currents.json", _currents.to_velocity_json(field))
         png, meta = _currents.to_speed_png(field)
         (SITE_DATA / "speed.png").write_bytes(png)
         _write_json(SITE_DATA / "currents_meta.json", meta)
+        currents_valid = meta["valid_time"]
         print(
             f"wrote currents.json + speed.png "
             f"(valid {meta['valid_time']}, vmax {meta['vmax']:.2f} {meta['units']})"
         )
     except Exception as exc:
         print(f"WARNING: currents step failed, skipping currents artifacts: {exc}")
+
+    # FTLE overlay (best-effort, independent): the SPASSO field nearest the speed
+    # valid-time, or now if currents are unavailable.
+    try:
+        target = (
+            datetime.strptime(currents_valid, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
+            if currents_valid
+            else datetime.now(timezone.utc)
+        )
+        result = _ftle.fetch_ftle(target)
+        if result is None:
+            print("no FTLE within 24h of the target time, skipping ftle.png")
+        else:
+            ftle_field, ftle_valid = result
+            png, meta = _ftle.to_ftle_png(ftle_field, ftle_valid)
+            (SITE_DATA / "ftle.png").write_bytes(png)
+            _write_json(SITE_DATA / "ftle_meta.json", meta)
+            print(f"wrote ftle.png + ftle_meta.json (valid {meta['valid_time']})")
+    except Exception as exc:
+        print(f"WARNING: FTLE step failed, skipping ftle artifacts: {exc}")
 
 
 if __name__ == "__main__":

@@ -16,6 +16,8 @@ const DATA = {
   currents: "./data/currents.json",
   meta: "./data/currents_meta.json",
   speed: "./data/speed.png",
+  ftle: "./data/ftle.png",
+  ftleMeta: "./data/ftle_meta.json",
 };
 
 // Flow-trail colour ramp: mostly dark, white only in the fast jet, so the green
@@ -75,7 +77,10 @@ function popupHtml(props, latlng) {
 function buildLatestLayer(geojson) {
   return L.geoJSON(geojson, {
     pointToLayer: (feature, latlng) =>
-      L.circleMarker(latlng, styleForBatch(feature.properties?.batch)),
+      L.circleMarker(latlng, {
+        ...styleForBatch(feature.properties?.batch),
+        pane: "drifters",
+      }),
     onEachFeature: (feature, layer) => {
       layer.bindPopup(popupHtml(feature.properties, layer.getLatLng()));
     },
@@ -125,6 +130,23 @@ function renderCurrentsInfo(meta) {
     `<span>${meta.vmax.toFixed(2)}</span></div>`;
 }
 
+function renderFtleInfo(meta) {
+  const timeEl = document.getElementById("ftle-time");
+  const legendEl = document.getElementById("ftle-legend");
+  if (!timeEl) return;
+  if (!meta) {
+    timeEl.textContent = "FTLE unavailable.";
+    legendEl.innerHTML = "";
+    return;
+  }
+  timeEl.textContent = `Valid ${formatFixTime(meta.valid_time)} — SPASSO backward FTLE.`;
+  legendEl.innerHTML =
+    '<div class="legend-bar" style="background:linear-gradient(to right,' +
+    "rgba(255,0,0,0),rgba(255,0,0,1))\"></div>" +
+    '<div class="legend-scale"><span>weak</span>' +
+    "<span>LCS ridge strength</span><span>strong</span></div>";
+}
+
 function baseLayers() {
   const esriOcean = L.tileLayer(
     "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
@@ -152,6 +174,11 @@ async function main() {
 
   const overlays = {};
 
+  // Layer stack, bottom -> top: speed shading -> FTLE -> flow -> drifter markers.
+  map.createPane("shading").style.zIndex = 350;
+  map.createPane("ftle").style.zIndex = 360;
+  map.createPane("drifters").style.zIndex = 650;
+
   // Latest positions (required). Build first to drive the fit, add last so the
   // markers sit above the shading and flow layers.
   const latest = await fetchJSON(DATA.latest);
@@ -168,10 +195,8 @@ async function main() {
   const meta = await fetchJSON(DATA.meta, { optional: true });
   const currents = await fetchJSON(DATA.currents, { optional: true });
 
-  // Speed shading: a Mercator-warped PNG in a pane below the flow and markers.
+  // Speed shading: a Mercator-warped PNG in the bottom data pane.
   if (meta && meta.bounds) {
-    map.createPane("shading");
-    map.getPane("shading").style.zIndex = 350;
     const speedLayer = L.imageOverlay(DATA.speed, meta.bounds, {
       pane: "shading",
       opacity: 0.85,
@@ -181,18 +206,24 @@ async function main() {
   }
   renderCurrentsInfo(meta);
 
+  // FTLE / LCS ridges: red, alpha-ramped raster over the Cape Basin, above the
+  // shading and below the flow. Mercator-warped like the speed PNG so the two
+  // co-register. On by default.
+  const ftleMeta = await fetchJSON(DATA.ftleMeta, { optional: true });
+  if (ftleMeta && ftleMeta.bounds) {
+    const ftleLayer = L.imageOverlay(DATA.ftle, ftleMeta.bounds, { pane: "ftle" });
+    ftleLayer.addTo(map);
+    overlays["FTLE / LCS ridges"] = ftleLayer;
+  }
+  renderFtleInfo(ftleMeta);
+
   // Flow trails: dark->white ramp keyed to speed, so the bright jet pops over the
-  // shading. leaflet-velocity defaults assume wind speeds (tens of m/s), so the
-  // motion is scaled up and the colour ramp capped at the field's vmax.
+  // shading. The magnitude is sqrt-compressed server-side so slow eddies animate,
+  // which means the readout would show scaled m/s — so displayValues is off and
+  // true speed is read from the shading legend instead.
   if (currents && currents.length && typeof L.velocityLayer === "function") {
     const flowLayer = L.velocityLayer({
-      displayValues: true,
-      displayOptions: {
-        velocityType: "Surface current",
-        displayPosition: "bottomleft",
-        displayEmptyString: "No current data",
-        speedUnit: "m/s",
-      },
+      displayValues: false,
       data: currents,
       colorScale: FLOW_COLORS,
       maxVelocity: meta?.vmax ?? 1.5,
@@ -201,6 +232,16 @@ async function main() {
     });
     flowLayer.addTo(map);
     overlays["Current flow"] = flowLayer;
+
+    // leaflet-velocity paints faded trails in screen space and does not
+    // reproject the existing frame on pan/zoom, so old trails ghost in place.
+    // Clear its canvas when interaction starts, and re-seed the field for the
+    // new view when it ends, so the flow tracks the map.
+    map.on("movestart zoomstart", () => {
+      const cv = flowLayer._canvasLayer?._canvas;
+      if (cv) cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
+    });
+    map.on("moveend zoomend", () => flowLayer.setData(currents));
   }
 
   // Trajectories (off by default; optional so a missing file can't blank the map).
