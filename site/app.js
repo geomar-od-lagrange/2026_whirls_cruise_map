@@ -1,11 +1,12 @@
 /* 2026 Whirls Cruise — drifter map.
  *
- * Static client. Fetches four artifacts from ./data/ (built by the Python
- * pipeline) and renders them as Leaflet layers:
- *   latest.geojson  -> circle markers (on by default)
- *   tracks.geojson  -> trajectory lines (off by default)
- *   currents.json   -> leaflet-velocity overlay (optional; absent => skipped)
- *   awaiting.json   -> sidebar list, no map geometry
+ * Static client. Fetches the build artifacts from ./data/ and renders them as
+ * Leaflet layers:
+ *   latest.geojson                 -> circle markers (on by default)
+ *   tracks.geojson                 -> trajectory lines (off by default)
+ *   speed.png + currents_meta.json -> surface-speed shading (imageOverlay)
+ *   currents.json                  -> leaflet-velocity flow trails (optional)
+ *   awaiting.json                  -> sidebar list, no map geometry
  */
 
 const DATA = {
@@ -13,7 +14,16 @@ const DATA = {
   tracks: "./data/tracks.geojson",
   awaiting: "./data/awaiting.json",
   currents: "./data/currents.json",
+  meta: "./data/currents_meta.json",
+  speed: "./data/speed.png",
 };
+
+// Flow-trail colour ramp: mostly dark, white only in the fast jet, so the green
+// shading carries magnitude and the trails read as texture that brightens at speed.
+const FLOW_COLORS = [
+  "#101010", "#101010", "#181818", "#242424", "#363636",
+  "#4d4d4d", "#6f6f6f", "#9a9a9a", "#cccccc", "#ffffff",
+];
 
 // Fallback view if no valid positions are present (cruise staging, Table Bay).
 const FALLBACK_CENTER = [-33.9, 18.43];
@@ -98,6 +108,23 @@ function renderAwaiting(ids) {
   }
 }
 
+function renderCurrentsInfo(meta) {
+  const timeEl = document.getElementById("currents-time");
+  const legendEl = document.getElementById("speed-legend");
+  if (!meta) {
+    timeEl.textContent = "Surface currents unavailable.";
+    legendEl.innerHTML = "";
+    return;
+  }
+  timeEl.textContent = `Valid ${formatFixTime(meta.valid_time)} — CMEMS analysis/forecast.`;
+  const gradient = meta.colorbar.join(", ");
+  legendEl.innerHTML =
+    `<div class="legend-bar" style="background:linear-gradient(to right, ${gradient})"></div>` +
+    `<div class="legend-scale"><span>0</span>` +
+    `<span>speed (${meta.units})</span>` +
+    `<span>${meta.vmax.toFixed(2)}</span></div>`;
+}
+
 function baseLayers() {
   const esriOcean = L.tileLayer(
     "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
@@ -125,11 +152,10 @@ async function main() {
 
   const overlays = {};
 
-  // Latest positions (required, on by default).
+  // Latest positions (required). Build first to drive the fit, add last so the
+  // markers sit above the shading and flow layers.
   const latest = await fetchJSON(DATA.latest);
   const latestLayer = buildLatestLayer(latest);
-  latestLayer.addTo(map);
-  overlays["Latest positions"] = latestLayer;
 
   const bounds = latestLayer.getBounds();
   if (bounds.isValid()) {
@@ -138,20 +164,28 @@ async function main() {
     map.fitBounds(bounds, { padding: [40, 40], maxZoom: 9 });
   }
 
-  // Trajectories (off by default; optional so a missing file can't blank the map).
-  const tracks = await fetchJSON(DATA.tracks, { optional: true });
-  if (tracks) {
-    overlays["Trajectories"] = buildTracksLayer(tracks);
-  }
-
-  // Awaiting-first-fix sidebar.
-  renderAwaiting(await fetchJSON(DATA.awaiting, { optional: true }));
-
-  // Currents — today's CMEMS surface flow (optional; skip if missing/empty).
-  // On by default so it's visible without hunting in the layers control.
+  // Surface currents, from one CMEMS field: speed shading + flow trails.
+  const meta = await fetchJSON(DATA.meta, { optional: true });
   const currents = await fetchJSON(DATA.currents, { optional: true });
+
+  // Speed shading: a Mercator-warped PNG in a pane below the flow and markers.
+  if (meta && meta.bounds) {
+    map.createPane("shading");
+    map.getPane("shading").style.zIndex = 350;
+    const speedLayer = L.imageOverlay(DATA.speed, meta.bounds, {
+      pane: "shading",
+      opacity: 0.85,
+    });
+    speedLayer.addTo(map);
+    overlays["Current speed"] = speedLayer;
+  }
+  renderCurrentsInfo(meta);
+
+  // Flow trails: dark->white ramp keyed to speed, so the bright jet pops over the
+  // shading. leaflet-velocity defaults assume wind speeds (tens of m/s), so the
+  // motion is scaled up and the colour ramp capped at the field's vmax.
   if (currents && currents.length && typeof L.velocityLayer === "function") {
-    const currentsLayer = L.velocityLayer({
+    const flowLayer = L.velocityLayer({
       displayValues: true,
       displayOptions: {
         velocityType: "Surface current",
@@ -160,15 +194,27 @@ async function main() {
         speedUnit: "m/s",
       },
       data: currents,
-      // leaflet-velocity defaults assume wind speeds (tens of m/s); ocean
-      // surface currents are ~0-1.5 m/s, so scale the motion up and cap the
-      // colour ramp low enough that the flow is actually legible.
-      maxVelocity: 1.5,
+      colorScale: FLOW_COLORS,
+      maxVelocity: meta?.vmax ?? 1.5,
       velocityScale: 0.1,
+      lineWidth: 1.2,
     });
-    currentsLayer.addTo(map);
-    overlays["Currents"] = currentsLayer;
+    flowLayer.addTo(map);
+    overlays["Current flow"] = flowLayer;
   }
+
+  // Trajectories (off by default; optional so a missing file can't blank the map).
+  const tracks = await fetchJSON(DATA.tracks, { optional: true });
+  if (tracks) {
+    overlays["Trajectories"] = buildTracksLayer(tracks);
+  }
+
+  // Markers last, so they sit on top of the shading and flow layers.
+  latestLayer.addTo(map);
+  overlays["Latest positions"] = latestLayer;
+
+  // Awaiting-first-fix sidebar.
+  renderAwaiting(await fetchJSON(DATA.awaiting, { optional: true }));
 
   L.control.layers(bases, overlays, { collapsed: false }).addTo(map);
 }

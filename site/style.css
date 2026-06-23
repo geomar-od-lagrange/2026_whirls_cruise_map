@@ -77,6 +77,27 @@ body {
   color: var(--muted);
 }
 
+#currents-panel {
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #e3e9ef;
+}
+
+.legend-bar {
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid #d8e0e8;
+}
+
+.legend-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 #awaiting-list {
   list-style: none;
   margin: 0;

@@ -15,8 +15,10 @@ pandas = "*"
 xarray = "*"
 netcdf4 = "*"
 
-# CMEMS surface currents
+# CMEMS surface currents + speed shading
 copernicusmarine = "*"
+matplotlib = ">=3.11.0,<4"
+cmocean = ">=4.0.3,<5"
 
 # Dev
 pytest = "*"
