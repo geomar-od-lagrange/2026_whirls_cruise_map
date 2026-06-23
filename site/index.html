@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>2026 Whirls Cruise — drifter map</title>
+
+  <!-- Leaflet 1.9.4 -->
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+    crossorigin="anonymous"
+  />
+
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header id="app-header">
+    <h1>2026 Whirls Cruise — drifter map</h1>
+    <p class="subtitle">R/V Marion Dufresne &amp; R/V Agulhas II — latest drifter positions, tracks, and surface currents</p>
+  </header>
+
+  <div id="layout">
+    <div id="map"></div>
+
+    <aside id="sidebar">
+      <section id="awaiting-panel">
+        <h2>Awaiting first fix <span id="awaiting-count" class="count"></span></h2>
+        <p class="hint">Drifters staged but not yet transmitting a position.</p>
+        <ul id="awaiting-list"></ul>
+      </section>
+    </aside>
+  </div>
+
+  <!-- Leaflet 1.9.4 -->
+  <script
+    src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
+    crossorigin="anonymous"
+  ></script>
+
+  <!-- leaflet-velocity 1.7.0 (animated current overlay) -->
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/leaflet-velocity@1.7.0/dist/leaflet-velocity.min.css"
+  />
+  <script src="https://cdn.jsdelivr.net/npm/leaflet-velocity@1.7.0/dist/leaflet-velocity.min.js"></script>
+
+  <script src="./app.js"></script>
+</body>
+</html>

@@ -27,15 +27,25 @@ def load_raw(csv_paths: list[Path]) -> pd.DataFrame:
     carried through unmodified but not relied upon (they may be invalid before
     deployment).
     """
-    raise NotImplementedError
+    raw = pd.concat(
+        (pd.read_csv(path) for path in csv_paths), ignore_index=True
+    )
+    raw["date_UTC"] = pd.to_datetime(
+        raw["date_UTC"], format=DATE_FORMAT, utc=True
+    )
+    raw = raw.drop_duplicates(subset=["D_number", "date_UTC"], ignore_index=True)
+    raw["batch"] = PRE_DEPLOY_BATCH
+    return raw
 
 
 def tracks(raw: pd.DataFrame) -> pd.DataFrame:
     """Return only valid fixes (drop rows where Latitude or Longitude == SENTINEL),
     sorted by D_number then date_UTC."""
-    raise NotImplementedError
+    valid = raw[(raw["Latitude"] != SENTINEL) & (raw["Longitude"] != SENTINEL)]
+    return valid.sort_values(["D_number", "date_UTC"], ignore_index=True)
 
 
 def awaiting(raw: pd.DataFrame) -> list[str]:
     """D_numbers that have no valid fix in any snapshot, sorted."""
-    raise NotImplementedError
+    fixed = set(tracks(raw)["D_number"])
+    return sorted(set(raw["D_number"]) - fixed)
