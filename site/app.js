@@ -6,6 +6,7 @@
  *   tracks.geojson                 -> trajectory lines (off by default)
  *   speed.png + currents_meta.json -> surface-speed shading (imageOverlay)
  *   currents.json                  -> leaflet-velocity flow trails (optional)
+ *   ftle.geojson + ftle_meta.json  -> FTLE/LCS ridge contour (vector lines)
  *   awaiting.json                  -> sidebar list, no map geometry
  */
 
@@ -16,7 +17,7 @@ const DATA = {
   currents: "./data/currents.json",
   meta: "./data/currents_meta.json",
   speed: "./data/speed.png",
-  ftle: "./data/ftle.png",
+  ftleGeo: "./data/ftle.geojson",
   ftleMeta: "./data/ftle_meta.json",
 };
 
@@ -140,11 +141,13 @@ function renderFtleInfo(meta) {
     return;
   }
   timeEl.textContent = `Valid ${formatFixTime(meta.valid_time)} — SPASSO backward FTLE.`;
+  const lvl = meta.levels && meta.levels[0];
+  const color = (lvl && lvl.color) || "#cb181d";
+  const value = lvl ? lvl.value.toFixed(2) : "?";
   legendEl.innerHTML =
-    '<div class="legend-bar" style="background:linear-gradient(to right,' +
-    "rgba(255,0,0,0),rgba(255,0,0,1))\"></div>" +
-    '<div class="legend-scale"><span>weak</span>' +
-    "<span>LCS ridge strength</span><span>strong</span></div>";
+    '<div class="legend-scale"><span style="display:inline-block;width:20px;' +
+    `border-top:2px solid ${color};vertical-align:middle;margin-right:6px"></span>` +
+    `<span>LCS ridge (FTLE ≥ ${value} ${meta.units})</span></div>`;
 }
 
 function baseLayers() {
@@ -206,12 +209,17 @@ async function main() {
   }
   renderCurrentsInfo(meta);
 
-  // FTLE / LCS ridges: red, alpha-ramped raster over the Cape Basin, above the
-  // shading and below the flow. Mercator-warped like the speed PNG so the two
-  // co-register. On by default.
+  // FTLE / LCS ridges: a vector iso-FTLE contour over the Cape Basin, above the
+  // shading and below the flow. Lon/lat geometry projected by Leaflet (no manual
+  // warp), drawn on a canvas renderer in the ftle pane. On by default.
+  const ftleGeo = await fetchJSON(DATA.ftleGeo, { optional: true });
   const ftleMeta = await fetchJSON(DATA.ftleMeta, { optional: true });
-  if (ftleMeta && ftleMeta.bounds) {
-    const ftleLayer = L.imageOverlay(DATA.ftle, ftleMeta.bounds, { pane: "ftle" });
+  if (ftleGeo) {
+    const color = ftleMeta?.levels?.[0]?.color ?? "#cb181d";
+    const ftleLayer = L.geoJSON(ftleGeo, {
+      renderer: L.canvas({ pane: "ftle" }),
+      style: { color, weight: 0.8, opacity: 0.85 },
+    });
     ftleLayer.addTo(map);
     overlays["FTLE / LCS ridges"] = ftleLayer;
   }

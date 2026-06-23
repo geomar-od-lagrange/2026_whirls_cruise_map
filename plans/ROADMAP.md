@@ -12,7 +12,10 @@ move to `done/` and gain a `docs/` counterpart.
 3. [FTLE overlay + trail-velocity scaling](003-ftle-and-trail-scaling.md) — red
    alpha-ramped LCS ridges from the SPASSO FTLE product, plus sqrt-scaling of the
    particle-animation velocity. **Planning.**
-4. Batch selection — controls to filter/highlight drifters by deployment batch.
+4. [FTLE vectorization](done/004-ftle-vectorize.md) — replace the FTLE raster
+   with a simplified iso-FTLE line contour (GeoJSON), smaller and crisp, no manual
+   Mercator warp. **Done** ([docs/ftle.md](../docs/ftle.md)).
+5. Batch selection — controls to filter/highlight drifters by deployment batch.
    Blocked on a batch source (IDs supplied per deployment).
-5. Automation & hosting — GitHub Actions cron rebuild and Pages deploy; CMEMS
+6. Automation & hosting — GitHub Actions cron rebuild and Pages deploy; CMEMS
    credentials via repository secrets.

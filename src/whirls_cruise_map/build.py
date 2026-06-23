@@ -9,6 +9,8 @@ and writes the JSON the Leaflet site consumes into ``site/data/``:
 - ``currents.json``       coarse leaflet-velocity u/v grid for the flow trails
 - ``speed.png``           near-native CMEMS surface-speed raster (Mercator-warped)
 - ``currents_meta.json``  bounds, vmax, valid-time and colourbar for the client
+- ``ftle.geojson``        simplified SPASSO FTLE ridge contour (LCS) line strings
+- ``ftle_meta.json``      valid-time, units and level for the FTLE legend
 
 Everything is rebuilt from a fresh full-zip pull each run; no caching.
 """
@@ -76,13 +78,18 @@ def main() -> None:
         )
         result = _ftle.fetch_ftle(target)
         if result is None:
-            print("no FTLE within 24h of the target time, skipping ftle.png")
+            print("no FTLE within 24h of the target time, skipping ftle.geojson")
         else:
             ftle_field, ftle_valid = result
-            png, meta = _ftle.to_ftle_png(ftle_field, ftle_valid)
-            (SITE_DATA / "ftle.png").write_bytes(png)
+            geojson, meta = _ftle.to_ftle_geojson(ftle_field, ftle_valid)
+            _write_json(SITE_DATA / "ftle.geojson", geojson)
             _write_json(SITE_DATA / "ftle_meta.json", meta)
-            print(f"wrote ftle.png + ftle_meta.json (valid {meta['valid_time']})")
+            n_lines = len(geojson["features"][0]["geometry"]["coordinates"])
+            print(
+                f"wrote ftle.geojson ({n_lines} ridge lines) + ftle_meta.json "
+                f"(valid {meta['valid_time']}, level {meta['levels'][0]['value']:.3f} "
+                f"{meta['units']})"
+            )
     except Exception as exc:
         print(f"WARNING: FTLE step failed, skipping ftle artifacts: {exc}")
 
