@@ -133,7 +133,9 @@ async function main() {
 
   const bounds = latestLayer.getBounds();
   if (bounds.isValid()) {
-    map.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 });
+    // Cap zoom well out: the drifters are a tight pre-deployment cluster, so a
+    // tight fit hides the surrounding currents. Opens on the Cape Basin.
+    map.fitBounds(bounds, { padding: [40, 40], maxZoom: 9 });
   }
 
   // Trajectories (off by default; optional so a missing file can't blank the map).
@@ -145,10 +147,11 @@ async function main() {
   // Awaiting-first-fix sidebar.
   renderAwaiting(await fetchJSON(DATA.awaiting, { optional: true }));
 
-  // Currents (optional — skip silently if missing or empty).
+  // Currents — today's CMEMS surface flow (optional; skip if missing/empty).
+  // On by default so it's visible without hunting in the layers control.
   const currents = await fetchJSON(DATA.currents, { optional: true });
   if (currents && currents.length && typeof L.velocityLayer === "function") {
-    overlays["Currents"] = L.velocityLayer({
+    const currentsLayer = L.velocityLayer({
       displayValues: true,
       displayOptions: {
         velocityType: "Surface current",
@@ -157,7 +160,14 @@ async function main() {
         speedUnit: "m/s",
       },
       data: currents,
+      // leaflet-velocity defaults assume wind speeds (tens of m/s); ocean
+      // surface currents are ~0-1.5 m/s, so scale the motion up and cap the
+      // colour ramp low enough that the flow is actually legible.
+      maxVelocity: 1.5,
+      velocityScale: 0.1,
     });
+    currentsLayer.addTo(map);
+    overlays["Currents"] = currentsLayer;
   }
 
   L.control.layers(bases, overlays, { collapsed: false }).addTo(map);
