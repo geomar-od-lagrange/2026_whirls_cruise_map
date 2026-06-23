@@ -1,0 +1,21 @@
+# pixi
+.pixi/
+
+# python
+__pycache__/
+*.pyc
+.ruff_cache/
+.ipynb_checkpoints/
+
+# generated site artifacts (rebuilt from the share each run)
+site/data/
+
+# intermediate downloads
+*.nc
+*.zip
+
+# experiments / scratch (per AGENTS.md)
+tmp_*/
+
+# macOS
+.DS_Store
