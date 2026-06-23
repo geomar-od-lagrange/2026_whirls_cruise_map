@@ -111,7 +111,7 @@ function baseLayers() {
     maxZoom: 19,
     attribution: "&copy; OpenStreetMap contributors",
   });
-  return { "Esri Ocean": esriOcean, OpenStreetMap: osm };
+  return { OpenStreetMap: osm, "Esri Ocean": esriOcean };
 }
 
 async function main() {
@@ -120,7 +120,7 @@ async function main() {
   const map = L.map("map", {
     center: FALLBACK_CENTER,
     zoom: FALLBACK_ZOOM,
-    layers: [bases["Esri Ocean"]],
+    layers: [bases["OpenStreetMap"]],
   });
 
   const overlays = {};
