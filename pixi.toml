@@ -1,0 +1,32 @@
+[workspace]
+name = "2026_whirls_cruise_map"
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "osx-64", "linux-64"]
+
+[activation.env]
+PYTHONPATH = "src"
+
+[dependencies]
+python = ">=3.11"
+
+# Data wrangling
+numpy = "*"
+pandas = "*"
+xarray = "*"
+netcdf4 = "*"
+
+# CMEMS surface currents
+copernicusmarine = "*"
+
+# Dev
+pytest = "*"
+ruff = ">=0.15.12,<0.16"
+
+[tasks]
+build = "python -m whirls_cruise_map.build"
+serve = "python -m http.server --directory site 8000"
+test = "pytest -q"
+
+[tasks.dev]
+depends-on = ["build"]
+cmd = "python -m http.server --directory site 8000"
