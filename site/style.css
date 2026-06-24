@@ -132,6 +132,43 @@ body {
   image-rendering: pixelated; /* Chrome/Safari/Edge */
 }
 
+/* Drifter batch filter control (top-right on the map). */
+.batch-control {
+  background: var(--panel);
+  padding: 8px 10px;
+  border-radius: 4px;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.4);
+  font-size: 0.8rem;
+  color: var(--ink);
+}
+
+.batch-control h4 {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.batch-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  line-height: 1.6;
+}
+
+.batch-row input {
+  cursor: pointer;
+  margin: 0;
+}
+
+.batch-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  flex: 0 0 auto;
+}
+
 .popup strong {
   font-size: 0.95rem;
 }

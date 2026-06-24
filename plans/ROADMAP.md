@@ -21,7 +21,10 @@ move to `done/` and gain a `docs/` counterpart.
    shading verified clean). Applied a documented empirical `-0.13°` lat correction
    in `fetch_ftle`. **Done** ([docs/ftle.md](../docs/ftle.md)); optional ocean clip
    for residual coastal filaments → BACKLOG.
-6. Batch selection — controls to filter/highlight drifters by deployment batch.
-   Blocked on a batch source (IDs supplied per deployment).
+6. [Batch filter](done/006-batch-filter.md) — a data-driven checkbox control to
+   show/hide drifters by deployment batch, picking up new batches from the data
+   automatically. **Done** ([docs/batches.md](../docs/batches.md)). Batch *source*
+   (which drifter belongs to which deployment batch) still TBD during the cruise;
+   per-batch colour deferred to the `styleForBatch` seam.
 7. Automation & hosting — GitHub Actions cron rebuild and Pages deploy; CMEMS
    credentials via repository secrets.

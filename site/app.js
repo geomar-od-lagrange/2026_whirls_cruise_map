@@ -33,9 +33,11 @@ const FALLBACK_CENTER = [-33.9, 18.43];
 const FALLBACK_ZOOM = 12;
 
 // --- batch styling seam -----------------------------------------------------
-// Markers carry a `batch` property. All per-batch appearance/filtering decisions
-// funnel through styleForBatch(); a future batch-filter control hooks in here
-// (and reads `feature.properties.batch`) without restructuring the layers.
+// Markers carry a `batch` property. All per-batch appearance decisions funnel
+// through styleForBatch(); the batch filter control (below) reads the same
+// `batch` property to group markers. Per-batch colours are still deferred — one
+// style for now — so when batch assignment lands, differentiating is a single
+// change here.
 function styleForBatch(batch) {
   return {
     radius: 6,
@@ -45,6 +47,14 @@ function styleForBatch(batch) {
     fillOpacity: 0.85,
   };
 }
+
+// Pretty labels for known batch keys; unknown keys (e.g. a future "deployment")
+// fall back to the raw value, so new batches surface readably with no code change.
+const BATCH_LABELS = {
+  pre_deploy: "Pre-deployment",
+  deployment: "Deployment",
+};
+const batchLabel = (batch) => BATCH_LABELS[batch] ?? batch;
 // ---------------------------------------------------------------------------
 
 async function fetchJSON(url, { optional = false } = {}) {
@@ -75,17 +85,54 @@ function popupHtml(props, latlng) {
     </div>`;
 }
 
-function buildLatestLayer(geojson) {
-  return L.geoJSON(geojson, {
-    pointToLayer: (feature, latlng) =>
-      L.circleMarker(latlng, {
-        ...styleForBatch(feature.properties?.batch),
-        pane: "drifters",
-      }),
-    onEachFeature: (feature, layer) => {
-      layer.bindPopup(popupHtml(feature.properties, layer.getLatLng()));
-    },
-  });
+// Group latest-position markers into one feature group per `batch` value, so the
+// batch filter control can toggle each independently. Returns { batch: group }.
+function buildBatchGroups(geojson) {
+  const groups = {};
+  for (const feature of geojson.features ?? []) {
+    if (feature.geometry?.type !== "Point") continue;
+    const [lng, lat] = feature.geometry.coordinates;
+    const batch = feature.properties?.batch ?? "unknown";
+    const marker = L.circleMarker([lat, lng], {
+      ...styleForBatch(batch),
+      pane: "drifters",
+    });
+    marker.bindPopup(popupHtml(feature.properties, marker.getLatLng()));
+    (groups[batch] ??= L.featureGroup()).addLayer(marker);
+  }
+  return groups;
+}
+
+// A checkbox panel (one row per batch) that shows/hides each batch's markers.
+// Data-driven from `groups`, so new batches appear automatically. All on by
+// default; this control — not the Leaflet layer control — governs drifter
+// visibility.
+function buildBatchControl(map, groups) {
+  const control = L.control({ position: "topright" });
+  control.onAdd = () => {
+    const div = L.DomUtil.create("div", "batch-control");
+    L.DomEvent.disableClickPropagation(div);
+    L.DomEvent.disableScrollPropagation(div);
+    const title = L.DomUtil.create("h4", "", div);
+    title.textContent = "Drifter batches";
+    for (const batch of Object.keys(groups).sort()) {
+      const group = groups[batch];
+      const row = L.DomUtil.create("label", "batch-row", div);
+      const cb = L.DomUtil.create("input", "", row);
+      cb.type = "checkbox";
+      cb.checked = true;
+      const swatch = L.DomUtil.create("span", "batch-swatch", row);
+      swatch.style.background = styleForBatch(batch).fillColor;
+      const text = L.DomUtil.create("span", "batch-text", row);
+      text.textContent = `${batchLabel(batch)} (${group.getLayers().length})`;
+      cb.addEventListener("change", () => {
+        if (cb.checked) group.addTo(map);
+        else map.removeLayer(group);
+      });
+    }
+    return div;
+  };
+  return control;
 }
 
 function buildTracksLayer(geojson) {
@@ -182,12 +229,13 @@ async function main() {
   map.createPane("ftle").style.zIndex = 360;
   map.createPane("drifters").style.zIndex = 650;
 
-  // Latest positions (required). Build first to drive the fit, add last so the
-  // markers sit above the shading and flow layers.
+  // Latest positions (required). Group by batch first to drive the fit; the
+  // groups are added near the end so the markers sit above the shading and flow
+  // layers (the drifters pane also enforces this via z-index).
   const latest = await fetchJSON(DATA.latest);
-  const latestLayer = buildLatestLayer(latest);
+  const batchGroups = buildBatchGroups(latest);
 
-  const bounds = latestLayer.getBounds();
+  const bounds = L.featureGroup(Object.values(batchGroups)).getBounds();
   if (bounds.isValid()) {
     // Cap zoom well out: the drifters are a tight pre-deployment cluster, so a
     // tight fit hides the surrounding currents. Opens on the Cape Basin.
@@ -262,9 +310,13 @@ async function main() {
     overlays["Trajectories"] = buildTracksLayer(tracks);
   }
 
-  // Markers last, so they sit on top of the shading and flow layers.
-  latestLayer.addTo(map);
-  overlays["Latest positions"] = latestLayer;
+  // Markers last, so they sit on top of the shading and flow layers. Each batch
+  // group is added directly; the batch filter control (not the layer control)
+  // governs their visibility.
+  for (const group of Object.values(batchGroups)) {
+    group.addTo(map);
+  }
+  buildBatchControl(map, batchGroups).addTo(map);
 
   // Awaiting-first-fix sidebar.
   renderAwaiting(await fetchJSON(DATA.awaiting, { optional: true }));
