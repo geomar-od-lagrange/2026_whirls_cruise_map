@@ -125,6 +125,13 @@ body {
   font-style: italic;
 }
 
+/* Speed-shading raster: show the native CMEMS grid cells as sharp pixels rather
+   than letting the browser bilinear-smooth the upscaled bitmap. */
+.crisp-raster {
+  image-rendering: -moz-crisp-edges; /* Firefox */
+  image-rendering: pixelated; /* Chrome/Safari/Edge */
+}
+
 .popup strong {
   font-size: 0.95rem;
 }

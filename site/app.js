@@ -198,11 +198,15 @@ async function main() {
   const meta = await fetchJSON(DATA.meta, { optional: true });
   const currents = await fetchJSON(DATA.currents, { optional: true });
 
-  // Speed shading: a Mercator-warped PNG in the bottom data pane.
+  // Speed shading: a Mercator-warped PNG in the bottom data pane. The PNG is at
+  // the native CMEMS grid resolution (one pixel per cell); `crisp` disables the
+  // browser's default bilinear upscaling so the cells render as sharp pixels
+  // instead of a smooth blur.
   if (meta && meta.bounds) {
     const speedLayer = L.imageOverlay(DATA.speed, meta.bounds, {
       pane: "shading",
       opacity: 0.85,
+      className: "crisp-raster",
     });
     speedLayer.addTo(map);
     overlays["Current speed"] = speedLayer;
