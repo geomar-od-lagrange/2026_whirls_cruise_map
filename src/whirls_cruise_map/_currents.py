@@ -116,7 +116,17 @@ def _component_header(field: xr.DataArray, number: int, name: str) -> dict:
 
 def _component(field: xr.DataArray, number: int, name: str) -> dict:
     """Turn a 2-D field into a leaflet-velocity object: data is row-major from the
-    north-west corner (latitude descending, longitude ascending); land NaN -> 0."""
+    north-west corner (latitude descending, longitude ascending); land NaN -> 0.
+
+    leaflet-velocity needs a hole-free regular grid and has no land mask, so land
+    is filled with zero velocity rather than left absent. The client then
+    bilinearly interpolates across the ocean->0 boundary, so coastal ocean
+    velocities bleed onto the adjacent land and animated particles drift ashore.
+    The coarsening in :func:`to_velocity_json` widens the bleed (the decimated
+    coastline is offset by up to a coarse cell). Unlike the speed shading, which
+    masks land with per-pixel alpha (:func:`to_speed_png`), the trails have no
+    such mask. Accepted as a known cosmetic limitation; see plans/BACKLOG.md.
+    """
     field = field.sortby("latitude", ascending=False).sortby(
         "longitude", ascending=True
     )
