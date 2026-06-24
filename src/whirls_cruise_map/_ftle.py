@@ -33,6 +33,17 @@ MIN_LEN_DEG = 0.08           # drop contour rings shorter than ~8 km (noise spec
 ROUND_DP = 3                 # coordinate precision (~110 m << 1.1 km cell)
 LEVEL_COLOR = "#cb181d"      # red, matched in the client style + legend
 
+# The SPASSO product registers ~0.13 deg of latitude NORTH of its actual
+# geophysical content: the `ftle` array sits ~13 rows north of its own (pristine)
+# `lats` labels — a rigid, latitude-only shift baked into the product. Confirmed
+# against the coast-correct CMEMS land mask: the offset is a *constant* northward
+# vector across coast orientations (the fingerprint of a rigid shift, not a
+# coast-hugging artifact), ~0 in longitude, and reproduces across days; CI
+# -0.08..-0.16 deg. The file carries no CRS/grid_mapping/bounds, so this empirical
+# constant is the only lever. Tune by rebuilding and re-measuring the south-coast
+# FTLE-low -> CMEMS land edge to ~0. See docs/ftle.md.
+FTLE_LAT_CORRECTION_DEG = -0.13
+
 
 def fetch_ftle(target: datetime) -> tuple[xr.DataArray, datetime] | None:
     """Open the FTLE file whose 00Z time is closest to ``target`` and within
@@ -62,7 +73,9 @@ def fetch_ftle(target: datetime) -> tuple[xr.DataArray, datetime] | None:
             lon1d = lon1d[0]
         if lat1d.ndim == 2:
             lat1d = lat1d[:, 0]
-        ftle = ftle.assign_coords(lat=("lat", lat1d), lon=("lon", lon1d))
+        ftle = ftle.assign_coords(
+            lat=("lat", lat1d + FTLE_LAT_CORRECTION_DEG), lon=("lon", lon1d)
+        )
         return ftle.load(), t
     return None
 

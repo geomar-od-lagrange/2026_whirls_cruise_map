@@ -11,3 +11,9 @@ Unscheduled ideas, not yet promoted to a plan.
 - **Awaiting-first-fix view** — surface staged-but-not-yet-transmitting drifters.
 - **Currents bbox auto-fit** — track the drifter cloud instead of a fixed box.
 - **Time scrubber** — animate positions/tracks over time.
+- **FTLE ocean clip** — the FTLE field has no land mask, so after the latitude
+  registration correction (`docs/ftle.md`) ~1.6% of contour vertices still cross
+  the coast (genuine high-FTLE near-coast filaments, deepest ~30 km inland). Mask
+  the field to ocean before contouring — rasterize a bundled Natural-Earth land
+  polygon onto the FTLE grid (keeps `_ftle` self-contained), or reuse the CMEMS
+  ocean mask already fetched in the build (couples the two steps).

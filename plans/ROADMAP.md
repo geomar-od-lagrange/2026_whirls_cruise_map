@@ -15,10 +15,12 @@ move to `done/` and gain a `docs/` counterpart.
 4. [FTLE vectorization](done/004-ftle-vectorize.md) — replace the FTLE raster
    with a simplified iso-FTLE line contour (GeoJSON), smaller and crisp, no manual
    Mercator warp. **Done** ([docs/ftle.md](../docs/ftle.md)).
-5. [FTLE latitude correction](005-ftle-lat-correction.md) — the SPASSO FTLE field
-   renders ~0.13–0.14° (~14 km) too far north (product registration quirk);
-   apply a documented empirical latitude shift. Currents/shading verified clean.
-   **Planning.**
+5. [FTLE latitude correction](done/005-ftle-lat-correction.md) — the SPASSO FTLE
+   field renders ~0.13° too far north (a rigid, latitude-only product-registration
+   shift, confirmed via orientation-resolved land-mask registration; currents/
+   shading verified clean). Applied a documented empirical `-0.13°` lat correction
+   in `fetch_ftle`. **Done** ([docs/ftle.md](../docs/ftle.md)); optional ocean clip
+   for residual coastal filaments → BACKLOG.
 6. Batch selection — controls to filter/highlight drifters by deployment batch.
    Blocked on a batch source (IDs supplied per deployment).
 7. Automation & hosting — GitHub Actions cron rebuild and Pages deploy; CMEMS

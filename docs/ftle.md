@@ -14,6 +14,37 @@ file whose 00Z time is nearest the currents valid-time and within 24 h, else the
 nearest available day; if none qualifies the layer is simply absent (best-effort,
 independent of the CMEMS step).
 
+## Latitude registration correction
+
+The SPASSO product registers **~0.13° of latitude north of its actual geophysical
+content**: the `ftle` array sits ~13 rows north of its own (otherwise pristine)
+0.01° `lats` labels. `fetch_ftle` therefore applies a documented empirical
+`FTLE_LAT_CORRECTION_DEG = -0.13` to the latitude coordinate; longitude is left
+untouched.
+
+This is a real, rigid, latitude-only shift baked into the product — not a
+coordinate-assignment bug and not a measurement artifact. The file's `lats`/`lons`
+are clean linspaces matching its own `geospatial_*` attributes to the digit, and
+they arrive as 1-D arrays that `assign_coords` promotes faithfully, so the
+displacement is between the data content and its own labels (the file carries no
+CRS, grid_mapping or cell bounds to correct from principled-ly, hence the empirical
+constant). The magnitude was pinned by registering the low-FTLE land-like region
+against the coast-correct CMEMS land mask on coast segments of differing
+orientation: the offset is a **constant northward vector** regardless of coast
+orientation — the south coast, which pins latitude, gives −0.12…−0.14°; the west
+coast, which pins longitude, gives ≈0 — the signature of a rigid field shift rather
+than a coast-perpendicular skirt, and it reproduces across days. (An open-ocean
+FTLE-vs-CMEMS structural cross-check is too insensitive to localize a ~14 km shift,
+since backward-FTLE ridges track the flow's history rather than the instantaneous
+speed field, so it neither confirms nor refutes — the geographic land-mask
+registration is the basis for the constant.) The speed shading and flow trails are
+independently verified correctly registered and need no such correction.
+
+The field is **not** ocean-masked, so a few genuine high-FTLE near-coast filaments
+still cross the coastline after the shift (~1.6% of contour vertices, the deepest
+~30 km inland); masking the field to ocean before contouring would remove them
+(see `plans/BACKLOG.md`).
+
 ## Representation: one vector contour, not a raster
 
 The overlay is a **single iso-FTLE line contour** shipped as GeoJSON, not a shaded
