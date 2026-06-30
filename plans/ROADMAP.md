@@ -31,5 +31,11 @@ move to `done/` and gain a `docs/` counterpart.
    localisation API (the IPSL WHIRLS "platform positions" source), polled every
    5 min. **Done** ([docs/ship.md](../docs/ship.md)). Agulhas II is not in that
    API and needs a separate source.
-8. Automation & hosting — GitHub Actions cron rebuild and Pages deploy; CMEMS
+8. [Intermediate positions](done/008-intermediate-positions.md) — a dot at every
+   fix along each drifter and ship track, each carrying the latest-position
+   popup; drifter popups gained reported + derived velocity (knots and m/s); the
+   ship heading row is always shown (NA when slow); trajectories are coupled to
+   the batch filter. **Done** ([docs/trajectories.md](../docs/trajectories.md),
+   [docs/ship.md](../docs/ship.md)).
+9. Automation & hosting — GitHub Actions cron rebuild and Pages deploy; CMEMS
    credentials via repository secrets.

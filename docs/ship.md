@@ -69,15 +69,21 @@ not relabel it as knots or m/s without confirming with the source.
 The API exposes **no ship speed-over-ground or course-over-ground** — a record is
 only `lat`/`lon`/`date` plus the met fields above (`truewinddir`/`truewindspeed`
 are *wind*, not vessel motion). So the popup/sidebar "Speed (derived)" and
-"Heading (derived)" are computed client-side from the **last track segment**: the
-great-circle distance between the two most recent fixes over their time gap
-(reported in knots), and the initial great-circle bearing between them (degrees
-true, with a 16-point compass label). Below ~0.5 kn — about 150 m over a 10-min
-step, comparable to GPS scatter — the bearing is unreliable, so the heading is
-suppressed while the (near-zero) speed is still shown; this is what a vessel on
-station or moored looks like. Because it is a single-segment difference the value
-is instantaneous and a little jumpy; smoothing over several fixes would steady it
-at the cost of lag, and is deferred.
+"Heading (derived)" are computed client-side from a **track segment**: the
+great-circle distance between two fixes over their time gap, and the initial
+great-circle bearing between them (degrees true, with a 16-point compass label).
+The same per-segment derivation labels every fix on the track, not just the
+latest — each dot (below) shows its own.
+
+Speed is shown in **both knots and m/s** (`12.3 kn / 6.33 m/s`), so it reads on
+the same scale as the drifters' m/s velocities. Below ~0.5 kn — about 150 m over
+a 10-min step, comparable to GPS scatter — the bearing is unreliable, so the
+heading is suppressed (the near-zero speed is still shown); this is what a vessel
+on station or moored looks like. The heading row is **always present**, showing
+`NA` when suppressed or when there is no prior fix to derive a bearing from.
+Because it is a single-segment difference the value is instantaneous and a little
+jumpy; smoothing over several fixes would steady it at the cost of lag, and is
+deferred.
 
 ## Why client-side and live
 
@@ -108,11 +114,20 @@ stops the marker advancing — it never throws and never blanks the map.
   polling cost stays flat as the track grows rather than re-pulling the whole
   history each time.
 - **Rendering.** The track is a cased polyline — a white halo under a dark core —
-  so it stays legible over any basemap. The current position is a dark disc with
-  a white ring and a boat glyph, set apart from the small blue drifter circles.
-  Both sit in a dedicated `ship` map pane above the drifters. The marker popup and
-  a top-of-sidebar panel show the last-fix time, the underway readout (sea/air
-  temperature, pressure, wind), and the derived course and speed (below).
+  so it stays legible over any basemap, with a small dot at **every 10-minute
+  fix** painted on top of it. Each dot opens the same popup as the current
+  position, filled with that fix's own met data and derived motion. The current
+  position is a dark disc with a white ring and a boat glyph, set apart from the
+  small blue drifter circles. The marker popup and a top-of-sidebar panel show the
+  last-fix time, the underway readout (sea/air temperature, pressure, wind), and
+  the derived course and speed (below).
+- **Stacking.** The track and its dots sit in a `shipTrack` pane *below* the
+  drifter markers, while the current-position marker sits in a `ship` pane on
+  top. The track runs below the drifters because the cruise departs the drifters'
+  staging port, so the early track passes through the pre-deploy cluster; were the
+  dots above the markers they would intercept clicks meant for the drifters. The
+  dots are plain SVG circle markers (not a canvas, which spans the whole viewport
+  and would block clicks map-wide). See [trajectories.md](trajectories.md).
 - **Map fit is unchanged.** The opening view still fits the drifter cluster; the
   ship is not folded into the fit because it can be far offshore, which would zoom
   the map out past the drifters the map exists to show. Toggle the layer off, or

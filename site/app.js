@@ -98,6 +98,27 @@ function formatFixTime(iso) {
   return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z");
 }
 
+// 16-point compass label for a bearing in degrees true. Shared by the drifter
+// popups and the ship readout.
+const COMPASS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                 "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+const compassPoint = (deg) => COMPASS[Math.round(deg / 22.5) % 16];
+
+const MS_TO_KN = 1.943844;
+// Every speed reads in both units (knots and m/s) so the ship (nautical, knots)
+// and the drifters (oceanographic, m/s) are directly comparable. Input is m/s.
+const speedBoth = (mps) => `${(mps * MS_TO_KN).toFixed(1)} kn / ${mps.toFixed(2)} m/s`;
+
+// Drifter velocity formatters. Direction in degrees(+compass); a dash marks a
+// value that is absent (no reported field) or underived (a track's first fix, or
+// a zero-length step).
+const fmtSpeedMps = (v) => (v != null ? speedBoth(v) : "—");
+const fmtDir = (deg) => {
+  if (deg == null) return "—";
+  const d = ((deg % 360) + 360) % 360; // reported direction can be negative
+  return `${Math.round(d) % 360}° ${compassPoint(d)}`;
+};
+
 function popupHtml(props, latlng) {
   const p = props || {};
   return `
@@ -105,6 +126,10 @@ function popupHtml(props, latlng) {
       <strong>${p.D_number ?? "—"}</strong><br/>
       <span class="popup-label">Last fix:</span> ${formatFixTime(p.date_UTC)}<br/>
       <span class="popup-label">Battery:</span> ${p.batteryState ?? "—"}<br/>
+      <span class="popup-label">Speed (derived):</span> ${fmtSpeedMps(p.derived_speed_mps)}<br/>
+      <span class="popup-label">Heading (derived):</span> ${fmtDir(p.derived_heading_deg)}<br/>
+      <span class="popup-label">Speed (reported):</span> ${fmtSpeedMps(p.U_speed_mps)}<br/>
+      <span class="popup-label">Heading (reported):</span> ${fmtDir(p.U_Dir_deg)}<br/>
       <span class="popup-label">Position:</span>
       ${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}
     </div>`;
@@ -128,20 +153,53 @@ function buildBatchGroups(geojson) {
   return groups;
 }
 
-// A checkbox panel (one row per batch) that shows/hides each batch's markers.
-// Data-driven from `groups`, so new batches appear automatically. All on by
-// default; this control — not the Leaflet layer control — governs drifter
-// visibility.
-function buildBatchControl(map, groups) {
+// A checkbox panel governing all drifter visibility — this control, not the
+// Leaflet layer control, owns it. One row per batch shows/hides that batch's
+// markers; a master "Trajectories" row turns the track lines+dots on or off for
+// every batch at once. The two compose: a batch's trajectory shows only when
+// both its batch row and the master row are checked, so unchecking a batch hides
+// its markers *and* its trajectory. Data-driven from `markerGroups`, so new
+// batches appear automatically. Markers start visible, trajectories hidden.
+function buildBatchControl(map, markerGroups, trackGroups) {
+  const batchOn = {};
+  for (const batch of Object.keys(markerGroups)) batchOn[batch] = true;
+  let tracksOn = false;
+
+  const toggle = (layer, show) =>
+    layer && (show ? layer.addTo(map) : map.removeLayer(layer));
+
+  function sync() {
+    for (const batch of Object.keys(markerGroups)) {
+      toggle(markerGroups[batch], batchOn[batch]);
+      toggle(trackGroups[batch], batchOn[batch] && tracksOn);
+    }
+  }
+
   const control = L.control({ position: "topright" });
   control.onAdd = () => {
     const div = L.DomUtil.create("div", "batch-control");
     L.DomEvent.disableClickPropagation(div);
     L.DomEvent.disableScrollPropagation(div);
     const title = L.DomUtil.create("h4", "", div);
-    title.textContent = "Drifter batches";
-    for (const batch of Object.keys(groups).sort()) {
-      const group = groups[batch];
+    title.textContent = "Drifters";
+
+    // Only offer the trajectories toggle when there are tracks to show, so a
+    // missing/empty tracks artifact doesn't leave a dead checkbox.
+    if (Object.keys(trackGroups).length) {
+      const trackRow = L.DomUtil.create("label", "batch-row", div);
+      const trackCb = L.DomUtil.create("input", "", trackRow);
+      trackCb.type = "checkbox";
+      trackCb.checked = tracksOn;
+      const trackText = L.DomUtil.create("span", "batch-text", trackRow);
+      trackText.textContent = "Trajectories";
+      trackCb.addEventListener("change", () => {
+        tracksOn = trackCb.checked;
+        sync();
+      });
+    }
+
+    for (const batch of Object.keys(markerGroups).sort()) {
+      const group = markerGroups[batch];
       const row = L.DomUtil.create("label", "batch-row", div);
       const cb = L.DomUtil.create("input", "", row);
       cb.type = "checkbox";
@@ -151,8 +209,8 @@ function buildBatchControl(map, groups) {
       const text = L.DomUtil.create("span", "batch-text", row);
       text.textContent = `${batchLabel(batch)} (${group.getLayers().length})`;
       cb.addEventListener("change", () => {
-        if (cb.checked) group.addTo(map);
-        else map.removeLayer(group);
+        batchOn[batch] = cb.checked;
+        sync();
       });
     }
     return div;
@@ -160,10 +218,49 @@ function buildBatchControl(map, groups) {
   return control;
 }
 
-function buildTracksLayer(geojson) {
-  return L.geoJSON(geojson, {
-    style: { color: "#e07b39", weight: 2, opacity: 0.8 },
-  });
+// Track colour for the trajectory lines and the intermediate-fix dots that ride
+// them — distinct from the blue latest-position markers, so the dots read as
+// part of the trajectory rather than as separate platforms.
+const TRACK_COLOR = "#e07b39";
+
+// Trajectories, grouped by `batch` so each batch's lines+dots toggle with that
+// batch's markers (see buildBatchControl). For each drifter: one line, plus a
+// small dot at every fix. Each dot carries the same popup as the drifter's main
+// marker, but filled with *that fix's* own time, battery, and reported/derived
+// velocity — read from the per-vertex `fixes` array that rides parallel to
+// `coordinates`. Tolerates a
+// `fixes`-less artifact from an older build: the dot then falls back to the
+// line-level identity (D_number/batch) with an unknown time. The line is
+// non-interactive so it never swallows a click meant for a dot or a marker
+// below it. Returns { batch: featureGroup }.
+function buildTrackGroups(geojson) {
+  const groups = {};
+  for (const feature of geojson.features ?? []) {
+    if (feature.geometry?.type !== "LineString") continue;
+    const { D_number, batch, fixes } = feature.properties ?? {};
+    const key = batch ?? "unknown";
+    const group = (groups[key] ??= L.featureGroup());
+    const coords = feature.geometry.coordinates;
+    L.polyline(
+      coords.map(([lng, lat]) => [lat, lng]),
+      { color: TRACK_COLOR, weight: 2, opacity: 0.8, interactive: false }
+    ).addTo(group);
+    coords.forEach(([lng, lat], i) => {
+      const fix = fixes?.[i] ?? {};
+      const dot = L.circleMarker([lat, lng], {
+        radius: 3,
+        color: TRACK_COLOR,
+        weight: 1,
+        fillColor: TRACK_COLOR,
+        fillOpacity: 0.9,
+      });
+      // The fix record already carries date/battery/reported+derived velocity;
+      // add the line-level identity for the same popup as the main marker.
+      dot.bindPopup(popupHtml({ D_number, batch, ...fix }, dot.getLatLng()));
+      group.addLayer(dot);
+    });
+  }
+  return groups;
 }
 
 function renderAwaiting(ids) {
@@ -266,11 +363,6 @@ function shipIcon() {
 // The API carries no reported SOG/COG (only lat/lon/date + met fields), so speed
 // and heading are derived from the last track segment.
 
-const MS_TO_KN = 1.943844;
-const COMPASS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-                 "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
-const compassPoint = (deg) => COMPASS[Math.round(deg / 22.5) % 16];
-
 function haversineMeters(a, b) {
   const R = 6371000;
   const rad = Math.PI / 180;
@@ -294,15 +386,15 @@ function initialBearingDeg(a, b) {
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
-// Speed/heading of the latest fix relative to the prior one. Null if there is no
-// prior fix or a zero time gap. Below ~0.5 kn (≈150 m over a 10-min step) the
+// Speed/heading from fix `a` to fix `b`. Null if either is missing or the time
+// gap is non-positive. Below ~0.5 kn (≈150 m over a 10-min step) the
 // displacement is comparable to GPS scatter, so the bearing is noise — speed is
-// still returned but heading is suppressed (ship moored/maneuvering).
+// still returned but heading is suppressed (ship moored/maneuvering). Computed
+// per-segment so any fix on the track — not just the latest — can show its own
+// derived motion.
 const MIN_HEADING_KN = 0.5;
-function deriveMotion(positions) {
-  if (positions.length < 2) return null;
-  const a = positions[positions.length - 2];
-  const b = positions[positions.length - 1];
+function motionBetween(a, b) {
+  if (!a || !b) return null;
   const dt = (new Date(b.date).getTime() - new Date(a.date).getTime()) / 1000;
   if (!(dt > 0)) return null;
   const speedKn = (haversineMeters(a, b) / dt) * MS_TO_KN;
@@ -312,7 +404,13 @@ function deriveMotion(positions) {
   };
 }
 
-const fmtSpeed = (m) => (m ? `${m.speedKn.toFixed(1)} kn` : null);
+// Motion of the latest fix relative to the prior one.
+const deriveMotion = (positions) =>
+  positions.length < 2
+    ? null
+    : motionBetween(positions[positions.length - 2], positions[positions.length - 1]);
+
+const fmtSpeed = (m) => (m ? speedBoth(m.speedKn / MS_TO_KN) : null);
 const fmtHeading = (m) =>
   m && m.heading != null
     ? `${Math.round(m.heading) % 360}° ${compassPoint(m.heading)}`
@@ -334,7 +432,9 @@ function shipRows(p, motion) {
     ["Last fix", formatFixTime(p.date)],
     ["Position", `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`],
     ["Speed (derived)", fmtSpeed(motion)],
-    ["Heading (derived)", fmtHeading(motion)],
+    // Heading is always shown; "NA" stands in when it is unavailable (speed
+    // below MIN_HEADING_KN, or no prior fix to derive a bearing from).
+    ["Heading (derived)", fmtHeading(motion) ?? "NA"],
     ["Sea temp", d.seatemp != null ? `${d.seatemp} °C` : null],
     ["Air temp", d.airtemp != null ? `${d.airtemp} °C` : null],
     ["Pressure", d.pressure != null ? `${d.pressure} hPa` : null],
@@ -357,21 +457,51 @@ const isValidFix = (p) =>
   p && Number.isFinite(p.lat) && Number.isFinite(p.lon) && !!p.date;
 const byDate = (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime();
 
-// Cased polyline (white halo + dark core, legible on any basemap) plus a ship
-// marker, in one feature group. Holds the time-sorted position list so live
-// polling can append only the new tail: setPositions replaces the whole track;
-// append extends it past the last fix, drawing only the fresh points.
+// Cased polyline (white halo + dark core, legible on any basemap), a dot at each
+// 10-minute fix, and a ship marker, in one feature group. Holds the time-sorted
+// position list so live polling can append only the new tail: setPositions
+// replaces the whole track; append extends it past the last fix, drawing only
+// the fresh points.
 function makeShipLayer() {
-  const opts = (color, weight) => ({ pane: "ship", color, weight, opacity: 0.95 });
+  // The cased track is non-interactive: it carries no popup, and an interactive
+  // polyline would swallow clicks meant for the dots painted on top of it.
+  const opts = (color, weight) => ({
+    pane: "shipTrack",
+    color,
+    weight,
+    opacity: 0.95,
+    interactive: false,
+  });
   const halo = L.polyline([], opts(SHIP.haloColor, 5));
   const core = L.polyline([], opts(SHIP.trackColor, 2.5));
+  // Per-fix dots use the pane's default SVG renderer, not a canvas: a canvas
+  // renderer spans the whole viewport and would intercept every click across the
+  // map. SVG keeps each dot an individually hit-testable element, and empty pane
+  // area stays click-through (so the drifters above this pane stay clickable).
+  // Added after the lines, so the dots paint on top of the cased track.
+  const dots = L.layerGroup();
   const marker = L.marker([0, 0], {
     pane: "ship",
     icon: shipIcon(),
     opacity: 0, // hidden until the first fix lands
   }).bindPopup("");
-  const group = L.featureGroup([halo, core, marker]);
+  const group = L.featureGroup([halo, core, dots, marker]);
   let positions = [];
+
+  // A small dot at fix `p`, sharing the latest-position popup but filled with
+  // this fix's own met data and its motion relative to the preceding fix `prev`.
+  function dotFor(p, prev) {
+    const dot = L.circleMarker([p.lat, p.lon], {
+      pane: "shipTrack",
+      radius: 2.5,
+      color: SHIP.haloColor,
+      weight: 1,
+      fillColor: SHIP.trackColor,
+      fillOpacity: 1,
+    });
+    dot.bindPopup(shipPopupHtml(p, motionBetween(prev, p)));
+    return dot;
+  }
 
   function showLatest() {
     const last = positions[positions.length - 1];
@@ -387,6 +517,8 @@ function makeShipLayer() {
     const latlngs = positions.map((p) => [p.lat, p.lon]);
     halo.setLatLngs(latlngs);
     core.setLatLngs(latlngs);
+    dots.clearLayers();
+    positions.forEach((p, i) => dots.addLayer(dotFor(p, positions[i - 1])));
     showLatest();
   }
 
@@ -397,9 +529,11 @@ function makeShipLayer() {
     const fresh = valid.filter((p) => new Date(p.date).getTime() > lastT);
     if (!fresh.length) return;
     for (const p of fresh) {
+      const prev = positions[positions.length - 1];
       positions.push(p);
       halo.addLatLng([p.lat, p.lon]); // extend in place, no full-track rebuild
       core.addLatLng([p.lat, p.lon]);
+      dots.addLayer(dotFor(p, prev)); // one fresh dot, no full-track rebuild
     }
     showLatest();
   }
@@ -458,9 +592,15 @@ async function main() {
 
   const overlays = {};
 
-  // Layer stack, bottom -> top: speed shading -> FTLE -> flow -> drifters -> ship.
+  // Layer stack, bottom -> top: speed shading -> FTLE -> flow -> ship track+dots
+  // -> drifters -> ship marker. The ship track sits *below* the drifters so its
+  // per-fix dots can't intercept clicks meant for the drifter markers where the
+  // two overlap — the cruise starts from the drifters' staging port, so the early
+  // ship track runs right through the pre-deploy cluster. The ship's current
+  // position marker stays on top.
   map.createPane("shading").style.zIndex = 350;
   map.createPane("ftle").style.zIndex = 360;
+  map.createPane("shipTrack").style.zIndex = 640;
   map.createPane("drifters").style.zIndex = 650;
   map.createPane("ship").style.zIndex = 660;
 
@@ -539,19 +679,19 @@ async function main() {
     map.on("moveend zoomend", () => flowLayer.setData(currents));
   }
 
-  // Trajectories (off by default; optional so a missing file can't blank the map).
+  // Trajectories, grouped by batch (off by default; optional so a missing file
+  // can't blank the map). Not a layer-control overlay: the batch control governs
+  // them, so unchecking a batch hides its track along with its markers.
   const tracks = await fetchJSON(DATA.tracks, { optional: true });
-  if (tracks) {
-    overlays["Trajectories"] = buildTracksLayer(tracks);
-  }
+  const trackGroups = tracks ? buildTrackGroups(tracks) : {};
 
   // Markers last, so they sit on top of the shading and flow layers. Each batch
   // group is added directly; the batch filter control (not the layer control)
-  // governs their visibility.
+  // governs their visibility — and the trajectories'.
   for (const group of Object.values(batchGroups)) {
     group.addTo(map);
   }
-  buildBatchControl(map, batchGroups).addTo(map);
+  buildBatchControl(map, batchGroups, trackGroups).addTo(map);
 
   // Awaiting-first-fix sidebar.
   renderAwaiting(await fetchJSON(DATA.awaiting, { optional: true }));
