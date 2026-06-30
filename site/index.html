@@ -17,13 +17,19 @@
 <body>
   <header id="app-header">
     <h1>2026 Whirls Cruise — drifter map</h1>
-    <p class="subtitle">R/V Marion Dufresne &amp; R/V Agulhas II — latest drifter positions, tracks, and surface currents</p>
+    <p class="subtitle">R/V Marion Dufresne &amp; R/V Agulhas II — latest drifter positions, tracks, ship track, and surface currents</p>
   </header>
 
   <div id="layout">
     <div id="map"></div>
 
     <aside id="sidebar">
+      <section id="ship-panel">
+        <h2>R/V Marion Dufresne</h2>
+        <p class="hint" id="ship-time"></p>
+        <div id="ship-readout"></div>
+      </section>
+
       <section id="currents-panel">
         <h2>Surface currents</h2>
         <p class="hint" id="currents-time"></p>

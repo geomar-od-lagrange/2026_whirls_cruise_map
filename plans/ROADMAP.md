@@ -26,5 +26,10 @@ move to `done/` and gain a `docs/` counterpart.
    automatically. **Done** ([docs/batches.md](../docs/batches.md)). Batch *source*
    (which drifter belongs to which deployment batch) still TBD during the cruise;
    per-batch colour deferred to the `styleForBatch` seam.
-7. Automation & hosting — GitHub Actions cron rebuild and Pages deploy; CMEMS
+7. [Ship track](done/007-md-ship-track.md) — live R/V Marion Dufresne position
+   and track, fetched client-side from the Flotte Océanographique Française
+   localisation API (the IPSL WHIRLS "platform positions" source), polled every
+   5 min. **Done** ([docs/ship.md](../docs/ship.md)). Agulhas II is not in that
+   API and needs a separate source.
+8. Automation & hosting — GitHub Actions cron rebuild and Pages deploy; CMEMS
    credentials via repository secrets.

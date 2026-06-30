@@ -32,6 +32,21 @@ const FLOW_COLORS = [
 const FALLBACK_CENTER = [-33.9, 18.43];
 const FALLBACK_ZOOM = 12;
 
+// R/V Marion Dufresne live track. Fetched client-side from the French
+// Oceanographic Fleet (Flotte Océanographique Française) localisation API — the
+// same source as the IPSL WHIRLS "platform positions" button. CORS-open, no
+// auth. Unlike the other layers this is not a build artifact: it polls live so
+// the marker tracks the ship between rebuilds. See docs/ship.md.
+const SHIP = {
+  positions:
+    "https://localisation.flotteoceanographique.fr/api/v2/vessels/MD/positions",
+  // Cruise-window start; matches the IPSL WHIRLS operational map. endDate is now.
+  cruiseStart: "2026-06-24T00:00:00.000Z",
+  refreshMs: 5 * 60 * 1000, // API reports ~every 10 min; poll at 5.
+  trackColor: "#1a1a1a",
+  haloColor: "#ffffff",
+};
+
 // --- batch styling seam -----------------------------------------------------
 // Markers carry a `batch` property. All per-batch appearance decisions funnel
 // through styleForBatch(); the batch filter control (below) reads the same
@@ -57,13 +72,23 @@ const BATCH_LABELS = {
 const batchLabel = (batch) => BATCH_LABELS[batch] ?? batch;
 // ---------------------------------------------------------------------------
 
+// `optional: true` means "never throws" — it swallows not just HTTP error
+// statuses but also `fetch` rejections (DNS/offline/CORS) and non-JSON bodies,
+// returning null. This is the contract every best-effort layer relies on so a
+// failed fetch can't bubble out of main() and blank the map; it matters most for
+// the one third-party fetch (the ship), but holds same-origin layers too.
 async function fetchJSON(url, { optional = false } = {}) {
-  const resp = await fetch(url);
-  if (!resp.ok) {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      if (optional) return null;
+      throw new Error(`${url}: HTTP ${resp.status}`);
+    }
+    return await resp.json();
+  } catch (err) {
     if (optional) return null;
-    throw new Error(`${url}: HTTP ${resp.status}`);
+    throw err;
   }
-  return resp.json();
 }
 
 function formatFixTime(iso) {
@@ -197,6 +222,215 @@ function renderFtleInfo(meta) {
     `<span>LCS ridge (FTLE ≥ ${value} ${meta.units})</span></div>`;
 }
 
+// --- ship (R/V Marion Dufresne) live track ---------------------------------
+
+function shipUrl(sinceISO) {
+  const u = new URL(SHIP.positions);
+  // Normalise startDate to a Z-offset ISO string; the API accepts either, but the
+  // latest fix's own `date` comes back with a +0000 offset. endDate runs to the
+  // end of the current UTC day (as the IPSL map does): a forward buffer so a
+  // viewer clock running behind the server can't place the newest fix past the
+  // window and stall the marker.
+  const now = new Date();
+  const endOfDay = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59)
+  );
+  u.searchParams.set("startDate", new Date(sinceISO).toISOString());
+  u.searchParams.set("endDate", endOfDay.toISOString());
+  u.searchParams.set("cb", Date.now()); // cache-buster
+  return u.toString();
+}
+
+// Fetch positions since `sinceISO` (inclusive). Best-effort: fetchJSON's
+// `optional` swallows every failure to null, and a non-array body coerces to [],
+// so an outage just stops the marker advancing and never throws.
+async function fetchShip(sinceISO) {
+  const data = await fetchJSON(shipUrl(sinceISO), { optional: true });
+  return Array.isArray(data) ? data : [];
+}
+
+// A dark disc with a white ring and a boat glyph — distinct from the small blue
+// drifter circles. Inline SVG (not an emoji) so it renders identically anywhere.
+function shipIcon() {
+  return L.divIcon({
+    className: "ship-marker",
+    html:
+      '<svg viewBox="0 0 24 24" width="15" height="15" fill="#fff" aria-hidden="true">' +
+      '<path d="M4 15h16l-2.2 5H6.2L4 15zm2-2V6.5L12 4l6 2.5V13H6z"/></svg>',
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
+  });
+}
+
+// --- derived course/speed over ground --------------------------------------
+// The API carries no reported SOG/COG (only lat/lon/date + met fields), so speed
+// and heading are derived from the last track segment.
+
+const MS_TO_KN = 1.943844;
+const COMPASS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                 "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+const compassPoint = (deg) => COMPASS[Math.round(deg / 22.5) % 16];
+
+function haversineMeters(a, b) {
+  const R = 6371000;
+  const rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad;
+  const dLon = (b.lon - a.lon) * rad;
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function initialBearingDeg(a, b) {
+  const rad = Math.PI / 180;
+  const lat1 = a.lat * rad;
+  const lat2 = b.lat * rad;
+  const dLon = (b.lon - a.lon) * rad;
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x =
+    Math.cos(lat1) * Math.sin(lat2) -
+    Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+// Speed/heading of the latest fix relative to the prior one. Null if there is no
+// prior fix or a zero time gap. Below ~0.5 kn (≈150 m over a 10-min step) the
+// displacement is comparable to GPS scatter, so the bearing is noise — speed is
+// still returned but heading is suppressed (ship moored/maneuvering).
+const MIN_HEADING_KN = 0.5;
+function deriveMotion(positions) {
+  if (positions.length < 2) return null;
+  const a = positions[positions.length - 2];
+  const b = positions[positions.length - 1];
+  const dt = (new Date(b.date).getTime() - new Date(a.date).getTime()) / 1000;
+  if (!(dt > 0)) return null;
+  const speedKn = (haversineMeters(a, b) / dt) * MS_TO_KN;
+  return {
+    speedKn,
+    heading: speedKn >= MIN_HEADING_KN ? initialBearingDeg(a, b) : null,
+  };
+}
+
+const fmtSpeed = (m) => (m ? `${m.speedKn.toFixed(1)} kn` : null);
+const fmtHeading = (m) =>
+  m && m.heading != null
+    ? `${Math.round(m.heading) % 360}° ${compassPoint(m.heading)}`
+    : null;
+// ---------------------------------------------------------------------------
+
+// One row model — [label, value] pairs with nulls dropped — shared by the popup
+// and the sidebar so the two readouts can never drift. Each caller wraps the
+// pairs in its own markup.
+function shipRows(p, motion) {
+  const d = p.data || {};
+  // Wind-speed unit is unspecified by the API (see docs/ship.md), so it is shown
+  // without one; direction is degrees, temps °C, pressure hPa.
+  const wind =
+    d.truewindspeed != null
+      ? `${d.truewindspeed}${d.truewinddir != null ? ` @ ${d.truewinddir}°` : ""}`
+      : null;
+  return [
+    ["Last fix", formatFixTime(p.date)],
+    ["Position", `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`],
+    ["Speed (derived)", fmtSpeed(motion)],
+    ["Heading (derived)", fmtHeading(motion)],
+    ["Sea temp", d.seatemp != null ? `${d.seatemp} °C` : null],
+    ["Air temp", d.airtemp != null ? `${d.airtemp} °C` : null],
+    ["Pressure", d.pressure != null ? `${d.pressure} hPa` : null],
+    ["Wind", wind],
+  ].filter(([, v]) => v != null);
+}
+
+function shipPopupHtml(p, motion) {
+  const rows = shipRows(p, motion)
+    .map(([k, v]) => `<span class="popup-label">${k}:</span> ${v}<br/>`)
+    .join("");
+  return `<div class="popup"><strong>R/V Marion Dufresne</strong><br/>${rows}</div>`;
+}
+
+// A fix is usable only with finite coordinates and a timestamp. The API can emit
+// a partial record, and an unguarded `p.lat.toFixed()` downstream would throw and
+// (via main's catch) blank the map — so filter at ingestion and the render path
+// only ever sees clean fixes.
+const isValidFix = (p) =>
+  p && Number.isFinite(p.lat) && Number.isFinite(p.lon) && !!p.date;
+const byDate = (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime();
+
+// Cased polyline (white halo + dark core, legible on any basemap) plus a ship
+// marker, in one feature group. Holds the time-sorted position list so live
+// polling can append only the new tail: setPositions replaces the whole track;
+// append extends it past the last fix, drawing only the fresh points.
+function makeShipLayer() {
+  const opts = (color, weight) => ({ pane: "ship", color, weight, opacity: 0.95 });
+  const halo = L.polyline([], opts(SHIP.haloColor, 5));
+  const core = L.polyline([], opts(SHIP.trackColor, 2.5));
+  const marker = L.marker([0, 0], {
+    pane: "ship",
+    icon: shipIcon(),
+    opacity: 0, // hidden until the first fix lands
+  }).bindPopup("");
+  const group = L.featureGroup([halo, core, marker]);
+  let positions = [];
+
+  function showLatest() {
+    const last = positions[positions.length - 1];
+    if (!last) return;
+    const motion = deriveMotion(positions);
+    marker.setLatLng([last.lat, last.lon]).setOpacity(1);
+    marker.setPopupContent(shipPopupHtml(last, motion));
+    renderShipInfo(last, motion);
+  }
+
+  function setPositions(next) {
+    positions = next.filter(isValidFix).sort(byDate);
+    const latlngs = positions.map((p) => [p.lat, p.lon]);
+    halo.setLatLngs(latlngs);
+    core.setLatLngs(latlngs);
+    showLatest();
+  }
+
+  function append(newer) {
+    const valid = newer.filter(isValidFix).sort(byDate);
+    if (!positions.length) return setPositions(valid);
+    const lastT = new Date(positions[positions.length - 1].date).getTime();
+    const fresh = valid.filter((p) => new Date(p.date).getTime() > lastT);
+    if (!fresh.length) return;
+    for (const p of fresh) {
+      positions.push(p);
+      halo.addLatLng([p.lat, p.lon]); // extend in place, no full-track rebuild
+      core.addLatLng([p.lat, p.lon]);
+    }
+    showLatest();
+  }
+
+  return {
+    group,
+    append,
+    lastDate: () => positions[positions.length - 1]?.date,
+  };
+}
+
+function renderShipInfo(p, motion) {
+  const timeEl = document.getElementById("ship-time");
+  const readEl = document.getElementById("ship-readout");
+  if (!timeEl) return;
+  if (!p) {
+    timeEl.textContent = "Ship position unavailable.";
+    if (readEl) readEl.innerHTML = "";
+    return;
+  }
+  timeEl.textContent = `Last fix ${formatFixTime(p.date)} — Flotte Océanographique Française.`;
+  // "Last fix" already shows in the hint line above, so drop it from the rows.
+  readEl.innerHTML = shipRows(p, motion)
+    .filter(([k]) => k !== "Last fix")
+    .map(
+      ([k, v]) =>
+        `<div class="ship-row"><span class="popup-label">${k}</span><span>${v}</span></div>`
+    )
+    .join("");
+}
+
 function baseLayers() {
   const esriOcean = L.tileLayer(
     "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
@@ -224,10 +458,11 @@ async function main() {
 
   const overlays = {};
 
-  // Layer stack, bottom -> top: speed shading -> FTLE -> flow -> drifter markers.
+  // Layer stack, bottom -> top: speed shading -> FTLE -> flow -> drifters -> ship.
   map.createPane("shading").style.zIndex = 350;
   map.createPane("ftle").style.zIndex = 360;
   map.createPane("drifters").style.zIndex = 650;
+  map.createPane("ship").style.zIndex = 660;
 
   // Latest positions (required). Group by batch first to drive the fit; the
   // groups are added near the end so the markers sit above the shading and flow
@@ -321,7 +556,35 @@ async function main() {
   // Awaiting-first-fix sidebar.
   renderAwaiting(await fetchJSON(DATA.awaiting, { optional: true }));
 
-  L.control.layers(bases, overlays, { collapsed: false }).addTo(map);
+  const layersControl = L.control.layers(bases, overlays, { collapsed: false }).addTo(map);
+
+  // R/V Marion Dufresne live track (client-side; Flotte Océanographique Française
+  // API). Last, and deliberately not awaited: it is the one third-party fetch, so
+  // blocking on it would stall the same-origin layers and controls above behind a
+  // slow host. Each poll requests only the window since the last fix and appends.
+  // The overlay is added to the layer control on the first fix (not before, so an
+  // empty/failed start never shows a dead toggle) and the marker reveals then; the
+  // interval keeps trying, so a later poll revives the layer once the API recovers.
+  // Polls are skipped while the tab is hidden — and resumed on return — to avoid
+  // hammering a third-party host in the background.
+  const ship = makeShipLayer();
+  let shipShown = false;
+  async function pollShip() {
+    if (document.hidden) return;
+    ship.append(await fetchShip(ship.lastDate() ?? SHIP.cruiseStart));
+    if (!ship.lastDate()) {
+      renderShipInfo(null);
+    } else if (!shipShown) {
+      ship.group.addTo(map);
+      layersControl.addOverlay(ship.group, "R/V Marion Dufresne");
+      shipShown = true;
+    }
+  }
+  pollShip();
+  setInterval(pollShip, SHIP.refreshMs);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) pollShip();
+  });
 }
 
 main().catch((err) => {
