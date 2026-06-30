@@ -4,6 +4,7 @@
  * Leaflet layers:
  *   latest.geojson                 -> circle markers (on by default)
  *   tracks.geojson                 -> trajectory lines (off by default)
+ *   forecast.geojson               -> per-drifter current-advection track (off)
  *   speed.png + currents_meta.json -> surface-speed shading (imageOverlay)
  *   currents.json                  -> leaflet-velocity flow trails (optional)
  *   ftle.geojson + ftle_meta.json  -> FTLE/LCS ridge contour (vector lines)
@@ -13,6 +14,7 @@
 const DATA = {
   latest: "./data/latest.geojson",
   tracks: "./data/tracks.geojson",
+  forecast: "./data/forecast.geojson",
   awaiting: "./data/awaiting.json",
   currents: "./data/currents.json",
   meta: "./data/currents_meta.json",
@@ -155,15 +157,21 @@ function buildBatchGroups(geojson) {
 
 // A checkbox panel governing all drifter visibility — this control, not the
 // Leaflet layer control, owns it. One row per batch shows/hides that batch's
-// markers; a master "Trajectories" row turns the track lines+dots on or off for
-// every batch at once. The two compose: a batch's trajectory shows only when
-// both its batch row and the master row are checked, so unchecking a batch hides
-// its markers *and* its trajectory. Data-driven from `markerGroups`, so new
-// batches appear automatically. Markers start visible, trajectories hidden.
-function buildBatchControl(map, markerGroups, trackGroups) {
+// markers. Above them, one master row per *overlay* (Trajectories, Forecast, …)
+// turns that overlay's per-batch layers on or off for every batch at once. Each
+// overlay is `{ label, groups: {batch: layer}, on }`. They compose with the
+// batch rows: an overlay's layer for a batch shows only when both that batch row
+// and the overlay's master row are checked, so unchecking a batch hides its
+// markers *and* every overlay riding on it. Data-driven from `markerGroups`, so
+// new batches appear automatically; adding an overlay is one more list entry.
+// Markers start visible; overlays start at their own `on` (off by default).
+function buildBatchControl(map, markerGroups, overlays) {
   const batchOn = {};
   for (const batch of Object.keys(markerGroups)) batchOn[batch] = true;
-  let tracksOn = false;
+
+  // Only the overlays with layers to show get a master row, so a missing/empty
+  // artifact (no tracks, no forecast) doesn't leave a dead checkbox.
+  const activeOverlays = overlays.filter((o) => Object.keys(o.groups).length);
 
   const toggle = (layer, show) =>
     layer && (show ? layer.addTo(map) : map.removeLayer(layer));
@@ -171,7 +179,9 @@ function buildBatchControl(map, markerGroups, trackGroups) {
   function sync() {
     for (const batch of Object.keys(markerGroups)) {
       toggle(markerGroups[batch], batchOn[batch]);
-      toggle(trackGroups[batch], batchOn[batch] && tracksOn);
+      for (const overlay of activeOverlays) {
+        toggle(overlay.groups[batch], batchOn[batch] && overlay.on);
+      }
     }
   }
 
@@ -183,17 +193,16 @@ function buildBatchControl(map, markerGroups, trackGroups) {
     const title = L.DomUtil.create("h4", "", div);
     title.textContent = "Drifters";
 
-    // Only offer the trajectories toggle when there are tracks to show, so a
-    // missing/empty tracks artifact doesn't leave a dead checkbox.
-    if (Object.keys(trackGroups).length) {
-      const trackRow = L.DomUtil.create("label", "batch-row", div);
-      const trackCb = L.DomUtil.create("input", "", trackRow);
-      trackCb.type = "checkbox";
-      trackCb.checked = tracksOn;
-      const trackText = L.DomUtil.create("span", "batch-text", trackRow);
-      trackText.textContent = "Trajectories";
-      trackCb.addEventListener("change", () => {
-        tracksOn = trackCb.checked;
+    // Master row per overlay, above the batch rows.
+    for (const overlay of activeOverlays) {
+      const row = L.DomUtil.create("label", "batch-row", div);
+      const cb = L.DomUtil.create("input", "", row);
+      cb.type = "checkbox";
+      cb.checked = overlay.on;
+      const text = L.DomUtil.create("span", "batch-text", row);
+      text.textContent = overlay.label;
+      cb.addEventListener("change", () => {
+        overlay.on = cb.checked;
         sync();
       });
     }
@@ -222,6 +231,12 @@ function buildBatchControl(map, markerGroups, trackGroups) {
 // them — distinct from the blue latest-position markers, so the dots read as
 // part of the trajectory rather than as separate platforms.
 const TRACK_COLOR = "#e07b39";
+
+// Forecast colour for the current-advection lines and their 1/3/6 h dots — a
+// violet distinct from the orange past track, the blue head, and the red FTLE
+// ridges, so a glance separates "where it's been" from "where the field carries
+// it next".
+const FORECAST_COLOR = "#8e44ad";
 
 // Trajectories, grouped by `batch` so each batch's lines+dots toggle with that
 // batch's markers (see buildBatchControl). For each drifter: one line, plus a
@@ -259,6 +274,45 @@ function buildTrackGroups(geojson) {
       dot.bindPopup(popupHtml({ D_number, batch, ...fix }, dot.getLatLng()));
       group.addLayer(dot);
     });
+  }
+  return groups;
+}
+
+// Current-advection forecast, grouped by `batch` so each batch's lines+dots
+// toggle with that batch's markers and the master Forecast row (see
+// buildBatchControl). For each drifter: one *dashed* line from its head along
+// the streamline of the frozen current field, plus a small dot at each `marks`
+// entry (1/3/6 h). Dots carry no popup for now — they are plain position marks
+// (the line and dots are non-interactive so they never swallow a click meant for
+// a marker beneath them). Returns { batch: featureGroup }.
+function buildForecastGroups(geojson) {
+  const groups = {};
+  for (const feature of geojson.features ?? []) {
+    if (feature.geometry?.type !== "LineString") continue;
+    const { batch, marks } = feature.properties ?? {};
+    const key = batch ?? "unknown";
+    const group = (groups[key] ??= L.featureGroup());
+    const coords = feature.geometry.coordinates;
+    L.polyline(
+      coords.map(([lng, lat]) => [lat, lng]),
+      {
+        color: FORECAST_COLOR,
+        weight: 2,
+        opacity: 0.9,
+        dashArray: "5, 6",
+        interactive: false,
+      }
+    ).addTo(group);
+    for (const m of marks ?? []) {
+      L.circleMarker([m.lat, m.lon], {
+        radius: 3,
+        color: FORECAST_COLOR,
+        weight: 1,
+        fillColor: FORECAST_COLOR,
+        fillOpacity: 0.9,
+        interactive: false,
+      }).addTo(group);
+    }
   }
   return groups;
 }
@@ -317,6 +371,42 @@ function renderFtleInfo(meta) {
     '<div class="legend-scale"><span style="display:inline-block;width:20px;' +
     `border-top:2px solid ${color};vertical-align:middle;margin-right:6px"></span>` +
     `<span>LCS ridge (FTLE ≥ ${value} ${meta.units})</span></div>`;
+}
+
+// The forecast carries no separate meta file: its valid_time is baked into every
+// feature (one frozen field, one time), so the panel reads it off the first
+// feature. The caveat text is deliberately blunt — positions get read off this
+// line, so the sidebar states what it is (a current-advection estimate, field
+// frozen) and is not (a calibrated drifter prediction; no windage/drogue depth).
+function renderForecastInfo(forecast) {
+  const timeEl = document.getElementById("forecast-time");
+  const legendEl = document.getElementById("forecast-legend");
+  if (!timeEl) return;
+  const features = forecast?.features;
+  // Three states: no artifact (CMEMS down / not built), built but empty (every
+  // drifter head sits in a coastal NaN cell, so nothing could be advected — the
+  // pre-deployment cluster at port does this), and built with forecasts.
+  if (!features) {
+    timeEl.textContent = "Drift forecast unavailable.";
+    legendEl.innerHTML = "";
+    return;
+  }
+  if (!features.length) {
+    timeEl.textContent =
+      "No drift forecasts — every drifter is at the coast or off-grid, " +
+      "where the current field has no value to advect through.";
+    legendEl.innerHTML = "";
+    return;
+  }
+  const valid = features[0].properties?.valid_time;
+  timeEl.textContent =
+    `Current-advection estimate — field frozen at ${formatFixTime(valid)}. ` +
+    `Surface current only (no windage or drogue depth); the 6 h mark spans the ` +
+    `field's own 6-hourly step, so trust the near marks more than the far one.`;
+  legendEl.innerHTML =
+    '<div class="legend-scale"><span style="display:inline-block;width:20px;' +
+    `border-top:2px dashed ${FORECAST_COLOR};vertical-align:middle;margin-right:6px"></span>` +
+    "<span>advection path · dots at 1 / 3 / 6 h</span></div>";
 }
 
 // --- ship (R/V Marion Dufresne) live track ---------------------------------
@@ -679,19 +769,26 @@ async function main() {
     map.on("moveend zoomend", () => flowLayer.setData(currents));
   }
 
-  // Trajectories, grouped by batch (off by default; optional so a missing file
-  // can't blank the map). Not a layer-control overlay: the batch control governs
-  // them, so unchecking a batch hides its track along with its markers.
+  // Trajectories and the current-advection forecast, each grouped by batch (off
+  // by default; optional so a missing file can't blank the map). Not layer-
+  // control overlays: the batch control governs them, so unchecking a batch hides
+  // its track and forecast along with its markers.
   const tracks = await fetchJSON(DATA.tracks, { optional: true });
   const trackGroups = tracks ? buildTrackGroups(tracks) : {};
+  const forecast = await fetchJSON(DATA.forecast, { optional: true });
+  const forecastGroups = forecast ? buildForecastGroups(forecast) : {};
+  renderForecastInfo(forecast);
 
   // Markers last, so they sit on top of the shading and flow layers. Each batch
   // group is added directly; the batch filter control (not the layer control)
-  // governs their visibility — and the trajectories'.
+  // governs their visibility — and the trajectories' and forecast's.
   for (const group of Object.values(batchGroups)) {
     group.addTo(map);
   }
-  buildBatchControl(map, batchGroups, trackGroups).addTo(map);
+  buildBatchControl(map, batchGroups, [
+    { label: "Trajectories", groups: trackGroups, on: false },
+    { label: "Forecast (1/3/6 h)", groups: forecastGroups, on: false },
+  ]).addTo(map);
 
   // Awaiting-first-fix sidebar.
   renderAwaiting(await fetchJSON(DATA.awaiting, { optional: true }));

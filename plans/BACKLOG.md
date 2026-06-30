@@ -10,6 +10,11 @@ Unscheduled ideas, not yet promoted to a plan.
 - **Awaiting-first-fix view** — surface staged-but-not-yet-transmitting drifters.
 - **Currents bbox auto-fit** — track the drifter cloud instead of a fixed box.
 - **Time scrubber** — animate positions/tracks over time.
+- **Time-varying drift forecast** — the drift forecast (`docs/forecast.md`)
+  advects through a single *frozen* CMEMS field, so its 6 h mark spans ~one full
+  6-hourly field step. Advect through several forecast timesteps instead for a
+  faithful multi-step track; the natural next step if the frozen 6 h proves too
+  coarse. Costs more data + an interpolation-in-time in the stepper.
 - **Flow-trail land bleed** — the animated current trails reach onto land near
   the coast while the speed shading stops cleanly at it. Cause: leaflet-velocity
   needs a hole-free grid and has no land mask, so land is fed in as zero velocity

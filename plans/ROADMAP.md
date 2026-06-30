@@ -37,5 +37,10 @@ move to `done/` and gain a `docs/` counterpart.
    ship heading row is always shown (NA when slow); trajectories are coupled to
    the batch filter. **Done** ([docs/trajectories.md](../docs/trajectories.md),
    [docs/ship.md](../docs/ship.md)).
-9. Automation & hosting — GitHub Actions cron rebuild and Pages deploy; CMEMS
-   credentials via repository secrets.
+9. [Drift forecast](done/009-drifter-forecast.md) — per-drifter current-advection
+   track to 6 h (RK4 through the frozen CMEMS field, NaN land so it stops at the
+   coast), dashed line with 1/3/6 h dots, toggled per-batch like trajectories.
+   **Done** ([docs/forecast.md](../docs/forecast.md)). Frozen single field and
+   surface-current-only; time-varying multi-step advection → BACKLOG.
+10. Automation & hosting — GitHub Actions cron rebuild and Pages deploy; CMEMS
+    credentials via repository secrets.
