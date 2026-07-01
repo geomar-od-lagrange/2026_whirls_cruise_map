@@ -19,7 +19,29 @@ body {
   color: var(--ink);
 }
 
+/* Banner + header + map stack vertically; the map region flexes to fill what
+   the two fixed strips above it leave, so the banner height needs no manual
+   subtraction from the layout height. */
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Unofficial / work-in-progress caution strip, pinned above the header. */
+#wip-banner {
+  flex: 0 0 auto;
+  background: #f6c445;
+  color: #3a2c00;
+  border-bottom: 1px solid #d9a400;
+  padding: 5px 14px;
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
 #app-header {
+  flex: 0 0 auto;
   height: var(--header-h);
   padding: 8px 18px;
   background: var(--bg);
@@ -43,7 +65,8 @@ body {
 
 #layout {
   display: flex;
-  height: calc(100% - var(--header-h));
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 #map {
