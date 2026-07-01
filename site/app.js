@@ -192,8 +192,12 @@ function buildBatchGroups(geojson) {
 // new batches appear automatically; adding an overlay is one more list entry.
 // Markers start visible; overlays start at their own `on` (off by default).
 function buildBatchControl(map, markerGroups, overlays) {
+  // Pre-deployment drifters are staged (still aboard, not in the water), so they
+  // start hidden; deployment batches start visible. sync() (called at build) then
+  // reconciles the map to this initial state.
   const batchOn = {};
-  for (const batch of Object.keys(markerGroups)) batchOn[batch] = true;
+  for (const batch of Object.keys(markerGroups))
+    batchOn[batch] = batch !== "pre_deploy";
 
   // Only the overlays with layers to show get a master row, so a missing/empty
   // artifact (no tracks, no forecast) doesn't leave a dead checkbox.
@@ -219,12 +223,15 @@ function buildBatchControl(map, markerGroups, overlays) {
     const title = L.DomUtil.create("h4", "", div);
     title.textContent = "Drifters";
 
-    // Master row per overlay, above the batch rows.
+    // Master row per overlay, above the batch rows. A short line swatch in the
+    // overlay's own colour keys the checkbox to the lines it draws on the map.
     for (const overlay of activeOverlays) {
       const row = L.DomUtil.create("label", "batch-row", div);
       const cb = L.DomUtil.create("input", "", row);
       cb.type = "checkbox";
       cb.checked = overlay.on;
+      const swatch = L.DomUtil.create("span", "batch-line-swatch", row);
+      swatch.style.background = overlay.color;
       const text = L.DomUtil.create("span", "batch-text", row);
       text.textContent = overlay.label;
       cb.addEventListener("change", () => {
@@ -233,12 +240,16 @@ function buildBatchControl(map, markerGroups, overlays) {
       });
     }
 
+    // Divider separating the overlay (line) rows above from the batch (marker)
+    // rows below.
+    if (activeOverlays.length) L.DomUtil.create("hr", "batch-divider", div);
+
     for (const batch of Object.keys(markerGroups).sort()) {
       const group = markerGroups[batch];
       const row = L.DomUtil.create("label", "batch-row", div);
       const cb = L.DomUtil.create("input", "", row);
       cb.type = "checkbox";
-      cb.checked = true;
+      cb.checked = batchOn[batch];
       const swatch = L.DomUtil.create("span", "batch-swatch", row);
       swatch.style.background = styleForBatch(batch).fillColor;
       const text = L.DomUtil.create("span", "batch-text", row);
@@ -248,6 +259,10 @@ function buildBatchControl(map, markerGroups, overlays) {
         sync();
       });
     }
+
+    // Apply the initial visibility (hides the default-off pre-deployment batch,
+    // which main() added to the map before this control was built).
+    sync();
     return div;
   };
   return control;
@@ -312,7 +327,7 @@ function buildTrackGroups(geojson) {
 // Current-advection line (forecast forward, or hindcast backward), grouped by
 // `batch` so each batch's lines+dots toggle with that batch's markers and the
 // master Forecast/Hindcast row (see buildBatchControl). For each drifter: one
-// *dashed* line from its head along the streamline of the frozen current field,
+// solid line from its head along the streamline of the frozen current field,
 // in `color`, plus a small dot at each `marks` entry (1/3/6 h). Dots carry no
 // popup — they are plain position marks (the line and dots are non-interactive so
 // they never swallow a click meant for a marker beneath them). Returns
@@ -331,7 +346,6 @@ function buildAdvectionGroups(geojson, color) {
         color,
         weight: 2,
         opacity: 0.9,
-        dashArray: "5, 6",
         interactive: false,
       }
     ).addTo(group);
@@ -431,7 +445,7 @@ function renderAdvectionInfo(data, opts) {
   timeEl.textContent = opts.caption(features[0].properties?.valid_time);
   legendEl.innerHTML =
     '<div class="legend-scale"><span style="display:inline-block;width:20px;' +
-    `border-top:2px dashed ${opts.color};vertical-align:middle;margin-right:6px"></span>` +
+    `border-top:2px solid ${opts.color};vertical-align:middle;margin-right:6px"></span>` +
     `<span>${opts.legendLabel}</span></div>`;
 }
 
@@ -855,9 +869,9 @@ async function main() {
     group.addTo(map);
   }
   buildBatchControl(map, batchGroups, [
-    { label: "Trajectories", groups: trackGroups, on: false },
-    { label: "Forecast (1/3/6 h)", groups: forecastGroups, on: false },
-    { label: "Hindcast (1/3/6 h)", groups: hindcastGroups, on: false },
+    { label: "Trajectories", groups: trackGroups, on: false, color: TRACK_COLOR },
+    { label: "Forecast (1/3/6 h)", groups: forecastGroups, on: false, color: FORECAST_COLOR },
+    { label: "Hindcast (1/3/6 h)", groups: hindcastGroups, on: false, color: HINDCAST_COLOR },
   ]).addTo(map);
 
   // Awaiting-first-fix sidebar.

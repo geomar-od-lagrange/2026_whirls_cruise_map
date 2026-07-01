@@ -31,9 +31,11 @@ data-only edit to `deployments.json` (add a `deployment_2` key); no code change.
 ## GUI: the batch filter
 
 A "Drifters" control sits at the top-right of the map. It lists one checkbox per
-batch present in `latest.geojson`, each with a colour swatch and the batch's
+batch present in `latest.geojson`, each with a round colour swatch and the batch's
 marker count. Unchecking a box removes that batch's markers; rechecking restores
-them. All batches start visible.
+them. Deployment batches start visible; the staging `pre_deploy` batch starts
+**hidden** (the drifters are still aboard, not in the water), so the map opens on
+the deployed drifters — recheck its row to show the staged ones.
 
 The control is **data-driven**: it builds one `L.featureGroup` per distinct
 `batch` value found in the data and renders a row for each. A new batch therefore
@@ -41,15 +43,19 @@ appears automatically once the data contains it — no client code change. Known
 keys get friendly labels (`pre_deploy` → "Pre-deployment"); any other key is
 shown verbatim, so an unanticipated batch is still legible.
 
-A master **Trajectories** checkbox heads the list. It turns the track lines and
-per-fix dots (see [trajectories.md](trajectories.md)) on or off for every batch
-at once, and composes with the per-batch rows: a batch's trajectory shows only
-when both its batch row and the Trajectories row are checked. So unchecking a
-batch hides its markers *and* its trajectory together. Trajectories start hidden.
+Master **overlay** rows head the list — **Trajectories**, **Forecast** and
+**Hindcast** — each with a short line swatch in its own colour (the round swatches
+below key batches to their markers; the line swatches key overlays to their lines).
+A horizontal divider separates these line rows from the batch (marker) rows below.
+Each overlay row turns its lines and dots (see [trajectories.md](trajectories.md),
+[forecast.md](forecast.md)) on or off for every batch at once, and composes with
+the per-batch rows: a batch's overlay shows only when both its batch row and that
+overlay's row are checked. So unchecking a batch hides its markers *and* its
+trajectory, forecast and hindcast together. All overlays start hidden.
 
 This control — not the Leaflet layer control — governs all drifter visibility
-(markers and trajectories); the layer control retains the speed, flow, FTLE, and
-ship overlays.
+(markers and the trajectory/forecast/hindcast overlays); the layer control
+retains the speed, flow, FTLE, and ship overlays.
 
 ### Why a custom control, not the Leaflet layer control
 

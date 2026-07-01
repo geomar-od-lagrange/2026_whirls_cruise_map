@@ -1,6 +1,6 @@
 # Drift forecast & hindcast (current advection, ±1 / 3 / 6 h)
 
-Two toggleable **dashed lines drawn from each drifter's latest position** through
+Two toggleable **solid lines drawn from each drifter's latest position** through
 the CMEMS surface-current field, with dots at the **1 h, 3 h and 6 h** marks: the
 **forecast** integrates the field *forward* (violet, +6 h), the **hindcast**
 integrates the *same frozen field backward* (magenta, −6 h). Both advect a passive
@@ -95,7 +95,7 @@ each drifter independently:
 ## Artifacts: `forecast.geojson` and `hindcast.geojson`
 
 Identical shape (one is the forward integration, the other the backward). One
-`LineString` per drifter from its head, a vertex every 15 min for a smooth dashed
+`LineString` per drifter from its head, a vertex every 15 min for a smooth
 curve, coordinates `[lon, lat]` rounded to 5 dp (~1 m, far below the ~10 km
 displacement). Properties:
 
@@ -114,8 +114,8 @@ is an independent best-effort build step, so one can be present without the othe
 
 `app.js` fetches `forecast.geojson` and `hindcast.geojson` (optional, like
 `tracks`) and groups each by `batch` via the shared `buildAdvectionGroups(geojson,
-color)`. Per drifter it draws a **dashed line** from the head (Leaflet `dashArray`)
-— **violet** for the forecast, **magenta** for the hindcast, both distinct from the
+color)`. Per drifter it draws a **solid line** from the head — **violet** for the
+forecast, **magenta** for the hindcast, both distinct from the
 orange observed track, the blue head marker, and the red FTLE ridges — plus a small
 dot at each `marks` entry (1/3/6 h). The lines and dots are **non-interactive** and
 carry **no popup** — they are plain position marks — so they never swallow a click
@@ -132,7 +132,7 @@ hides its markers, its track, its forecast *and* its hindcast together. Default 
 
 The sidebar **Drift forecast** and **Drift hindcast** panels state the caveat
 (current-advection estimate / back-track, field frozen at `valid_time`; surface
-current only; trust the near marks more than the ±6 h one) and show the dashed-line
+current only; trust the near marks more than the ±6 h one) and show the line
 legend, via the shared `renderAdvectionInfo`. `valid_time` is read off the first
 feature — there is no separate meta file, since one frozen field means one time for
 every line.

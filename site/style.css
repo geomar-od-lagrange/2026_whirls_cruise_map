@@ -221,6 +221,23 @@ body {
   flex: 0 0 auto;
 }
 
+/* Line swatch for the overlay (Trajectories / Forecast / Hindcast) rows — a
+   short bar keying the checkbox to the coloured lines it toggles, as the round
+   .batch-swatch keys a batch row to its circular markers. */
+.batch-line-swatch {
+  width: 14px;
+  height: 3px;
+  border-radius: 1px;
+  flex: 0 0 auto;
+}
+
+/* Divider between the overlay (line) rows and the per-batch (marker) rows. */
+.batch-divider {
+  border: none;
+  border-top: 1px solid #d8e0e8;
+  margin: 6px 0;
+}
+
 /* Ship (R/V Marion Dufresne) marker: a dark disc with a white ring and a boat
    glyph, set apart from the small blue drifter circles. Overrides the default
    .leaflet-div-icon box. */
