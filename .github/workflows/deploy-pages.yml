@@ -8,9 +8,10 @@ on:
   push:
     branches: [main]
   schedule:
-    # Hourly. Tighten (e.g. "*/30 * * * *") once CI runtimes are known to allow
-    # it; GitHub may delay scheduled runs under load.
-    - cron: "0 * * * *"
+    # Every 10 min. A run is ~1 min, so this keeps positions/currents near-live.
+    # GitHub's floor is 5 min and it may delay/drop scheduled runs under load, so
+    # treat the cadence as best-effort, not a guarantee.
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 # Least-privilege token: read the repo, deploy Pages via OIDC.
