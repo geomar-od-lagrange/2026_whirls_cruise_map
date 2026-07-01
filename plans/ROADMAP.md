@@ -42,5 +42,14 @@ move to `done/` and gain a `docs/` counterpart.
    coast), dashed line with 1/3/6 h dots, toggled per-batch like trajectories.
    **Done** ([docs/forecast.md](../docs/forecast.md)). Frozen single field and
    surface-current-only; time-varying multi-step advection → BACKLOG.
-10. Automation & hosting — GitHub Actions cron rebuild and Pages deploy; CMEMS
-    credentials via repository secrets.
+10. Automation & hosting — GitHub Actions build + Pages deploy on push, manual
+    dispatch, and a `*/10` cron; CMEMS credentials via repository secrets.
+    **Done** ([docs/deploy.md](../docs/deploy.md)); the native cron is best-effort
+    and fires unreliably (GitHub drops high-frequency schedules under load) —
+    reliability options in [performance.md](performance.md).
+11. [At-sea performance](performance.md) — profiled the live Pages site for
+    low-bandwidth / high-latency (VSAT) use; ranked opportunities (parallelize
+    the data fetches, self-host Leaflet, lazy-load off-by-default layers,
+    fit-before-tiles / Esri default, lighter currents payload, ship-API
+    windowing) plus the cron-reliability finding. **Investigated, not yet acted
+    on** (per request — investigate only).
