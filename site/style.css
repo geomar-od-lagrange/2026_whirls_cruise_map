@@ -100,6 +100,7 @@ body {
   color: var(--muted);
 }
 
+#status-panel,
 #ship-panel,
 #currents-panel,
 #forecast-panel,
@@ -107,6 +108,22 @@ body {
   margin-bottom: 18px;
   padding-bottom: 14px;
   border-bottom: 1px solid #e3e9ef;
+}
+
+.status-row {
+  margin-top: 6px;
+}
+
+.status-label {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.status-value {
+  display: block;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .ship-row {

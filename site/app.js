@@ -9,6 +9,7 @@
  *   currents.json                  -> leaflet-velocity flow trails (optional)
  *   ftle.geojson + ftle_meta.json  -> FTLE/LCS ridge contour (vector lines)
  *   awaiting.json                  -> sidebar list, no map geometry
+ *   build.json                     -> sidebar "data freshness" build time
  */
 
 const DATA = {
@@ -21,6 +22,7 @@ const DATA = {
   speed: "./data/speed.png",
   ftleGeo: "./data/ftle.geojson",
   ftleMeta: "./data/ftle_meta.json",
+  build: "./data/build.json",
 };
 
 // Flow-trail colour ramp: mostly dark, white only in the fast jet, so the green
@@ -98,6 +100,25 @@ function formatFixTime(iso) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z");
+}
+
+// Data-freshness panel. Build time is static (from build.json, written once per
+// build); current time is a live UTC clock so the two read on the same scale and
+// the age of the data is obvious at a glance.
+function renderBuildTime(build) {
+  const el = document.getElementById("build-time");
+  if (!el) return;
+  el.textContent = build && build.built_at ? formatFixTime(build.built_at) : "unknown";
+}
+
+function startClock() {
+  const el = document.getElementById("now-time");
+  if (!el) return;
+  const tick = () => {
+    el.textContent = formatFixTime(new Date().toISOString());
+  };
+  tick();
+  setInterval(tick, 1000);
 }
 
 // 16-point compass label for a bearing in degrees true. Shared by the drifter
@@ -672,6 +693,11 @@ function baseLayers() {
 }
 
 async function main() {
+  // Data-freshness panel: start the live clock immediately, and fill in the
+  // build time out of band so a slow/missing build.json can't hold up the map.
+  startClock();
+  fetchJSON(DATA.build, { optional: true }).then(renderBuildTime);
+
   const bases = baseLayers();
 
   const map = L.map("map", {

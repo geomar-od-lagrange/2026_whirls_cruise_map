@@ -12,6 +12,7 @@ and writes the JSON the Leaflet site consumes into ``site/data/``:
 - ``forecast.geojson``    per-drifter current-advection track to 6 h (1/3/6 h marks)
 - ``ftle.geojson``        simplified SPASSO FTLE ridge contour (LCS) line strings
 - ``ftle_meta.json``      valid-time, units and level for the FTLE legend
+- ``build.json``          UTC timestamp of this build (sidebar data-freshness)
 
 Everything is rebuilt from a fresh full-zip pull each run; no caching.
 """
@@ -34,6 +35,13 @@ def _write_json(path: Path, obj) -> None:
 
 def main() -> None:
     SITE_DATA.mkdir(parents=True, exist_ok=True)
+
+    # Stamp the build up front so the sidebar can show data age even if a later
+    # best-effort layer fails; the client reads it from build.json.
+    _write_json(
+        SITE_DATA / "build.json",
+        {"built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
+    )
 
     with tempfile.TemporaryDirectory() as tmp:
         csv_paths = _fetch.fetch_snapshots(Path(tmp))
