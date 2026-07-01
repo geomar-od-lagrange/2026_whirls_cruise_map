@@ -22,11 +22,31 @@ track), so a deployment batch also covers the drifter's transit leg from port �
 the batch is an identity of the drifter set, not a per-fix state.
 
 A drifter joins a deployment batch once it is confirmed in the water and
-drifting freely — not merely because it has a recent fix. Deployment 1, for
-example, is the 20 drifters that were released and drifting with the surface
-currents; three others that reported the same day while still stationary on deck
-stayed `pre_deploy` until they too drift. Adding a future deployment is a
-data-only edit to `deployments.json` (add a `deployment_2` key); no code change.
+drifting freely — not merely because it has a recent fix. Adding a deployment is
+a data-only edit to `deployments.json` (add the next `deployment_N` key); no code
+change.
+
+### Criterion for "deployed and drifting"
+
+A drifter is confirmed in the water — and so eligible for a deployment batch —
+when all of the following hold. These separate a freely-drifting drifter from one
+still on deck (stationary) or still aboard during transit (ship-speed motion):
+
+- **Drifting freely now** — its latest fix is recent (within ~30 min), so the
+  behaviour is current, not stale.
+- **Drifted away from the ship** — it started near the vessel and its distance to
+  the vessel has been increasing; it is separating, not riding along on deck.
+- **Sustained realistic drift** — it has drifted for at least an hour at speeds
+  consistent with the surface currents (order 0.1–1 m/s here), not near-zero
+  (on deck) and not ship-transit fast (several m/s).
+
+The check is done by hand against the live positions, the derived per-segment
+speeds, and the R/V Marion Dufresne track (see [ship.md](ship.md)); the resulting
+roster is what lands in `deployments.json`. Examples so far: **Deployment 1** —
+20 drifters released and drifting with the currents; **Deployment 2** — a later,
+smaller batch (3 drifters) that had separated from the ship and drifted steadily
+for over an hour. Drifters that merely reported the same day while stationary on
+deck, or that showed only brief ship-transit motion, stayed `pre_deploy`.
 
 ## GUI: the batch filter
 
@@ -70,6 +90,8 @@ lands.
 
 `styleForBatch()` is the single seam for per-batch appearance, and the swatches
 in the control follow whatever it returns. Staged drifters (`pre_deploy`) render
-muted grey; every deployment batch gets a vivid blue, so in-water drifters stand
-out from those still awaiting deployment. Distinct per-deployment colours
-(`deployment_2`, …) are a one-entry addition to `BATCH_STYLES` in `app.js`.
+muted grey; each deployment batch has its own vivid colour (Deployment 1 blue,
+Deployment 2 teal), so in-water drifters stand out from those still awaiting
+deployment and successive deployments read apart. Colours live in `BATCH_STYLES`
+in `app.js`; a further deployment with no entry falls back to blue until given
+one.

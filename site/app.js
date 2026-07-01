@@ -57,10 +57,13 @@ const SHIP = {
 // Markers carry a `batch` property. All per-batch appearance decisions funnel
 // through styleForBatch(); the batch filter control (below) reads the same
 // `batch` property to group markers. Staged (not-yet-deployed) drifters render
-// muted grey; every deployment batch gets a vivid colour so in-water drifters
-// stand out. Distinct per-deployment colours (deployment_2, …) drop in here.
+// muted grey; each deployment batch gets its own vivid colour so in-water
+// drifters stand out and successive deployments read apart. A further deployment
+// with no entry falls back to DEPLOYED_STYLE (blue) until given its own colour.
 const BATCH_STYLES = {
   pre_deploy: { color: "#7a7a7a", fillColor: "#a8a8a8" },
+  deployment_1: { color: "#1f5fa8", fillColor: "#3a8ddb" }, // blue
+  deployment_2: { color: "#0d7d72", fillColor: "#17b3a3" }, // teal
 };
 const DEPLOYED_STYLE = { color: "#1f5fa8", fillColor: "#3a8ddb" };
 function styleForBatch(batch) {
@@ -77,6 +80,7 @@ function styleForBatch(batch) {
 const BATCH_LABELS = {
   pre_deploy: "Pre-deployment",
   deployment_1: "Deployment 1",
+  deployment_2: "Deployment 2",
 };
 const batchLabel = (batch) => BATCH_LABELS[batch] ?? batch;
 // ---------------------------------------------------------------------------

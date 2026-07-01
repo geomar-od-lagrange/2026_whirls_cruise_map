@@ -25,8 +25,11 @@ move to `done/` and gain a `docs/` counterpart.
    show/hide drifters by deployment batch, picking up new batches from the data
    automatically. **Done** ([docs/batches.md](../docs/batches.md)). Batch *source*
    now wired: a curated `deployments.json` roster (`batch → [D_number]`) applied
-   in `_clean.py`; Deployment 1 (20 drifters) is the first real batch. Per-batch
-   colour landed at the `styleForBatch` seam (staged grey, deployed blue).
+   in `_clean.py`; Deployment 1 (20 drifters) and Deployment 2 (3 drifters) are
+   the real batches so far. Per-batch colour landed at the `styleForBatch` seam
+   (staged grey; per-deployment vivid colours — D1 blue, D2 teal). The
+   deployed-and-drifting criterion is documented in
+   [docs/batches.md](../docs/batches.md).
 7. [Ship track](done/007-md-ship-track.md) — live R/V Marion Dufresne position
    and track, fetched client-side from the Flotte Océanographique Française
    localisation API (the IPSL WHIRLS "platform positions" source), polled every
