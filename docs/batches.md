@@ -63,7 +63,7 @@ appears automatically once the data contains it — no client code change. Known
 keys get friendly labels (`pre_deploy` → "Pre-deployment"); any other key is
 shown verbatim, so an unanticipated batch is still legible.
 
-Master **overlay** rows head the list — **Trajectories**, **Forecast** and
+Master **overlay** rows head the list — **True track**, **Forecast** and
 **Hindcast** — each with a short line swatch in its own colour (the round swatches
 below key batches to their markers; the line swatches key overlays to their lines).
 A horizontal divider separates these line rows from the batch (marker) rows below.

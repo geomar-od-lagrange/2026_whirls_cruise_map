@@ -104,6 +104,16 @@ third-party host. It is contained by the same graceful-fetch pattern the rest of
 the client uses: a failed request resolves to an empty list, so an outage simply
 stops the marker advancing — it never throws and never blanks the map.
 
+### Also fetched at build time, for deployment detection
+
+Separately from the live client layer, the **build** pulls a one-shot snapshot of
+the same track (`_ship.fetch_track`) to detect where each drifter detached from
+the vessel and truncate its trajectory there (see
+[trajectories.md](trajectories.md)). This is a historical computation — the
+detachment already happened — so a build-time snapshot is right, and it is
+best-effort in the same way: a failed fetch just skips truncation (full tracks).
+The live map layer is unaffected either way.
+
 ## Behaviour
 
 - **Initial load** fetches the whole cruise window, `cruiseStart … now`.

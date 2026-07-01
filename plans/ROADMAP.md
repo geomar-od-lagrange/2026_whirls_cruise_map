@@ -58,3 +58,8 @@ move to `done/` and gain a `docs/` counterpart.
     fit-before-tiles / Esri default, lighter currents payload, ship-API
     windowing). **Investigated, not yet acted on** (per request — investigate
     only).
+12. [Truncate tracks at deployment](done/010-truncate-tracks-at-deployment.md) —
+    detect each drifter's detachment from the vessel (build-time, distance to the
+    R/V Marion Dufresne track) and truncate its trajectory there, so the layer
+    (renamed **True track**) shows only the free drift. **Done**
+    ([docs/trajectories.md](../docs/trajectories.md)).

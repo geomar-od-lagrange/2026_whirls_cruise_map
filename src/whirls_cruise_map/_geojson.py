@@ -6,6 +6,8 @@ import math
 
 import pandas as pd
 
+from ._clean import PRE_DEPLOY_BATCH
+
 _EARTH_RADIUS_M = 6_371_000.0
 
 
@@ -114,7 +116,9 @@ def latest_geojson(tracks: pd.DataFrame) -> dict:
     return _feature_collection(features)
 
 
-def tracks_geojson(tracks: pd.DataFrame) -> dict:
+def tracks_geojson(
+    tracks: pd.DataFrame, deploy_starts: dict | None = None
+) -> dict:
     """FeatureCollection of one LineString per drifter over its time-sorted fixes.
 
     Coordinates are [Longitude, Latitude] pairs in time order. A single-fix
@@ -129,10 +133,31 @@ def tracks_geojson(tracks: pd.DataFrame) -> dict:
     :func:`latest_geojson` puts the marker under — so the client can toggle a
     drifter's track together with its marker even once a drifter's batch changes
     across its fixes (e.g. ``pre_deploy`` -> a deployment batch mid-track).
+
+    ``deploy_starts`` (``{D_number: first-free-drift time}``, from
+    :func:`_deploy.deployment_starts`) truncates a **deployed** drifter's track to
+    its free drift: fixes before its start — the port/transit leg while still on
+    the vessel — are dropped, so the line is the "true track" only. Derived
+    velocity is then computed within the free track, so the first free fix derives
+    from nothing (blank), which is correct — its real predecessor was a
+    vessel-following fix. A start past the last fix drops the drifter (still
+    attached, not yet freely drifting).
+
+    **Pre-deployment drifters keep their full track** — they are still staging or
+    aboard, with no free drift to isolate, and their whole path (port, on deck)
+    is what a viewer wants to see. Truncation is therefore applied only to
+    drifters in a deployment batch; a `pre_deploy` drifter is never truncated even
+    if it briefly detached from the vessel.
     """
+    deploy_starts = deploy_starts or {}
     features = []
     for d_number, group in tracks.sort_values("date_UTC").groupby("D_number"):
         rows = list(group.itertuples(index=False))
+        start = deploy_starts.get(d_number)
+        # Truncate only deployed drifters to their free drift; pre-deployment
+        # drifters show their full track.
+        if start is not None and rows[-1].batch != PRE_DEPLOY_BATCH:
+            rows = [r for r in rows if r.date_UTC >= start]
         if len(rows) < 2:
             continue
         coords, fixes, prev_pt = [], [], None

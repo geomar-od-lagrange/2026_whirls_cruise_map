@@ -124,7 +124,7 @@ meant for a marker beneath them.
 The layers are governed by the **Drifters** control (top-right), not the Leaflet
 layer control — the same control that filters batches (see [batches.md](batches.md))
 and toggles trajectories (see [trajectories.md](trajectories.md)). The control
-takes a **list of overlays** `[{label, groups, on}]`; Trajectories,
+takes a **list of overlays** `[{label, groups, on}]`; True track,
 `Forecast (1/3/6 h)` and `Hindcast (1/3/6 h)` are entries, each a master row above
 the batch rows. They compose identically: **a batch's forecast/hindcast shows only
 when both its batch row and that master row are checked**, so unchecking a batch

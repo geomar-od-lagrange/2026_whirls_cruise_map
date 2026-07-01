@@ -873,7 +873,7 @@ async function main() {
     group.addTo(map);
   }
   buildBatchControl(map, batchGroups, [
-    { label: "Trajectories", groups: trackGroups, on: false, color: TRACK_COLOR },
+    { label: "True track", groups: trackGroups, on: false, color: TRACK_COLOR },
     { label: "Forecast (1/3/6 h)", groups: forecastGroups, on: false, color: FORECAST_COLOR },
     { label: "Hindcast (1/3/6 h)", groups: hindcastGroups, on: false, color: HINDCAST_COLOR },
   ]).addTo(map);

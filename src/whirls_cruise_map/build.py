@@ -24,7 +24,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import _clean, _currents, _fetch, _forecast, _ftle, _geojson
+from . import _clean, _currents, _deploy, _fetch, _forecast, _ftle, _geojson, _ship
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SITE_DATA = REPO_ROOT / "site" / "data"
@@ -51,8 +51,21 @@ def main() -> None:
     tracks = _clean.tracks(raw)
     awaiting = _clean.awaiting(raw)
 
+    # Deployment detection (best-effort): fetch the vessel track and find where
+    # each drifter detached from it, so the trajectory shows only the free drift.
+    # A failed fetch yields no starts -> full tracks, exactly as before.
+    ship_track = _ship.fetch_track()
+    deploy_starts = _deploy.deployment_starts(tracks, ship_track)
+    print(
+        f"vessel track: {len(ship_track)} fixes; "
+        f"deployment detected for {sum(1 for _ in deploy_starts)} drifters"
+    )
+
     _write_json(SITE_DATA / "latest.geojson", _geojson.latest_geojson(tracks))
-    _write_json(SITE_DATA / "tracks.geojson", _geojson.tracks_geojson(tracks))
+    _write_json(
+        SITE_DATA / "tracks.geojson",
+        _geojson.tracks_geojson(tracks, deploy_starts),
+    )
     _write_json(SITE_DATA / "awaiting.json", awaiting)
     print(
         f"wrote positions for {tracks['D_number'].nunique()} drifters; "
