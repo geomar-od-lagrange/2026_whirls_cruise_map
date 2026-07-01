@@ -107,3 +107,22 @@ duplicating them here.
 - Inspect what a run wrote: `gh run view <id> --log | grep -iE "wrote|WARNING"`.
   Expect one `wrote positions …` line always, and `wrote currents … / forecast …`
   lines when CMEMS credentials are present.
+
+## GitLab mirror (git.geomar.de)
+
+The repo is mirrored to `git.geomar.de/willi-rath/2026_whirls_cruise_map` (git
+remote `gitlab`) and publishes the same site via GitLab Pages, driven by
+`.gitlab-ci.yml`. It mirrors the GitHub pipeline — same `pixi run build` against
+the same live sources — with GitLab's conventions: the publishing job is named
+`pages` and its artifacts are served from `public/`, so the job copies the built
+`site/` to `public/`. It runs on the default branch (push, scheduled, or manual
+pipelines).
+
+Parity requires the same two CMEMS secrets as **masked CI/CD variables**
+(`COPERNICUSMARINE_SERVICE_USERNAME` / `COPERNICUSMARINE_SERVICE_PASSWORD`, under
+Settings → CI/CD → Variables); without them the build degrades to positions +
+FTLE, identically to GitHub. Cadence is a **Pipeline schedule** (Settings →
+CI/CD → Pipeline schedules) — unlike GitHub's cron, GitLab schedules are not
+dropped under load (see [../plans/performance.md](../plans/performance.md) for
+the GitHub-cron reliability finding). Keep both remotes in sync by pushing `main`
+to `origin` and `gitlab`.
