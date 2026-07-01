@@ -54,11 +54,9 @@ CI/CD variables** (Settings → CI/CD → Variables):
 **The build degrades gracefully when they are absent.** Each data source is a
 best-effort step in `build.py`: a CMEMS failure is caught and logged
 (`WARNING: CMEMS field fetch failed, skipping currents + forecast`), and the
-deploy still ships positions plus FTLE. So a run with no variables, an expired
+deploy still ships positions and tracks. So a run with no variables, an expired
 password, or a CMEMS outage produces a thinner map, never a failed deploy. The
-drifter share and the FTLE THREDDS endpoint are public and need no secrets; FTLE
-additionally only appears when a SPASSO field exists within 24 h of the target
-time, so its absence from a deploy is normal, not an error.
+drifter share is public and needs no secrets.
 
 ## Serving under a subpath
 

@@ -104,8 +104,7 @@ body {
 #ship-panel,
 #currents-panel,
 #forecast-panel,
-#hindcast-panel,
-#ftle-panel {
+#hindcast-panel {
   margin-bottom: 18px;
   padding-bottom: 14px;
   border-bottom: 1px solid #e3e9ef;

@@ -1,7 +1,7 @@
 # GitLab CI — build the static cruise map and publish it to GitLab Pages.
 #
 # The build regenerates site/data/ from live sources each run (drifter share,
-# CMEMS, SPASSO FTLE); site/data/ is git-ignored, so the build MUST run in CI — a
+# CMEMS); site/data/ is git-ignored, so the build MUST run in CI — a
 # plain file copy would publish a dataless map.
 #
 # GitLab Pages serves the `public/` directory produced by a job named `pages`, so
@@ -9,8 +9,8 @@
 #
 # CMEMS currents/speed/forecast need a copernicusmarine login, supplied as masked
 # CI/CD variables COPERNICUSMARINE_SERVICE_USERNAME / COPERNICUSMARINE_SERVICE_PASSWORD
-# (Settings → CI/CD → Variables). Without them the build degrades to positions +
-# FTLE (both public), exactly as on GitHub.
+# (Settings → CI/CD → Variables). Without them the build degrades to positions and
+# tracks (the drifter share is public).
 #
 # Cadence: add a scheduled pipeline under Settings → CI/CD → Pipeline schedules
 # (GitLab schedules are configured in the UI, not this file, and are not subject

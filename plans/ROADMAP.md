@@ -11,16 +11,13 @@ move to `done/` and gain a `docs/` counterpart.
    from one CMEMS field. **Done** (built + reviewed; pan/zoom fix pending confirm).
 3. [FTLE overlay + trail-velocity scaling](003-ftle-and-trail-scaling.md) — red
    alpha-ramped LCS ridges from the SPASSO FTLE product, plus sqrt-scaling of the
-   particle-animation velocity. **Planning.**
-4. [FTLE vectorization](done/004-ftle-vectorize.md) — replace the FTLE raster
-   with a simplified iso-FTLE line contour (GeoJSON), smaller and crisp, no manual
-   Mercator warp. **Done** ([docs/ftle.md](../docs/ftle.md)).
-5. [FTLE latitude correction](done/005-ftle-lat-correction.md) — the SPASSO FTLE
-   field renders ~0.13° too far north (a rigid, latitude-only product-registration
-   shift, confirmed via orientation-resolved land-mask registration; currents/
-   shading verified clean). Applied a documented empirical `-0.13°` lat correction
-   in `fetch_ftle`. **Done** ([docs/ftle.md](../docs/ftle.md)); optional ocean clip
-   for residual coastal filaments → BACKLOG.
+   particle-animation velocity. The trail-velocity scaling stays; **the FTLE
+   overlay was later dropped — see 13.**
+4. [FTLE vectorization](done/004-ftle-vectorize.md) — replaced the FTLE raster
+   with a simplified iso-FTLE line contour (GeoJSON). **Dropped — see 13.**
+5. [FTLE latitude correction](done/005-ftle-lat-correction.md) — corrected the
+   SPASSO FTLE field's ~0.13° northward product-registration shift. **Dropped —
+   see 13.**
 6. [Batch filter](done/006-batch-filter.md) — a data-driven checkbox control to
    show/hide drifters by deployment batch, picking up new batches from the data
    automatically. **Done** ([docs/batches.md](../docs/batches.md)). Batch *source*
@@ -63,3 +60,8 @@ move to `done/` and gain a `docs/` counterpart.
     R/V Marion Dufresne track) and truncate its trajectory there, so the layer
     (renamed **True track**) shows only the free drift. **Done**
     ([docs/trajectories.md](../docs/trajectories.md)).
+13. Final polishing — dropped the **FTLE** overlay (build step, `_ftle`, client
+    layer, sidebar panel, docs) as no longer wanted; dropped the **Esri Ocean**
+    basemap and the base-layer selector (OpenStreetMap is the sole basemap); and
+    trimmed the forecast/hindcast sidebar explainers to bare facts (no line-style
+    legend, no trust guidance). **Done.**

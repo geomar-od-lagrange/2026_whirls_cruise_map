@@ -1,11 +1,10 @@
 """Shared raster helper: warp an equirectangular field to Web Mercator and
 colour-map it to an RGBA PNG that ``L.imageOverlay`` places correctly.
 
-Both the speed shading and the FTLE overlay are lat/lon fields drawn on a
-Web-Mercator (EPSG:3857) map; a plain image overlay of an equirectangular raster
-is mis-registered in latitude. Resampling the rows from even latitude to even
-Mercator-y so the overlay's linear stretch lands them right is the fix, and doing
-it in one place keeps the two layers co-registered.
+The speed shading is a lat/lon field drawn on a Web-Mercator (EPSG:3857) map; a
+plain image overlay of an equirectangular raster is mis-registered in latitude.
+Resampling the rows from even latitude to even Mercator-y so the overlay's linear
+stretch lands them right is the fix.
 """
 from __future__ import annotations
 

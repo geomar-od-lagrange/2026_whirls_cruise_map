@@ -11,8 +11,6 @@ and writes the JSON the Leaflet site consumes into ``site/data/``:
 - ``currents_meta.json``  bounds, vmax, valid-time and colourbar for the client
 - ``forecast.geojson``    per-drifter current-advection track to +6 h (1/3/6 h marks)
 - ``hindcast.geojson``    per-drifter current-advection back-track to -6 h (1/3/6 h marks)
-- ``ftle.geojson``        simplified SPASSO FTLE ridge contour (LCS) line strings
-- ``ftle_meta.json``      valid-time, units and level for the FTLE legend
 - ``build.json``          UTC timestamp of this build (sidebar data-freshness)
 
 Everything is rebuilt from a fresh full-zip pull each run; no caching.
@@ -24,7 +22,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import _clean, _currents, _deploy, _fetch, _forecast, _ftle, _geojson, _ship
+from . import _clean, _currents, _deploy, _fetch, _forecast, _geojson, _ship
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SITE_DATA = REPO_ROOT / "site" / "data"
@@ -76,7 +74,6 @@ def main() -> None:
     # is down. One field feeds three artifacts — the coarse vector grid (trails),
     # the near-native speed raster + meta, and the per-drifter advection forecast
     # — each independent, so one failing does not skip the others.
-    currents_valid = None
     field = None
     try:
         field = _currents.fetch_field()
@@ -89,7 +86,6 @@ def main() -> None:
             png, meta = _currents.to_speed_png(field)
             (SITE_DATA / "speed.png").write_bytes(png)
             _write_json(SITE_DATA / "currents_meta.json", meta)
-            currents_valid = meta["valid_time"]
             print(
                 f"wrote currents.json + speed.png "
                 f"(valid {meta['valid_time']}, vmax {meta['vmax']:.2f} {meta['units']})"
@@ -123,33 +119,6 @@ def main() -> None:
             )
         except Exception as exc:
             print(f"WARNING: hindcast step failed, skipping hindcast.geojson: {exc}")
-
-    # FTLE overlay (best-effort, independent): the SPASSO field nearest the speed
-    # valid-time, or now if currents are unavailable.
-    try:
-        target = (
-            datetime.strptime(currents_valid, "%Y-%m-%dT%H:%M:%SZ").replace(
-                tzinfo=timezone.utc
-            )
-            if currents_valid
-            else datetime.now(timezone.utc)
-        )
-        result = _ftle.fetch_ftle(target)
-        if result is None:
-            print("no FTLE within 24h of the target time, skipping ftle.geojson")
-        else:
-            ftle_field, ftle_valid = result
-            geojson, meta = _ftle.to_ftle_geojson(ftle_field, ftle_valid)
-            _write_json(SITE_DATA / "ftle.geojson", geojson)
-            _write_json(SITE_DATA / "ftle_meta.json", meta)
-            n_lines = len(geojson["features"][0]["geometry"]["coordinates"])
-            print(
-                f"wrote ftle.geojson ({n_lines} ridge lines) + ftle_meta.json "
-                f"(valid {meta['valid_time']}, level {meta['levels'][0]['value']:.3f} "
-                f"{meta['units']})"
-            )
-    except Exception as exc:
-        print(f"WARNING: FTLE step failed, skipping ftle artifacts: {exc}")
 
 
 if __name__ == "__main__":

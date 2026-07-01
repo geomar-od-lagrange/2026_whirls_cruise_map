@@ -116,7 +116,7 @@ is an independent best-effort build step, so one can be present without the othe
 `tracks`) and groups each by `batch` via the shared `buildAdvectionGroups(geojson,
 color)`. Per drifter it draws a **solid line** from the head — **violet** for the
 forecast, **magenta** for the hindcast, both distinct from the
-orange observed track, the blue head marker, and the red FTLE ridges — plus a small
+orange observed track and the blue head marker — plus a small
 dot at each `marks` entry (1/3/6 h). The lines and dots are **non-interactive** and
 carry **no popup** — they are plain position marks — so they never swallow a click
 meant for a marker beneath them.

@@ -8,7 +8,6 @@
  *   hindcast.geojson               -> per-drifter current-advection back-track (off)
  *   speed.png + currents_meta.json -> surface-speed shading (imageOverlay)
  *   currents.json                  -> leaflet-velocity flow trails (optional)
- *   ftle.geojson + ftle_meta.json  -> FTLE/LCS ridge contour (vector lines)
  *   awaiting.json                  -> sidebar list, no map geometry
  *   build.json                     -> sidebar "data freshness" build time
  */
@@ -22,8 +21,6 @@ const DATA = {
   currents: "./data/currents.json",
   meta: "./data/currents_meta.json",
   speed: "./data/speed.png",
-  ftleGeo: "./data/ftle.geojson",
-  ftleMeta: "./data/ftle_meta.json",
   build: "./data/build.json",
 };
 
@@ -278,14 +275,13 @@ function buildBatchControl(map, markerGroups, overlays) {
 const TRACK_COLOR = "#e07b39";
 
 // Forecast colour for the current-advection lines and their 1/3/6 h dots — a
-// violet distinct from the orange past track, the blue head, and the red FTLE
-// ridges, so a glance separates "where it's been" from "where the field carries
-// it next".
+// violet distinct from the orange past track and the blue head, so a glance
+// separates "where it's been" from "where the field carries it next".
 const FORECAST_COLOR = "#8e44ad";
 
 // Hindcast colour — a magenta distinct from the forecast violet, the orange past
-// track, the blue head and the red FTLE, so the current-only back-track reads
-// apart from the drifter's *observed* orange trajectory it sits near.
+// track and the blue head, so the current-only back-track reads apart from the
+// drifter's *observed* orange trajectory it sits near.
 const HINDCAST_COLOR = "#d81b8c";
 
 // Trajectories, grouped by `batch` so each batch's lines+dots toggle with that
@@ -404,87 +400,43 @@ function renderCurrentsInfo(meta) {
     `<span>${meta.vmax.toFixed(2)}</span></div>`;
 }
 
-function renderFtleInfo(meta) {
-  const timeEl = document.getElementById("ftle-time");
-  const legendEl = document.getElementById("ftle-legend");
-  if (!timeEl) return;
-  if (!meta) {
-    timeEl.textContent = "FTLE unavailable.";
-    legendEl.innerHTML = "";
-    return;
-  }
-  timeEl.textContent = `Valid ${formatFixTime(meta.valid_time)} — SPASSO backward FTLE.`;
-  const lvl = meta.levels && meta.levels[0];
-  const color = (lvl && lvl.color) || "#cb181d";
-  const value = lvl ? lvl.value.toFixed(2) : "?";
-  legendEl.innerHTML =
-    '<div class="legend-scale"><span style="display:inline-block;width:20px;' +
-    `border-top:2px solid ${color};vertical-align:middle;margin-right:6px"></span>` +
-    `<span>LCS ridge (FTLE ≥ ${value} ${meta.units})</span></div>`;
-}
-
-// Shared renderer for the forecast/hindcast sidebar panels. Each advection layer
-// carries no separate meta file: valid_time is baked into every feature (one
-// frozen field, one time), read off the first feature. The caveat text is
-// deliberately blunt — positions get read off these lines — so `opts.caption`
-// states what the layer is and is not. Three states: no artifact (CMEMS down /
-// not built), built but empty (every drifter head sits in a coastal NaN cell, so
-// nothing could be advected — the pre-deployment cluster at port does this), and
-// built with lines.
+// Shared renderer for the forecast/hindcast sidebar panels. valid_time is baked
+// into every feature (one frozen field, one time), read off the first. Three
+// states: no artifact (CMEMS down / not built), built but empty (every drifter
+// head sits in a coastal NaN cell — the pre-deployment cluster at port does
+// this), and built with lines.
 function renderAdvectionInfo(data, opts) {
   const timeEl = document.getElementById(opts.timeId);
-  const legendEl = document.getElementById(opts.legendId);
   if (!timeEl) return;
   const features = data?.features;
   if (!features) {
     timeEl.textContent = opts.unavailable;
-    legendEl.innerHTML = "";
-    return;
-  }
-  if (!features.length) {
+  } else if (!features.length) {
     timeEl.textContent = opts.empty;
-    legendEl.innerHTML = "";
-    return;
+  } else {
+    timeEl.textContent = opts.caption(features[0].properties?.valid_time);
   }
-  timeEl.textContent = opts.caption(features[0].properties?.valid_time);
-  legendEl.innerHTML =
-    '<div class="legend-scale"><span style="display:inline-block;width:20px;' +
-    `border-top:2px solid ${opts.color};vertical-align:middle;margin-right:6px"></span>` +
-    `<span>${opts.legendLabel}</span></div>`;
 }
 
 function renderForecastInfo(forecast) {
   renderAdvectionInfo(forecast, {
     timeId: "forecast-time",
-    legendId: "forecast-legend",
-    color: FORECAST_COLOR,
     unavailable: "Drift forecast unavailable.",
-    empty:
-      "No drift forecasts — every drifter is at the coast or off-grid, " +
-      "where the current field has no value to advect through.",
+    empty: "No drift forecasts — every drifter head is on land or off-grid.",
     caption: (valid) =>
-      `Current-advection estimate — field frozen at ${formatFixTime(valid)}. ` +
-      `Surface current only (no windage or drogue depth); the 6 h mark spans the ` +
-      `field's own 6-hourly step, so trust the near marks more than the far one.`,
-    legendLabel: "advection path · dots at 1 / 3 / 6 h",
+      `Current-advection forecast, surface current only; ` +
+      `field frozen at ${formatFixTime(valid)}.`,
   });
 }
 
 function renderHindcastInfo(hindcast) {
   renderAdvectionInfo(hindcast, {
     timeId: "hindcast-time",
-    legendId: "hindcast-legend",
-    color: HINDCAST_COLOR,
     unavailable: "Drift hindcast unavailable.",
-    empty:
-      "No drift hindcasts — every drifter is at the coast or off-grid, " +
-      "where the current field has no value to advect through.",
+    empty: "No drift hindcasts — every drifter head is on land or off-grid.",
     caption: (valid) =>
-      `Current-advection back-track — field frozen at ${formatFixTime(valid)}. ` +
-      `Where the present surface current would have carried a particle into each ` +
-      `drifter over the past 6 h — not the observed track; trust the near marks ` +
-      `more than the −6 h one.`,
-    legendLabel: "back-track · dots at −1 / −3 / −6 h",
+      `Current-advection back-track (not the observed track), surface current ` +
+      `only; field frozen at ${formatFixTime(valid)}.`,
   });
 }
 
@@ -734,20 +686,11 @@ function renderShipInfo(p, motion) {
     .join("");
 }
 
-function baseLayers() {
-  const esriOcean = L.tileLayer(
-    "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
-    {
-      maxZoom: 13,
-      attribution:
-        "Tiles &copy; Esri — Sources: Esri, GEBCO, NOAA, National Geographic, and other contributors",
-    }
-  );
-  const osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+function osmLayer() {
+  return L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
     attribution: "&copy; OpenStreetMap contributors",
   });
-  return { OpenStreetMap: osm, "Esri Ocean": esriOcean };
 }
 
 async function main() {
@@ -756,24 +699,21 @@ async function main() {
   startClock();
   fetchJSON(DATA.build, { optional: true }).then(renderBuildTime);
 
-  const bases = baseLayers();
-
   const map = L.map("map", {
     center: FALLBACK_CENTER,
     zoom: FALLBACK_ZOOM,
-    layers: [bases["OpenStreetMap"]],
+    layers: [osmLayer()],
   });
 
   const overlays = {};
 
-  // Layer stack, bottom -> top: speed shading -> FTLE -> flow -> ship track+dots
-  // -> drifters -> ship marker. The ship track sits *below* the drifters so its
+  // Layer stack, bottom -> top: speed shading -> flow -> ship track+dots ->
+  // drifters -> ship marker. The ship track sits *below* the drifters so its
   // per-fix dots can't intercept clicks meant for the drifter markers where the
   // two overlap — the cruise starts from the drifters' staging port, so the early
   // ship track runs right through the pre-deploy cluster. The ship's current
   // position marker stays on top.
   map.createPane("shading").style.zIndex = 350;
-  map.createPane("ftle").style.zIndex = 360;
   map.createPane("shipTrack").style.zIndex = 640;
   map.createPane("drifters").style.zIndex = 650;
   map.createPane("ship").style.zIndex = 660;
@@ -809,22 +749,6 @@ async function main() {
     overlays["Current speed"] = speedLayer;
   }
   renderCurrentsInfo(meta);
-
-  // FTLE / LCS ridges: a vector iso-FTLE contour over the Cape Basin, above the
-  // shading and below the flow. Lon/lat geometry projected by Leaflet (no manual
-  // warp), drawn on a canvas renderer in the ftle pane. On by default.
-  const ftleGeo = await fetchJSON(DATA.ftleGeo, { optional: true });
-  const ftleMeta = await fetchJSON(DATA.ftleMeta, { optional: true });
-  if (ftleGeo) {
-    const color = ftleMeta?.levels?.[0]?.color ?? "#cb181d";
-    const ftleLayer = L.geoJSON(ftleGeo, {
-      renderer: L.canvas({ pane: "ftle" }),
-      style: { color, weight: 0.8, opacity: 0.85 },
-    });
-    ftleLayer.addTo(map);
-    overlays["FTLE / LCS ridges"] = ftleLayer;
-  }
-  renderFtleInfo(ftleMeta);
 
   // Flow trails: dark->white ramp keyed to speed, so the bright jet pops over the
   // shading. The magnitude is sqrt-compressed server-side so slow eddies animate,
@@ -881,7 +805,9 @@ async function main() {
   // Awaiting-first-fix sidebar.
   renderAwaiting(await fetchJSON(DATA.awaiting, { optional: true }));
 
-  const layersControl = L.control.layers(bases, overlays, { collapsed: false }).addTo(map);
+  // No base-layer selector — OpenStreetMap is the sole basemap; the control lists
+  // only the overlays (and the ship, added on its first fix).
+  const layersControl = L.control.layers(null, overlays, { collapsed: false }).addTo(map);
 
   // R/V Marion Dufresne live track (client-side; Flotte Océanographique Française
   // API). Last, and deliberately not awaited: it is the one third-party fetch, so

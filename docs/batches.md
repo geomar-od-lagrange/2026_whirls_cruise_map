@@ -75,7 +75,7 @@ trajectory, forecast and hindcast together. All overlays start hidden.
 
 This control — not the Leaflet layer control — governs all drifter visibility
 (markers and the trajectory/forecast/hindcast overlays); the layer control
-retains the speed, flow, FTLE, and ship overlays.
+retains the speed, flow, and ship overlays.
 
 ### Why a custom control, not the Leaflet layer control
 
