@@ -1,11 +1,15 @@
-"""Current-advection forecast: advect a passive particle forward from each
-drifter's latest fix through the frozen CMEMS surface-current field.
+"""Current-advection forecast and hindcast: advect a passive particle through the
+frozen CMEMS surface-current field from each drifter's latest fix — forward for
+the forecast, backward for the hindcast.
 
 This is a **streamline of the present field**: starting at the drifter head we
-integrate ``dx/dt = u(x, y)``, ``dy/dt = v(x, y)`` forward to 6 h with RK4 and
-draw the path, marking the 1 / 3 / 6 h positions. It is the quantitative version
-of what the animated flow trails show qualitatively — same field, but the *true*
-``uo``/``vo`` (m/s, native grid), so distances are physically meaningful.
+integrate ``dx/dt = u(x, y)``, ``dy/dt = v(x, y)`` with RK4 to ±6 h and draw the
+path, marking the 1 / 3 / 6 h positions on each side. It is the quantitative
+version of what the animated flow trails show qualitatively — same field, but the
+*true* ``uo``/``vo`` (m/s, native grid), so distances are physically meaningful.
+The hindcast integrates the same field backward (negative step); it is a
+current-only back-trajectory, **not** the drifter's observed past track (that is
+the trajectory line from :func:`whirls_cruise_map._geojson.tracks_geojson`).
 
 It is **not** a calibrated drifter prediction:
 
@@ -127,16 +131,18 @@ def _rk4_step(
 
 
 def _integrate(
-    field: _Field, lon0: float, lat0: float
+    field: _Field, lon0: float, lat0: float, direction: int = 1
 ) -> tuple[list[list[float]], list[dict]]:
-    """Advect from ``(lon0, lat0)`` to :data:`HORIZON_H`, returning the polyline
-    ``coords`` (a vertex every :data:`VERTEX_MIN`, starting at the head) and the
-    ``marks`` actually reached (``{hours, lon, lat}`` at each :data:`MARK_HOURS`).
-    Stops early at the coast/edge; marks beyond the truncation are omitted."""
-    dt = STEP_MIN * 60.0
+    """Advect from ``(lon0, lat0)`` to :data:`HORIZON_H`, ``direction`` +1 forward
+    (forecast) or -1 backward (hindcast), returning the polyline ``coords`` (a
+    vertex every :data:`VERTEX_MIN`, starting at the head) and the ``marks``
+    actually reached (``{hours, lon, lat}`` at each :data:`MARK_HOURS`, ``hours``
+    signed by ``direction``). Stops early at the coast/edge; marks beyond the
+    truncation are omitted."""
+    dt = direction * STEP_MIN * 60.0
     n_steps = round(HORIZON_H * 60.0 / STEP_MIN)
     vertex_every = round(VERTEX_MIN / STEP_MIN)
-    mark_at = {round(h * 60.0 / STEP_MIN): h for h in MARK_HOURS}
+    mark_at = {round(h * 60.0 / STEP_MIN): direction * h for h in MARK_HOURS}
 
     coords = [[round(lon0, _COORD_NDIGITS), round(lat0, _COORD_NDIGITS)]]
     marks: list[dict] = []
@@ -154,18 +160,20 @@ def _integrate(
     return coords, marks
 
 
-def forecast_geojson(field: xr.Dataset, tracks: pd.DataFrame) -> dict:
+def _advection_geojson(field: xr.Dataset, tracks: pd.DataFrame, direction: int) -> dict:
     """FeatureCollection of one advection ``LineString`` per drifter, from its
-    latest fix forward through ``field``.
+    latest fix through ``field`` — ``direction`` +1 forward (forecast) or -1
+    backward (hindcast).
 
     Every drifter with a valid latest fix gets one (single-fix drifters included
-    — a forecast needs only a position). A drifter whose head is already on
+    — advection needs only a position). A drifter whose head is already on
     land/off-grid yields no usable line (``<2`` vertices) and is skipped.
     Coordinates are ``[lon, lat]``. Properties: ``D_number``, ``batch`` (the
-    *latest* fix's batch, the same key the marker and trajectory use, so the
-    forecast toggles together with them), ``valid_time``, and ``marks`` — the
-    list of ``{hours, lon, lat}`` the integration reached, parallel to the
-    ``fixes`` pattern in :func:`whirls_cruise_map._geojson.tracks_geojson`.
+    *latest* fix's batch, the same key the marker and trajectory use, so the line
+    toggles together with them), ``valid_time``, and ``marks`` — the list of
+    ``{hours, lon, lat}`` the integration reached (``hours`` signed by
+    ``direction``), parallel to the ``fixes`` pattern in
+    :func:`whirls_cruise_map._geojson.tracks_geojson`.
     """
     sampler = _Field(field)
     valid = _currents.valid_time(field)
@@ -173,7 +181,9 @@ def forecast_geojson(field: xr.Dataset, tracks: pd.DataFrame) -> dict:
     features = []
     for d_number, group in tracks.sort_values("date_UTC").groupby("D_number"):
         last = list(group.itertuples(index=False))[-1]
-        coords, marks = _integrate(sampler, float(last.Longitude), float(last.Latitude))
+        coords, marks = _integrate(
+            sampler, float(last.Longitude), float(last.Latitude), direction
+        )
         if len(coords) < 2:
             continue
         features.append(
@@ -189,3 +199,15 @@ def forecast_geojson(field: xr.Dataset, tracks: pd.DataFrame) -> dict:
             }
         )
     return {"type": "FeatureCollection", "features": features}
+
+
+def forecast_geojson(field: xr.Dataset, tracks: pd.DataFrame) -> dict:
+    """Forward current-advection forecast to +6 h. See :func:`_advection_geojson`."""
+    return _advection_geojson(field, tracks, direction=1)
+
+
+def hindcast_geojson(field: xr.Dataset, tracks: pd.DataFrame) -> dict:
+    """Backward current-advection hindcast to -6 h: where the present frozen field
+    would have carried a particle into each drifter head. A current-only
+    back-trajectory, not the observed track. See :func:`_advection_geojson`."""
+    return _advection_geojson(field, tracks, direction=-1)

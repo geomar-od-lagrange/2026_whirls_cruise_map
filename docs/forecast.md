@@ -1,16 +1,25 @@
-# Drift forecast (current advection, 1 / 3 / 6 h)
+# Drift forecast & hindcast (current advection, ±1 / 3 / 6 h)
 
-A toggleable **dashed line drawn forward from each drifter's latest position**,
-with dots at the **1 h, 3 h and 6 h** marks. It is computed by advecting a passive
-particle through the CMEMS surface-current field — the same field that drives the
-animated flow trails — so the line follows the visible flow, but from the *true*
-velocities, so its reach is physically meaningful.
+Two toggleable **dashed lines drawn from each drifter's latest position** through
+the CMEMS surface-current field, with dots at the **1 h, 3 h and 6 h** marks: the
+**forecast** integrates the field *forward* (violet, +6 h), the **hindcast**
+integrates the *same frozen field backward* (magenta, −6 h). Both advect a passive
+particle through the same field that drives the animated flow trails — so the lines
+follow the visible flow, but from the *true* velocities, so their reach is
+physically meaningful.
+
+The hindcast is a **current-only back-trajectory** — where the present surface
+current *would have* carried a particle into the drifter — **not** the drifter's
+observed past track (that is the orange trajectory line; see
+[trajectories.md](trajectories.md)). Comparing the two shows how much of the
+drifter's recent motion the surface current alone explains.
 
 ## What it is — and what it is not
 
-It is a **streamline of the present field, frozen in time**: start at the drifter
-head, integrate `dx/dt = u(x, y)`, `dy/dt = v(x, y)` forward, draw the path. It is
-the quantitative version of what the particle animation shows qualitatively.
+Each is a **streamline of the present field, frozen in time**: start at the drifter
+head, integrate `dx/dt = u(x, y)`, `dy/dt = v(x, y)` forward (forecast) or backward
+(hindcast), draw the path. It is the quantitative version of what the particle
+animation shows qualitatively.
 
 It is **not** a time-evolving forecast and not a calibrated drifter prediction.
 The 1/3/6 h dots exist precisely so a reader can see how far out the estimate is
@@ -32,8 +41,9 @@ read off this line:
 
 The build already holds both inputs — the true `field` from
 `_currents.fetch_field()` and every drifter's latest position (the `tracks`
-DataFrame) — so `_forecast.forecast_geojson` integrates there and emits a small
-`forecast.geojson`; the client just renders it. This:
+DataFrame) — so `_forecast` integrates there and emits small `forecast.geojson`
+and `hindcast.geojson` artifacts (forward and backward); the client just renders
+them. This:
 
 - uses the **true** `uo`/`vo` (m/s, native grid), not the animation's
   magnitude-compressed, coarsened `currents.json` — correct distances, while
@@ -68,7 +78,10 @@ each drifter independently:
   same key the marker and trajectory use, so the forecast toggles together with
   them. Every drifter with a valid latest fix gets one, single-fix drifters
   included (a forecast needs only a position, not a past track).
-- **Stepper.** RK4 to 6 h with a fixed 5-min sub-step; bilinear interpolation of
+- **Stepper.** RK4 to ±6 h with a fixed 5-min sub-step — a signed step, forward
+  for the forecast and backward for the hindcast (the shared
+  `_advection_geojson(field, tracks, direction)`, wrapped by `forecast_geojson`
+  and `hindcast_geojson`) — with bilinear interpolation of
   `uo`/`vo` at the particle each stage (`_Field.velocity`). Velocity m/s → deg:
   `dlat = v / R · 180/π`, `dlon = u / (R cos lat) · 180/π`, `R = 6.371e6`. The
   scheme is not delicate — at ~0.5 m/s a particle moves ~11 km in 6 h, about one
@@ -79,41 +92,47 @@ each drifter independently:
   the path **truncates at the last fully-ocean vertex** — one cell short of land,
   never across it. Only the horizon marks actually reached are emitted.
 
-## Artifact: `forecast.geojson`
+## Artifacts: `forecast.geojson` and `hindcast.geojson`
 
-One `LineString` per drifter from its head, a vertex every 15 min for a smooth
-dashed curve, coordinates `[lon, lat]` rounded to 5 dp (~1 m, far below the ~10 km
+Identical shape (one is the forward integration, the other the backward). One
+`LineString` per drifter from its head, a vertex every 15 min for a smooth dashed
+curve, coordinates `[lon, lat]` rounded to 5 dp (~1 m, far below the ~10 km
 displacement). Properties:
 
 - `D_number`, `batch`, `valid_time`;
 - `marks` — a list `[{hours, lon, lat}]` for each of 1/3/6 h the integration
-  reached (parallels the per-vertex `fixes` pattern in
+  reached, with `hours` **signed by direction** (positive in the forecast,
+  negative in the hindcast); parallels the per-vertex `fixes` pattern in
   [`tracks_geojson`](trajectories.md), so the client places the dots without
-  re-deriving timing).
+  re-deriving timing.
 
 A drifter whose head is already on land or off-grid yields no usable line (`<2`
-vertices) and is skipped; it still shows its latest-position marker.
+vertices) and is skipped; it still shows its latest-position marker. Each artifact
+is an independent best-effort build step, so one can be present without the other.
 
-## Client rendering and toggle
+## Client rendering and toggles
 
-`app.js` fetches `forecast.geojson` (optional, like `tracks`) and groups it by
-`batch`. Per drifter it draws a **dashed violet line** from the head (Leaflet
-`dashArray`), distinct from the orange past track, the blue head marker, and the
-red FTLE ridges, plus a small dot at each `marks` entry (1/3/6 h). The line and
-dots are **non-interactive** and carry **no popup** — they are plain position
-marks — so they never swallow a click meant for a marker beneath them.
+`app.js` fetches `forecast.geojson` and `hindcast.geojson` (optional, like
+`tracks`) and groups each by `batch` via the shared `buildAdvectionGroups(geojson,
+color)`. Per drifter it draws a **dashed line** from the head (Leaflet `dashArray`)
+— **violet** for the forecast, **magenta** for the hindcast, both distinct from the
+orange observed track, the blue head marker, and the red FTLE ridges — plus a small
+dot at each `marks` entry (1/3/6 h). The lines and dots are **non-interactive** and
+carry **no popup** — they are plain position marks — so they never swallow a click
+meant for a marker beneath them.
 
-The layer is governed by the **Drifters** control (top-right), not the Leaflet
+The layers are governed by the **Drifters** control (top-right), not the Leaflet
 layer control — the same control that filters batches (see [batches.md](batches.md))
 and toggles trajectories (see [trajectories.md](trajectories.md)). The control
-takes a **list of overlays** `[{label, groups, on}]`; Trajectories and
-`Forecast (1/3/6 h)` are two entries, each rendered as a master row above the
-batch rows. They compose identically: **a batch's forecast shows only when both
-its batch row and the Forecast row are checked**, so unchecking a batch hides its
-markers, its track, *and* its forecast together. Default off.
+takes a **list of overlays** `[{label, groups, on}]`; Trajectories,
+`Forecast (1/3/6 h)` and `Hindcast (1/3/6 h)` are entries, each a master row above
+the batch rows. They compose identically: **a batch's forecast/hindcast shows only
+when both its batch row and that master row are checked**, so unchecking a batch
+hides its markers, its track, its forecast *and* its hindcast together. Default off.
 
-The sidebar **Drift forecast** panel states the caveat (current-advection
-estimate, field frozen at `valid_time`; surface current only; trust the near marks
-more than the 6 h one) and shows the dashed-line legend. Its `valid_time` is read
-off the first feature — there is no separate meta file, since one frozen field
-means one time for every line.
+The sidebar **Drift forecast** and **Drift hindcast** panels state the caveat
+(current-advection estimate / back-track, field frozen at `valid_time`; surface
+current only; trust the near marks more than the ±6 h one) and show the dashed-line
+legend, via the shared `renderAdvectionInfo`. `valid_time` is read off the first
+feature — there is no separate meta file, since one frozen field means one time for
+every line.

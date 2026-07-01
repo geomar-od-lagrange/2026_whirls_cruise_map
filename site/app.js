@@ -5,6 +5,7 @@
  *   latest.geojson                 -> circle markers (on by default)
  *   tracks.geojson                 -> trajectory lines (off by default)
  *   forecast.geojson               -> per-drifter current-advection track (off)
+ *   hindcast.geojson               -> per-drifter current-advection back-track (off)
  *   speed.png + currents_meta.json -> surface-speed shading (imageOverlay)
  *   currents.json                  -> leaflet-velocity flow trails (optional)
  *   ftle.geojson + ftle_meta.json  -> FTLE/LCS ridge contour (vector lines)
@@ -16,6 +17,7 @@ const DATA = {
   latest: "./data/latest.geojson",
   tracks: "./data/tracks.geojson",
   forecast: "./data/forecast.geojson",
+  hindcast: "./data/hindcast.geojson",
   awaiting: "./data/awaiting.json",
   currents: "./data/currents.json",
   meta: "./data/currents_meta.json",
@@ -259,6 +261,11 @@ const TRACK_COLOR = "#e07b39";
 // it next".
 const FORECAST_COLOR = "#8e44ad";
 
+// Hindcast colour — a magenta distinct from the forecast violet, the orange past
+// track, the blue head and the red FTLE, so the current-only back-track reads
+// apart from the drifter's *observed* orange trajectory it sits near.
+const HINDCAST_COLOR = "#d81b8c";
+
 // Trajectories, grouped by `batch` so each batch's lines+dots toggle with that
 // batch's markers (see buildBatchControl). For each drifter: one line, plus a
 // small dot at every fix. Each dot carries the same popup as the drifter's main
@@ -299,14 +306,15 @@ function buildTrackGroups(geojson) {
   return groups;
 }
 
-// Current-advection forecast, grouped by `batch` so each batch's lines+dots
-// toggle with that batch's markers and the master Forecast row (see
-// buildBatchControl). For each drifter: one *dashed* line from its head along
-// the streamline of the frozen current field, plus a small dot at each `marks`
-// entry (1/3/6 h). Dots carry no popup for now — they are plain position marks
-// (the line and dots are non-interactive so they never swallow a click meant for
-// a marker beneath them). Returns { batch: featureGroup }.
-function buildForecastGroups(geojson) {
+// Current-advection line (forecast forward, or hindcast backward), grouped by
+// `batch` so each batch's lines+dots toggle with that batch's markers and the
+// master Forecast/Hindcast row (see buildBatchControl). For each drifter: one
+// *dashed* line from its head along the streamline of the frozen current field,
+// in `color`, plus a small dot at each `marks` entry (1/3/6 h). Dots carry no
+// popup — they are plain position marks (the line and dots are non-interactive so
+// they never swallow a click meant for a marker beneath them). Returns
+// { batch: featureGroup }.
+function buildAdvectionGroups(geojson, color) {
   const groups = {};
   for (const feature of geojson.features ?? []) {
     if (feature.geometry?.type !== "LineString") continue;
@@ -317,7 +325,7 @@ function buildForecastGroups(geojson) {
     L.polyline(
       coords.map(([lng, lat]) => [lat, lng]),
       {
-        color: FORECAST_COLOR,
+        color,
         weight: 2,
         opacity: 0.9,
         dashArray: "5, 6",
@@ -327,9 +335,9 @@ function buildForecastGroups(geojson) {
     for (const m of marks ?? []) {
       L.circleMarker([m.lat, m.lon], {
         radius: 3,
-        color: FORECAST_COLOR,
+        color,
         weight: 1,
-        fillColor: FORECAST_COLOR,
+        fillColor: color,
         fillOpacity: 0.9,
         interactive: false,
       }).addTo(group);
@@ -394,40 +402,69 @@ function renderFtleInfo(meta) {
     `<span>LCS ridge (FTLE ≥ ${value} ${meta.units})</span></div>`;
 }
 
-// The forecast carries no separate meta file: its valid_time is baked into every
-// feature (one frozen field, one time), so the panel reads it off the first
-// feature. The caveat text is deliberately blunt — positions get read off this
-// line, so the sidebar states what it is (a current-advection estimate, field
-// frozen) and is not (a calibrated drifter prediction; no windage/drogue depth).
-function renderForecastInfo(forecast) {
-  const timeEl = document.getElementById("forecast-time");
-  const legendEl = document.getElementById("forecast-legend");
+// Shared renderer for the forecast/hindcast sidebar panels. Each advection layer
+// carries no separate meta file: valid_time is baked into every feature (one
+// frozen field, one time), read off the first feature. The caveat text is
+// deliberately blunt — positions get read off these lines — so `opts.caption`
+// states what the layer is and is not. Three states: no artifact (CMEMS down /
+// not built), built but empty (every drifter head sits in a coastal NaN cell, so
+// nothing could be advected — the pre-deployment cluster at port does this), and
+// built with lines.
+function renderAdvectionInfo(data, opts) {
+  const timeEl = document.getElementById(opts.timeId);
+  const legendEl = document.getElementById(opts.legendId);
   if (!timeEl) return;
-  const features = forecast?.features;
-  // Three states: no artifact (CMEMS down / not built), built but empty (every
-  // drifter head sits in a coastal NaN cell, so nothing could be advected — the
-  // pre-deployment cluster at port does this), and built with forecasts.
+  const features = data?.features;
   if (!features) {
-    timeEl.textContent = "Drift forecast unavailable.";
+    timeEl.textContent = opts.unavailable;
     legendEl.innerHTML = "";
     return;
   }
   if (!features.length) {
-    timeEl.textContent =
-      "No drift forecasts — every drifter is at the coast or off-grid, " +
-      "where the current field has no value to advect through.";
+    timeEl.textContent = opts.empty;
     legendEl.innerHTML = "";
     return;
   }
-  const valid = features[0].properties?.valid_time;
-  timeEl.textContent =
-    `Current-advection estimate — field frozen at ${formatFixTime(valid)}. ` +
-    `Surface current only (no windage or drogue depth); the 6 h mark spans the ` +
-    `field's own 6-hourly step, so trust the near marks more than the far one.`;
+  timeEl.textContent = opts.caption(features[0].properties?.valid_time);
   legendEl.innerHTML =
     '<div class="legend-scale"><span style="display:inline-block;width:20px;' +
-    `border-top:2px dashed ${FORECAST_COLOR};vertical-align:middle;margin-right:6px"></span>` +
-    "<span>advection path · dots at 1 / 3 / 6 h</span></div>";
+    `border-top:2px dashed ${opts.color};vertical-align:middle;margin-right:6px"></span>` +
+    `<span>${opts.legendLabel}</span></div>`;
+}
+
+function renderForecastInfo(forecast) {
+  renderAdvectionInfo(forecast, {
+    timeId: "forecast-time",
+    legendId: "forecast-legend",
+    color: FORECAST_COLOR,
+    unavailable: "Drift forecast unavailable.",
+    empty:
+      "No drift forecasts — every drifter is at the coast or off-grid, " +
+      "where the current field has no value to advect through.",
+    caption: (valid) =>
+      `Current-advection estimate — field frozen at ${formatFixTime(valid)}. ` +
+      `Surface current only (no windage or drogue depth); the 6 h mark spans the ` +
+      `field's own 6-hourly step, so trust the near marks more than the far one.`,
+    legendLabel: "advection path · dots at 1 / 3 / 6 h",
+  });
+}
+
+function renderHindcastInfo(hindcast) {
+  renderAdvectionInfo(hindcast, {
+    timeId: "hindcast-time",
+    legendId: "hindcast-legend",
+    color: HINDCAST_COLOR,
+    unavailable: "Drift hindcast unavailable.",
+    empty:
+      "No drift hindcasts — every drifter is at the coast or off-grid, " +
+      "where the current field has no value to advect through.",
+    caption: (valid) =>
+      `Current-advection back-track — field frozen at ${formatFixTime(valid)}. ` +
+      `Where the present surface current would have carried a particle into each ` +
+      `drifter over the past 6 h — not the observed track; trust the near marks ` +
+      `more than the −6 h one.`,
+    legendLabel: "back-track · dots at −1 / −3 / −6 h",
+  });
 }
 
 // --- ship (R/V Marion Dufresne) live track ---------------------------------
@@ -795,15 +832,18 @@ async function main() {
     map.on("moveend zoomend", () => flowLayer.setData(currents));
   }
 
-  // Trajectories and the current-advection forecast, each grouped by batch (off
-  // by default; optional so a missing file can't blank the map). Not layer-
-  // control overlays: the batch control governs them, so unchecking a batch hides
-  // its track and forecast along with its markers.
+  // Trajectories and the current-advection forecast/hindcast, each grouped by
+  // batch (off by default; optional so a missing file can't blank the map). Not
+  // layer-control overlays: the batch control governs them, so unchecking a batch
+  // hides its track, forecast and hindcast along with its markers.
   const tracks = await fetchJSON(DATA.tracks, { optional: true });
   const trackGroups = tracks ? buildTrackGroups(tracks) : {};
   const forecast = await fetchJSON(DATA.forecast, { optional: true });
-  const forecastGroups = forecast ? buildForecastGroups(forecast) : {};
+  const forecastGroups = forecast ? buildAdvectionGroups(forecast, FORECAST_COLOR) : {};
   renderForecastInfo(forecast);
+  const hindcast = await fetchJSON(DATA.hindcast, { optional: true });
+  const hindcastGroups = hindcast ? buildAdvectionGroups(hindcast, HINDCAST_COLOR) : {};
+  renderHindcastInfo(hindcast);
 
   // Markers last, so they sit on top of the shading and flow layers. Each batch
   // group is added directly; the batch filter control (not the layer control)
@@ -814,6 +854,7 @@ async function main() {
   buildBatchControl(map, batchGroups, [
     { label: "Trajectories", groups: trackGroups, on: false },
     { label: "Forecast (1/3/6 h)", groups: forecastGroups, on: false },
+    { label: "Hindcast (1/3/6 h)", groups: hindcastGroups, on: false },
   ]).addTo(map);
 
   // Awaiting-first-fix sidebar.

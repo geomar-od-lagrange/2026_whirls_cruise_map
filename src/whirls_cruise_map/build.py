@@ -9,7 +9,8 @@ and writes the JSON the Leaflet site consumes into ``site/data/``:
 - ``currents.json``       coarse leaflet-velocity u/v grid for the flow trails
 - ``speed.png``           near-native CMEMS surface-speed raster (Mercator-warped)
 - ``currents_meta.json``  bounds, vmax, valid-time and colourbar for the client
-- ``forecast.geojson``    per-drifter current-advection track to 6 h (1/3/6 h marks)
+- ``forecast.geojson``    per-drifter current-advection track to +6 h (1/3/6 h marks)
+- ``hindcast.geojson``    per-drifter current-advection back-track to -6 h (1/3/6 h marks)
 - ``ftle.geojson``        simplified SPASSO FTLE ridge contour (LCS) line strings
 - ``ftle_meta.json``      valid-time, units and level for the FTLE legend
 - ``build.json``          UTC timestamp of this build (sidebar data-freshness)
@@ -96,6 +97,19 @@ def main() -> None:
             )
         except Exception as exc:
             print(f"WARNING: forecast step failed, skipping forecast.geojson: {exc}")
+
+        # Per-drifter current-advection hindcast (same frozen field integrated
+        # backward): where the present surface current would have carried a
+        # particle into each drifter over the past 6 h. Independent best-effort.
+        try:
+            hindcast = _forecast.hindcast_geojson(field, tracks)
+            _write_json(SITE_DATA / "hindcast.geojson", hindcast)
+            print(
+                f"wrote hindcast.geojson "
+                f"({len(hindcast['features'])} drifter hindcasts)"
+            )
+        except Exception as exc:
+            print(f"WARNING: hindcast step failed, skipping hindcast.geojson: {exc}")
 
     # FTLE overlay (best-effort, independent): the SPASSO field nearest the speed
     # valid-time, or now if currents are unavailable.
