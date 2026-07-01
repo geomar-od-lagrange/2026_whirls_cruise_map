@@ -9,9 +9,24 @@ batch independently.
 
 A batch labels a set of drifters by when/how they entered the water. Before a
 drifter is deployed it sits in the staging batch `pre_deploy`; during the cruise
-drifters move to deployment batches as they go overboard. The *assignment* of
-drifters to deployment batches is supplied per deployment and is resolved during
-the cruise — until then `_clean.py` assigns every drifter `pre_deploy`.
+drifters move to deployment batches as they go overboard.
+
+## Batch source: the deployment roster
+
+The *assignment* of drifters to deployment batches lives in
+`src/whirls_cruise_map/deployments.json` — a `batch → [D_number, …]` roster
+curated per deployment. `_clean.load_deployments()` inverts it to a
+`D_number → batch` map and `load_raw` stamps every fix accordingly; any drifter
+absent from the roster stays `pre_deploy`. Assignment is per drifter (the whole
+track), so a deployment batch also covers the drifter's transit leg from port —
+the batch is an identity of the drifter set, not a per-fix state.
+
+A drifter joins a deployment batch once it is confirmed in the water and
+drifting freely — not merely because it has a recent fix. Deployment 1, for
+example, is the 20 drifters that were released and drifting with the surface
+currents; three others that reported the same day while still stationary on deck
+stayed `pre_deploy` until they too drift. Adding a future deployment is a
+data-only edit to `deployments.json` (add a `deployment_2` key); no code change.
 
 ## GUI: the batch filter
 
@@ -45,9 +60,10 @@ count. A small dedicated control keeps batch filtering visually distinct and
 leaves space to grow (per-batch colour, highlight-on-hover) as batch assignment
 lands.
 
-### Deferred: per-batch colour
+### Per-batch colour
 
-`styleForBatch()` currently returns a single marker style for all batches, so the
-swatches are uniform today. It is the single seam for per-batch appearance: when
-batch assignment is wired up, colour differentiation is a one-function change
-there, and the swatches follow automatically.
+`styleForBatch()` is the single seam for per-batch appearance, and the swatches
+in the control follow whatever it returns. Staged drifters (`pre_deploy`) render
+muted grey; every deployment batch gets a vivid blue, so in-water drifters stand
+out from those still awaiting deployment. Distinct per-deployment colours
+(`deployment_2`, …) are a one-entry addition to `BATCH_STYLES` in `app.js`.

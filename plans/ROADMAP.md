@@ -24,8 +24,9 @@ move to `done/` and gain a `docs/` counterpart.
 6. [Batch filter](done/006-batch-filter.md) — a data-driven checkbox control to
    show/hide drifters by deployment batch, picking up new batches from the data
    automatically. **Done** ([docs/batches.md](../docs/batches.md)). Batch *source*
-   (which drifter belongs to which deployment batch) still TBD during the cruise;
-   per-batch colour deferred to the `styleForBatch` seam.
+   now wired: a curated `deployments.json` roster (`batch → [D_number]`) applied
+   in `_clean.py`; Deployment 1 (20 drifters) is the first real batch. Per-batch
+   colour landed at the `styleForBatch` seam (staged grey, deployed blue).
 7. [Ship track](done/007-md-ship-track.md) — live R/V Marion Dufresne position
    and track, fetched client-side from the Flotte Océanographique Française
    localisation API (the IPSL WHIRLS "platform positions" source), polled every
