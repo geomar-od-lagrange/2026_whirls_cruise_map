@@ -1,9 +1,8 @@
 # GitLab CI — build the static cruise map and publish it to GitLab Pages.
 #
-# Mirror of the GitHub Actions workflow (.github/workflows/deploy-pages.yml). The
-# build regenerates site/data/ from live sources each run (drifter share, CMEMS,
-# SPASSO FTLE); site/data/ is git-ignored, so the build MUST run in CI — a plain
-# file copy would publish a dataless map.
+# The build regenerates site/data/ from live sources each run (drifter share,
+# CMEMS, SPASSO FTLE); site/data/ is git-ignored, so the build MUST run in CI — a
+# plain file copy would publish a dataless map.
 #
 # GitLab Pages serves the `public/` directory produced by a job named `pages`, so
 # the job builds into site/ then copies it to public/.

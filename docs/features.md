@@ -1,6 +1,6 @@
 # features
 
-- a map rendered as static HTML on github pages
+- a map rendered as static HTML on GitLab Pages
 - an unofficial / work-in-progress caution banner pinned above the header
 - a sidebar "data freshness" panel: the UTC build time and a live UTC clock
 - showing all drifter locations

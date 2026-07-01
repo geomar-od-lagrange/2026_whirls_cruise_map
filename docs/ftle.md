@@ -82,7 +82,7 @@ noise:
 4. **Length prune** — drop rings shorter than ~8 km; these are noise specks, so
    pruning shrinks the file *and* declutters the signal.
 5. **Round coordinates to 3 dp** (~110 m, well below the 1.1 km cell) — effectively
-   lossless, roughly halves the bytes; GitHub Pages gzip does the rest.
+   lossless, roughly halves the bytes; on-the-wire gzip does the rest.
 
 Today: 903 ridge lines, ~11.5 k vertices. The lossy knobs (level fraction, DP
 tolerance, prune length) trade size against filament fidelity; coordinate rounding

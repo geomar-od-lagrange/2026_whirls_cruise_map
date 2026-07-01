@@ -92,7 +92,7 @@ the Python build. The ship is the deliberate exception — it is fetched **live 
 `app.js`**, not baked at build time.
 
 The reason is freshness under the intended hosting. The site is a static bundle
-destined for a cron-rebuilt GitHub Pages deploy, which has no server at view
+destined for a scheduled-rebuild GitLab Pages deploy, which has no server at view
 time. A baked `ship.geojson` would therefore freeze the vessel between rebuilds,
 which defeats the point of a "where is the ship now" layer. Fetching live keeps
 the marker current to the API's ~10-minute cadence regardless of build schedule,

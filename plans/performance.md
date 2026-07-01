@@ -11,6 +11,10 @@ deliberately. **Nothing here is implemented yet**; it is intent, not a changelog
 Measurement method: `curl` (headers + on-wire bytes with `Accept-Encoding:
 gzip,br`) corroborated by a headless-Chrome net-log, against the build stamped
 `2026-07-01T08:38Z`. On-wire figures are the bytes that actually cross the link.
+These were captured against the (now-removed) GitHub Pages host; the payload sizes
+and client-structure findings are host-independent and carry over to GitLab Pages,
+but the host-specific rows (compression, cache headers) should be re-verified once
+GitLab Pages is live.
 
 ## What was measured
 
@@ -46,8 +50,9 @@ structure matters more than bytes.
 
 ## Already sound — preserve
 
-The feared failure mode is absent: GitHub Pages serves the GeoJSON gzipped
-(`application/geo+json` + `content-encoding: gzip`, e.g. tracks 533 KB → 74 KB).
+The feared failure mode was absent on the profiled host: it served the GeoJSON
+gzipped (`application/geo+json` + `content-encoding: gzip`, e.g. tracks 533 KB →
+74 KB) — re-verify GitLab Pages does the same.
 The client is also well-defended against partial failure: `fetchJSON(...,
 {optional:true})` swallows any layer error to `null` so a missing/unreachable
 layer never blanks the map; the ship poll is not awaited and is suppressed while
@@ -90,37 +95,30 @@ Ordered biggest-impact / lowest-risk first. Numbers are the measured wire bytes.
    Server-side compression/caching is out of our control.
 7. **Cache max-age (10 min) equals the rebuild cadence.** Every meaningful repeat
    visit re-pays the full ~890 KB of same-origin data, and the rarely-changing
-   shell (HTML/CSS/JS) also revalidates every 10 min. GitHub Pages gives limited
+   shell (HTML/CSS/JS) also revalidates every 10 min. The Pages host gives limited
    header control, so this is a note more than an action.
 8. **`favicon.ico` → 404 returning a 9.4 KB HTML error page** on every cold load.
    Add a small favicon. Trivial.
 
-## Scheduling & freshness reliability (cron)
+## Scheduling & freshness
 
 Related, because "near-live at sea" depends on both payload size *and* how often
-the build actually runs. The `*/10` Pages rebuild cron is **not firing reliably**
-— confirmed not a config bug (workflow `active`, Actions enabled, valid schedule
-on the default branch), but a property of GitHub's scheduler:
+the build actually runs. Freshness is driven by a **GitLab pipeline schedule** on
+the default branch (see [deploy.md](../docs/deploy.md)). On self-managed GitLab a
+schedule fires no more often than the instance's `PipelineScheduleWorker` polls
+(`gitlab_rails['pipeline_schedule_worker_cron']`), so a sub-hourly cadence needs
+that worker interval set to match — reliable, but capped by the instance config
+rather than dropped under load.
 
-- GitHub docs: the `schedule` event "can be delayed during periods of high loads…
-  High load times include the start of every hour. If the load is sufficiently
-  high enough, some queued jobs may be dropped." Every `*/10` schedule includes
-  the `:00` top-of-hour slot. First runs for a newly-added cron also commonly lag
-  30–60+ min.
-
-Options, if guaranteed cadence matters:
-
-- **Accept best-effort native cron** — simplest; freshness is "eventually, mostly."
-- **External trigger** — a cron on a GEOMAR host (or a hosted cron service)
-  calling `POST /repos/.../actions/workflows/deploy-pages.yml/dispatches` with a
-  fine-grained PAT on a fixed interval. Reliable, but adds an external dependency
-  and a token to manage.
+(Historical: GitHub's native Actions scheduler never fired for this repo across
+three re-registration attempts while push/dispatch worked, so GitHub Pages was
+dropped in favour of GitLab.)
 
 Also weigh whether frequent rebuilds even help: the upstream sources update on
 their own cadences (CMEMS surface currents ~6-hourly; the drifter share and ship
 API ~5–10 min), so sub-hourly rebuilds only refresh the drifter/ship-adjacent
 data — the currents/FTLE layers change far less often. This bounds the value of a
-tight cron and argues against paying the ~1.5 MB rebuild cost every 10 min.
+tight cadence and argues against paying the ~1.5 MB rebuild cost every few minutes.
 
 ## Suggested sequencing
 
