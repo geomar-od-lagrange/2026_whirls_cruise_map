@@ -73,3 +73,17 @@ move to `done/` and gain a `docs/` counterpart.
     current-advection forecast/hindcast extended to cover them. Forecast/hindcast
     sidebar explainers merged into one panel. **Done**
     ([docs/gliders.md](../docs/gliders.md)).
+15. [Near-inertial forecast/hindcast](012-near-inertial-forecast.md) — the drift
+    forecast/hindcast advects through a **time-dependent hourly CMEMS field**
+    instead of a frozen snapshot, so the path curls into the near-inertial loop the
+    model carries (the drifters' visible corners). **Phase 1 done** (built +
+    validated; [docs/forecast.md](../docs/forecast.md)). Phase 0 confirmed CMEMS has
+    the inertial **phase** right but ~0.4 of the **amplitude**; the fix is a scalar
+    gain on the model's own inertial component, not a wind slab (parked in
+    [inertial_slab_model.md](inertial_slab_model.md)). **Open:** Phase 2
+    (per-cell `(mean, A, φ)` decomposition + gain + speed/inertial visualization),
+    Phase 3 (slow-tier cadence + artifact cache).
+16. [Inertial-gain generalization](013-inertial-gain-generalization.md) — does one
+    scalar amplitude gain hold across deployments (D1 has corners too), space, and
+    time, or does it need parameterizing / dropping? Gates the gain half of 15's
+    Phase 2. **Open** (offline investigation).

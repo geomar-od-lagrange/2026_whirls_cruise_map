@@ -144,7 +144,10 @@ always-present line + 1/3/6 h marks, on an optional toggle, paused on
   `(mean u,v, amplitude A, phase φ)` decomposition, speed↔inertial toggle, animated
   cycloid dot — and, from Phase 0, a **calibrated gain on `A`** so the reconstructed
   field (and the advection that reads it) matches the observed inertial amplitude,
-  not just its phase.
+  not just its phase. **Whether one scalar gain generalizes across deployments,
+  space, and time is itself open** — gated by
+  [013-inertial-gain-generalization.md](013-inertial-gain-generalization.md); until
+  it's answered, un-gained (phase-right, honest) is the default.
 - **Phase 3 — cadence.** Move the field build to a slow 6-hourly GitLab schedule;
   fast Pages build fetches the artifact (Job Artifacts API +
   `search_recent_successful_pipelines`, recompute-on-miss, `expire_in`).
