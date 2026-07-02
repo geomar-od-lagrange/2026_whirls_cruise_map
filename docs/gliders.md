@@ -6,6 +6,17 @@ latest-position marker with a track and (like every other instrument) a
 current-advection forecast/hindcast. They are **instruments** in the same
 top-right control as the drifter batches (see [batches.md](batches.md)).
 
+**Why one doc, not `xspar.md` + a gliders doc.** The XSPAR is a surface spar
+buoy, not an underwater glider, but IPSL's WHIRLS operational centre groups both
+under *Gliders* — the THREDDS tree nests them at
+`OBSERVATIONS/GLIDERS/{XSPAR,SEAGLIDERS}` and the site's platform menu is a single
+"Gliders" entry. Following that terminology keeps this map aligned with the source
+it draws from, so the XSPAR is documented here with the seagliders rather than on
+its own; the code likewise treats it as one glider `type` among others (auto-
+discovered from the same catalog structure), so a shared doc matches the shared
+mechanism. Where the distinction matters — the CR-only `M/D/YY` CSV, the amber
+marker colour, the single-fix (marker-only) case — it is called out per type below.
+
 ## Source: the WHIRLS THREDDS server
 
 The gliders come from the IPSL WHIRLS THREDDS server
