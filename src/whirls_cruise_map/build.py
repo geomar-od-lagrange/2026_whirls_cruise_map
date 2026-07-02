@@ -22,7 +22,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import _clean, _currents, _deploy, _fetch, _forecast, _geojson, _ship
+from . import _clean, _currents, _deploy, _fetch, _forecast, _geojson, _gliders, _ship
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SITE_DATA = REPO_ROOT / "site" / "data"
@@ -70,6 +70,23 @@ def main() -> None:
         f"{len(awaiting)} awaiting first fix"
     )
 
+    # Glider platforms (XSPAR buoy + seagliders), from the WHIRLS THREDDS server.
+    # Best-effort and independent of the drifter share: a dead THREDDS host yields
+    # no gliders.geojson and the map simply omits them.
+    # Fetched here and reused by the forecast/hindcast steps below, so gliders and
+    # drifters share one advection pass. An empty list on failure leaves both the
+    # gliders.geojson and the advection instrument-set exactly as drifters-only.
+    gliders = []
+    try:
+        gliders = _gliders.fetch_gliders()
+        _write_json(SITE_DATA / "gliders.geojson", _geojson.gliders_geojson(gliders))
+        print(
+            f"wrote gliders.geojson ({len(gliders)} platforms: "
+            f"{', '.join(f'{p.id}[{len(p.fixes)}]' for p in gliders) or 'none'})"
+        )
+    except Exception as exc:
+        print(f"WARNING: glider fetch failed, skipping gliders.geojson: {exc}")
+
     # Currents + forecast are best-effort: positions/tracks still build if CMEMS
     # is down. One field feeds three artifacts — the coarse vector grid (trails),
     # the near-native speed raster + meta, and the per-drifter advection forecast
@@ -95,27 +112,28 @@ def main() -> None:
                 f"WARNING: currents render failed, skipping currents artifacts: {exc}"
             )
 
-        # Per-drifter current-advection forecast (true field, NaN land); its own
-        # best-effort step so a currents-render failure doesn't suppress it.
+        # Per-instrument current-advection forecast (drifters + gliders; true
+        # field, NaN land); its own best-effort step so a currents-render failure
+        # doesn't suppress it.
         try:
-            forecast = _forecast.forecast_geojson(field, tracks)
+            forecast = _forecast.forecast_geojson(field, tracks, gliders)
             _write_json(SITE_DATA / "forecast.geojson", forecast)
             print(
                 f"wrote forecast.geojson "
-                f"({len(forecast['features'])} drifter forecasts)"
+                f"({len(forecast['features'])} instrument forecasts)"
             )
         except Exception as exc:
             print(f"WARNING: forecast step failed, skipping forecast.geojson: {exc}")
 
-        # Per-drifter current-advection hindcast (same frozen field integrated
+        # Per-instrument current-advection hindcast (same frozen field integrated
         # backward): where the present surface current would have carried a
-        # particle into each drifter over the past 6 h. Independent best-effort.
+        # particle into each instrument over the past 6 h. Independent best-effort.
         try:
-            hindcast = _forecast.hindcast_geojson(field, tracks)
+            hindcast = _forecast.hindcast_geojson(field, tracks, gliders)
             _write_json(SITE_DATA / "hindcast.geojson", hindcast)
             print(
                 f"wrote hindcast.geojson "
-                f"({len(hindcast['features'])} drifter hindcasts)"
+                f"({len(hindcast['features'])} instrument hindcasts)"
             )
         except Exception as exc:
             print(f"WARNING: hindcast step failed, skipping hindcast.geojson: {exc}")

@@ -1,8 +1,11 @@
 """Current-advection forecast and hindcast: advect a passive particle through the
-frozen CMEMS surface-current field from each drifter's latest fix — forward for
-the forecast, backward for the hindcast.
+frozen CMEMS surface-current field from each instrument's latest fix — the
+drifters and the gliders (XSPAR buoy, seagliders) alike — forward for the
+forecast, backward for the hindcast. Gliders maneuver actively, so their
+advection is a passive-drift what-if (surface current only), meaningful for their
+drift phases rather than a track prediction.
 
-This is a **streamline of the present field**: starting at the drifter head we
+This is a **streamline of the present field**: starting at the instrument head we
 integrate ``dx/dt = u(x, y)``, ``dy/dt = v(x, y)`` with RK4 to ±6 h and draw the
 path, marking the 1 / 3 / 6 h positions on each side. It is the quantitative
 version of what the animated flow trails show qualitatively — same field, but the
@@ -160,54 +163,77 @@ def _integrate(
     return coords, marks
 
 
-def _advection_geojson(field: xr.Dataset, tracks: pd.DataFrame, direction: int) -> dict:
-    """FeatureCollection of one advection ``LineString`` per drifter, from its
-    latest fix through ``field`` — ``direction`` +1 forward (forecast) or -1
-    backward (hindcast).
+def _drifter_heads(tracks: pd.DataFrame) -> list[tuple[dict, float, float]]:
+    """``(properties, lon, lat)`` for each drifter's latest fix. ``properties``
+    carries ``D_number`` and ``batch`` (the *latest* fix's batch — the same key
+    the marker and trajectory use, so the advection line toggles with them)."""
+    heads = []
+    for d_number, group in tracks.sort_values("date_UTC").groupby("D_number"):
+        last = list(group.itertuples(index=False))[-1]
+        heads.append(
+            ({"D_number": d_number, "batch": last.batch},
+             float(last.Longitude), float(last.Latitude))
+        )
+    return heads
 
-    Every drifter with a valid latest fix gets one (single-fix drifters included
-    — advection needs only a position). A drifter whose head is already on
-    land/off-grid yields no usable line (``<2`` vertices) and is skipped.
-    Coordinates are ``[lon, lat]``. Properties: ``D_number``, ``batch`` (the
-    *latest* fix's batch, the same key the marker and trajectory use, so the line
-    toggles together with them), ``valid_time``, and ``marks`` — the list of
-    ``{hours, lon, lat}`` the integration reached (``hours`` signed by
-    ``direction``), parallel to the ``fixes`` pattern in
-    :func:`whirls_cruise_map._geojson.tracks_geojson`.
+
+def _glider_heads(gliders: list) -> list[tuple[dict, float, float]]:
+    """``(properties, lon, lat)`` for each glider platform's latest fix (see
+    :mod:`._gliders`). ``batch`` is the platform ``type`` (``xspar`` /
+    ``seaglider``) — the same key its marker and track use, so the advection line
+    rides the same instrument row. Gliders maneuver, so this is a passive-drift
+    what-if (the surface current only), useful for their drift phases."""
+    heads = []
+    for p in gliders:
+        _, lat, lon = p.fixes[-1]
+        heads.append(({"id": p.id, "batch": p.type}, float(lon), float(lat)))
+    return heads
+
+
+def _advection_geojson(
+    field: xr.Dataset, tracks: pd.DataFrame, gliders: list, direction: int
+) -> dict:
+    """FeatureCollection of one advection ``LineString`` per instrument (drifters
+    and gliders), from its latest fix through ``field`` — ``direction`` +1 forward
+    (forecast) or -1 backward (hindcast).
+
+    Every instrument with a valid latest fix gets one (advection needs only a
+    position). One whose head is already on land/off-grid yields no usable line
+    (``<2`` vertices) and is skipped. Coordinates are ``[lon, lat]``. Properties:
+    the head identity (``D_number`` for drifters, ``id`` for gliders), ``batch``
+    (the instrument key its marker/track toggle under), ``valid_time``, and
+    ``marks`` — the ``{hours, lon, lat}`` the integration reached (``hours`` signed
+    by ``direction``).
     """
     sampler = _Field(field)
     valid = _currents.valid_time(field)
 
     features = []
-    for d_number, group in tracks.sort_values("date_UTC").groupby("D_number"):
-        last = list(group.itertuples(index=False))[-1]
-        coords, marks = _integrate(
-            sampler, float(last.Longitude), float(last.Latitude), direction
-        )
+    for props, lon, lat in _drifter_heads(tracks) + _glider_heads(gliders):
+        coords, marks = _integrate(sampler, lon, lat, direction)
         if len(coords) < 2:
             continue
         features.append(
             {
                 "type": "Feature",
                 "geometry": {"type": "LineString", "coordinates": coords},
-                "properties": {
-                    "D_number": d_number,
-                    "batch": last.batch,
-                    "valid_time": valid,
-                    "marks": marks,
-                },
+                "properties": {**props, "valid_time": valid, "marks": marks},
             }
         )
     return {"type": "FeatureCollection", "features": features}
 
 
-def forecast_geojson(field: xr.Dataset, tracks: pd.DataFrame) -> dict:
+def forecast_geojson(
+    field: xr.Dataset, tracks: pd.DataFrame, gliders: list | None = None
+) -> dict:
     """Forward current-advection forecast to +6 h. See :func:`_advection_geojson`."""
-    return _advection_geojson(field, tracks, direction=1)
+    return _advection_geojson(field, tracks, gliders or [], direction=1)
 
 
-def hindcast_geojson(field: xr.Dataset, tracks: pd.DataFrame) -> dict:
+def hindcast_geojson(
+    field: xr.Dataset, tracks: pd.DataFrame, gliders: list | None = None
+) -> dict:
     """Backward current-advection hindcast to -6 h: where the present frozen field
-    would have carried a particle into each drifter head. A current-only
+    would have carried a particle into each instrument head. A current-only
     back-trajectory, not the observed track. See :func:`_advection_geojson`."""
-    return _advection_geojson(field, tracks, direction=-1)
+    return _advection_geojson(field, tracks, gliders or [], direction=-1)

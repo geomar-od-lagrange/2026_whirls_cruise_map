@@ -84,6 +84,68 @@ def _fix_record(row, prev_pt) -> dict:
     }
 
 
+def _glider_fix_record(pt, prev_pt) -> dict:
+    """One glider fix's popup payload: time plus the velocity *derived* from the
+    ``prev_pt`` -> this-fix segment. Gliders carry no reported velocity or
+    battery, so — unlike :func:`_fix_record` — only the derived pair is emitted;
+    the client shows a dash for the fields a glider lacks. ``pt`` is
+    ``(time, lat, lon)``."""
+    speed, heading = _segment_motion(prev_pt, (pt[1], pt[2], pt[0]))
+    return {
+        "date_UTC": pt[0].isoformat(),
+        "derived_speed_mps": _round(speed, 4),
+        "derived_heading_deg": _round(heading, 1),
+    }
+
+
+def gliders_geojson(platforms: list) -> dict:
+    """FeatureCollection for the glider platforms (see :mod:`._gliders`).
+
+    Per platform: a ``Point`` at its most-recent fix and, when it has >=2 fixes,
+    a ``LineString`` track. Coordinates are [Longitude, Latitude]. Properties
+    carry ``id`` and ``type`` (``"xspar"`` / ``"seaglider"``, keying the client's
+    colour and label); the Point adds the latest :func:`_glider_fix_record`, the
+    LineString a per-vertex ``fixes`` list aligned with ``coordinates`` (so the
+    client draws a popup-bearing dot per fix, as it does for drifter tracks).
+    """
+    features = []
+    for p in platforms:
+        fixes = p.fixes
+        last = fixes[-1]
+        prev = (fixes[-2][1], fixes[-2][2], fixes[-2][0]) if len(fixes) >= 2 else None
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [last[2], last[1]]},
+                "properties": {
+                    "id": p.id,
+                    "type": p.type,
+                    **_glider_fix_record(last, prev),
+                },
+            }
+        )
+        if len(fixes) < 2:
+            continue
+        coords, fix_recs, prev_pt = [], [], None
+        for f in fixes:
+            coords.append([f[2], f[1]])
+            fix_recs.append(_glider_fix_record(f, prev_pt))
+            prev_pt = (f[1], f[2], f[0])
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": coords},
+                "properties": {
+                    "id": p.id,
+                    "type": p.type,
+                    "n_fixes": len(fixes),
+                    "fixes": fix_recs,
+                },
+            }
+        )
+    return _feature_collection(features)
+
+
 def latest_geojson(tracks: pd.DataFrame) -> dict:
     """FeatureCollection of one Point per drifter at its most-recent valid fix.
 

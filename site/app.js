@@ -22,6 +22,7 @@ const DATA = {
   meta: "./data/currents_meta.json",
   speed: "./data/speed.png",
   build: "./data/build.json",
+  gliders: "./data/gliders.geojson",
 };
 
 // Flow-trail colour ramp: mostly dark, white only in the fast jet, so the green
@@ -75,11 +76,15 @@ function styleForBatch(batch) {
 // Pretty labels for known batch keys; unknown keys (e.g. a future deployment_2)
 // fall back to the raw value, so new batches surface readably with no code change.
 const BATCH_LABELS = {
-  pre_deploy: "Pre-deployment",
-  deployment_1: "Deployment 1",
-  deployment_2: "Deployment 2",
+  pre_deploy: "Drifter pre",
+  deployment_1: "Drifter batch 1",
+  deployment_2: "Drifter batch 2",
 };
-const batchLabel = (batch) => BATCH_LABELS[batch] ?? batch;
+// Instrument rows share this control: drifter batches use BATCH_LABELS; glider
+// types (xspar/seaglider) fall back to their GLIDER_STYLES label so they read as
+// "XSPAR buoy" / "Seagliders" in the same compartment.
+const batchLabel = (batch) =>
+  BATCH_LABELS[batch] ?? GLIDER_STYLES[batch]?.label ?? batch;
 // ---------------------------------------------------------------------------
 
 // `optional: true` means "never throws" — it swallows not just HTTP error
@@ -182,16 +187,20 @@ function buildBatchGroups(geojson) {
   return groups;
 }
 
-// A checkbox panel governing all drifter visibility — this control, not the
-// Leaflet layer control, owns it. One row per batch shows/hides that batch's
-// markers. Above them, one master row per *overlay* (Trajectories, Forecast, …)
-// turns that overlay's per-batch layers on or off for every batch at once. Each
-// overlay is `{ label, groups: {batch: layer}, on }`. They compose with the
-// batch rows: an overlay's layer for a batch shows only when both that batch row
-// and the overlay's master row are checked, so unchecking a batch hides its
-// markers *and* every overlay riding on it. Data-driven from `markerGroups`, so
-// new batches appear automatically; adding an overlay is one more list entry.
-// Markers start visible; overlays start at their own `on` (off by default).
+// A checkbox panel governing all instrument visibility — this control, not the
+// Leaflet layer control, owns it. Instruments are the drifter batches and the
+// glider platforms (XSPAR buoy, seagliders), each one row that shows/hides that
+// instrument's markers. Above them, one master row per *overlay* (True track,
+// Forecast, Hindcast) turns that overlay's per-instrument layers on or off for
+// every instrument at once. Each overlay is `{ label, groups: {key: layer}, on }`
+// keyed by the same instrument key as `markerGroups`. They compose with the
+// instrument rows: an overlay's layer for an instrument shows only when both that
+// instrument's row and the overlay's master row are checked, so unchecking an
+// instrument hides its markers *and* every overlay riding on it. Data-driven from
+// `markerGroups`, so new batches/gliders appear automatically; adding an overlay
+// is one more list entry. (Gliders carry a track but no forecast/hindcast, so the
+// Forecast/Hindcast masters simply have no glider layer to act on.) Markers start
+// visible; overlays start at their own `on` (off by default).
 function buildBatchControl(map, markerGroups, overlays) {
   // Pre-deployment drifters are staged (still aboard, not in the water), so they
   // start hidden; deployment batches start visible. sync() (called at build) then
@@ -222,7 +231,7 @@ function buildBatchControl(map, markerGroups, overlays) {
     L.DomEvent.disableClickPropagation(div);
     L.DomEvent.disableScrollPropagation(div);
     const title = L.DomUtil.create("h4", "", div);
-    title.textContent = "Drifters";
+    title.textContent = "Instruments";
 
     // Master row per overlay, above the batch rows. A short line swatch in the
     // overlay's own colour keys the checkbox to the lines it draws on the map.
@@ -252,7 +261,10 @@ function buildBatchControl(map, markerGroups, overlays) {
       cb.type = "checkbox";
       cb.checked = batchOn[batch];
       const swatch = L.DomUtil.create("span", "batch-swatch", row);
-      swatch.style.background = styleForBatch(batch).fillColor;
+      // Glider rows key to their instrument colour; drifter batches to their
+      // marker fill.
+      swatch.style.background =
+        GLIDER_STYLES[batch]?.color ?? styleForBatch(batch).fillColor;
       const text = L.DomUtil.create("span", "batch-text", row);
       text.textContent = `${batchLabel(batch)} (${group.getLayers().length})`;
       cb.addEventListener("change", () => {
@@ -363,6 +375,99 @@ function buildAdvectionGroups(geojson, color) {
   return groups;
 }
 
+// --- gliders ----------------------------------------------------------------
+// The WHIRLS glider platforms (see docs/gliders.md): the XSPAR spar buoy and the
+// seagliders, built server-side into gliders.geojson (a latest Point + a track
+// LineString per platform). Coloured by `type` — the operational map's own
+// amber (XSPAR) / blue (seaglider) — and drawn with a diamond marker so they
+// read apart from the drifters' circles. Not batch-driven (gliders aren't
+// deployment batches), so they ride the layer control, not the batch filter.
+const GLIDER_STYLES = {
+  xspar: { color: "#f59e0b", label: "XSPAR buoy" },
+  seaglider: { color: "#38bdf8", label: "Seagliders" },
+};
+const gliderStyle = (type) =>
+  GLIDER_STYLES[type] ?? { color: "#38bdf8", label: type ?? "Glider" };
+
+function gliderIcon(type) {
+  return L.divIcon({
+    className: "glider-marker",
+    html: `<span style="background:${gliderStyle(type).color}"></span>`,
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
+  });
+}
+
+// Popup for a glider fix. Gliders carry no reported velocity or battery, so —
+// unlike the drifter popup — only the derived velocity is shown; `id`/`type`
+// head it. Shared by the latest marker and each track dot.
+function gliderPopupHtml(props, latlng) {
+  const p = props || {};
+  return `
+    <div class="popup">
+      <strong>${p.id ?? "—"}</strong> <span class="popup-label">${gliderStyle(p.type).label}</span><br/>
+      <span class="popup-label">Last fix:</span> ${formatFixTime(p.date_UTC)}<br/>
+      <span class="popup-label">Speed (derived):</span> ${fmtSpeedMps(p.derived_speed_mps)}<br/>
+      <span class="popup-label">Heading (derived):</span> ${fmtDir(p.derived_heading_deg)}<br/>
+      <span class="popup-label">Position:</span>
+      ${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}
+    </div>`;
+}
+
+// Latest-position markers, one feature group per glider `type`, so each platform
+// class is an instrument row in the batch control (see buildBatchControl) — the
+// same shape as buildBatchGroups for drifters. Diamond marker so gliders read
+// apart from the drifters' circles. Returns { type: featureGroup }.
+function buildGliderMarkerGroups(geojson) {
+  const groups = {};
+  for (const feature of geojson.features ?? []) {
+    if (feature.geometry?.type !== "Point") continue;
+    const { type } = feature.properties ?? {};
+    const [lng, lat] = feature.geometry.coordinates;
+    const marker = L.marker([lat, lng], {
+      icon: gliderIcon(type),
+      zIndexOffset: 500,
+    }).bindPopup(gliderPopupHtml(feature.properties, { lat, lng }));
+    (groups[type] ??= L.featureGroup()).addLayer(marker);
+  }
+  return groups;
+}
+
+// Glider tracks, one feature group per `type`, keyed like buildGliderMarkerGroups
+// so they ride the "True track" overlay against the matching instrument row. Per
+// platform (from its track LineString): a non-interactive line plus a
+// popup-bearing dot per fix — mirroring buildTrackGroups. Drawn in TRACK_COLOR,
+// the single true-track colour shared with the drifters (the instrument identity
+// stays on the coloured marker); this keeps every past track reading as one
+// layer. A single-fix platform (e.g. the XSPAR with one report) has no LineString
+// and so no track group, only its marker. Returns { type: featureGroup }.
+function buildGliderTrackGroups(geojson) {
+  const groups = {};
+  for (const feature of geojson.features ?? []) {
+    if (feature.geometry?.type !== "LineString") continue;
+    const { id, type, fixes } = feature.properties ?? {};
+    const group = (groups[type] ??= L.featureGroup());
+    const coords = feature.geometry.coordinates;
+    L.polyline(
+      coords.map(([lng, lat]) => [lat, lng]),
+      { color: TRACK_COLOR, weight: 2, opacity: 0.85, interactive: false }
+    ).addTo(group);
+    coords.forEach(([lng, lat], i) => {
+      const dot = L.circleMarker([lat, lng], {
+        radius: 3,
+        color: TRACK_COLOR,
+        weight: 1,
+        fillColor: TRACK_COLOR,
+        fillOpacity: 0.9,
+      });
+      dot.bindPopup(gliderPopupHtml({ id, type, ...(fixes?.[i] ?? {}) }, dot.getLatLng()));
+      group.addLayer(dot);
+    });
+  }
+  return groups;
+}
+// ---------------------------------------------------------------------------
+
 function renderAwaiting(ids) {
   const list = ids || [];
   const countEl = document.getElementById("awaiting-count");
@@ -400,44 +505,30 @@ function renderCurrentsInfo(meta) {
     `<span>${meta.vmax.toFixed(2)}</span></div>`;
 }
 
-// Shared renderer for the forecast/hindcast sidebar panels. valid_time is baked
-// into every feature (one frozen field, one time), read off the first. Three
-// states: no artifact (CMEMS down / not built), built but empty (every drifter
-// head sits in a coastal NaN cell — the pre-deployment cluster at port does
-// this), and built with lines.
-function renderAdvectionInfo(data, opts) {
-  const timeEl = document.getElementById(opts.timeId);
+// Renderer for the combined forecast+hindcast sidebar panel. Both are one frozen
+// field at one time and share every caveat (spelled out in the panel's static
+// note), so one status line covers them. valid_time is baked into every feature,
+// read off the first available (forecast, else hindcast). Three states: no
+// artifact (CMEMS down / not built), built but empty (every instrument head sits
+// in a coastal NaN cell — the pre-deployment cluster at port does this), and
+// built with lines.
+function renderDriftInfo(forecast, hindcast) {
+  const timeEl = document.getElementById("drift-time");
   if (!timeEl) return;
-  const features = data?.features;
-  if (!features) {
-    timeEl.textContent = opts.unavailable;
-  } else if (!features.length) {
-    timeEl.textContent = opts.empty;
-  } else {
-    timeEl.textContent = opts.caption(features[0].properties?.valid_time);
+  const fFeatures = forecast?.features;
+  const hFeatures = hindcast?.features;
+  if (!fFeatures && !hFeatures) {
+    timeEl.textContent = "Drift forecast & hindcast unavailable.";
+    return;
   }
-}
-
-function renderForecastInfo(forecast) {
-  renderAdvectionInfo(forecast, {
-    timeId: "forecast-time",
-    unavailable: "Drift forecast unavailable.",
-    empty: "No drift forecasts — every drifter head is on land or off-grid.",
-    caption: (valid) =>
-      `Current-advection forecast, surface current only; ` +
-      `field frozen at ${formatFixTime(valid)}.`,
-  });
-}
-
-function renderHindcastInfo(hindcast) {
-  renderAdvectionInfo(hindcast, {
-    timeId: "hindcast-time",
-    unavailable: "Drift hindcast unavailable.",
-    empty: "No drift hindcasts — every drifter head is on land or off-grid.",
-    caption: (valid) =>
-      `Current-advection back-track (not the observed track), surface current ` +
-      `only; field frozen at ${formatFixTime(valid)}.`,
-  });
+  const valid =
+    fFeatures?.[0]?.properties?.valid_time ?? hFeatures?.[0]?.properties?.valid_time;
+  if (!valid) {
+    timeEl.textContent =
+      "No drift lines — every instrument head is on land or off-grid.";
+    return;
+  }
+  timeEl.textContent = `Current-advection through the field frozen at ${formatFixTime(valid)}.`;
 }
 
 // --- ship (R/V Marion Dufresne) live track ---------------------------------
@@ -785,19 +876,39 @@ async function main() {
   const trackGroups = tracks ? buildTrackGroups(tracks) : {};
   const forecast = await fetchJSON(DATA.forecast, { optional: true });
   const forecastGroups = forecast ? buildAdvectionGroups(forecast, FORECAST_COLOR) : {};
-  renderForecastInfo(forecast);
   const hindcast = await fetchJSON(DATA.hindcast, { optional: true });
   const hindcastGroups = hindcast ? buildAdvectionGroups(hindcast, HINDCAST_COLOR) : {};
-  renderHindcastInfo(hindcast);
+  renderDriftInfo(forecast, hindcast);
 
-  // Markers last, so they sit on top of the shading and flow layers. Each batch
-  // group is added directly; the batch filter control (not the layer control)
-  // governs their visibility — and the trajectories' and forecast's.
-  for (const group of Object.values(batchGroups)) {
+  // Glider platforms (XSPAR buoy + seagliders) are instruments in the same
+  // control as the drifter batches: their latest markers join the instrument
+  // rows, their tracks the "True track" overlay. Optional so a missing file can't
+  // blank the map. (Gliders have no forecast/hindcast, so those overlays get no
+  // glider group.)
+  const gliders = await fetchJSON(DATA.gliders, { optional: true });
+  const gliderMarkerGroups = gliders ? buildGliderMarkerGroups(gliders) : {};
+  const gliderTrackGroups = gliders ? buildGliderTrackGroups(gliders) : {};
+
+  // One instrument control governs drifter batches *and* gliders. Marker rows =
+  // drifter batches + glider platforms; the True-track overlay carries both the
+  // drifter trajectories and the glider tracks, so its master toggle acts on
+  // every instrument at once.
+  const markerGroups = { ...batchGroups, ...gliderMarkerGroups };
+
+  // Markers last, so they sit on top of the shading and flow layers. Added
+  // directly; the instrument control (not the layer control) governs their
+  // visibility — and the tracks', forecast's, and hindcast's. (sync() in the
+  // control reconciles the initial checkbox state, e.g. hiding pre-deploy.)
+  for (const group of Object.values(markerGroups)) {
     group.addTo(map);
   }
-  buildBatchControl(map, batchGroups, [
-    { label: "True track", groups: trackGroups, on: false, color: TRACK_COLOR },
+  buildBatchControl(map, markerGroups, [
+    {
+      label: "True track",
+      groups: { ...trackGroups, ...gliderTrackGroups },
+      on: false,
+      color: TRACK_COLOR,
+    },
     { label: "Forecast (1/3/6 h)", groups: forecastGroups, on: false, color: FORECAST_COLOR },
     { label: "Hindcast (1/3/6 h)", groups: hindcastGroups, on: false, color: HINDCAST_COLOR },
   ]).addTo(map);

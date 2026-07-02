@@ -103,8 +103,7 @@ body {
 #status-panel,
 #ship-panel,
 #currents-panel,
-#forecast-panel,
-#hindcast-panel {
+#drift-panel {
   margin-bottom: 18px;
   padding-bottom: 14px;
   border-bottom: 1px solid #e3e9ef;
@@ -248,6 +247,19 @@ body {
   border: 2px solid #fff;
   border-radius: 50%;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+/* Glider marker: a coloured diamond (rotated square) so the XSPAR buoy and the
+   seagliders read apart from the drifters' circles. The inner <span> carries the
+   per-type fill (set inline); the white cased border matches the ship marker. */
+.glider-marker span {
+  display: block;
+  width: 12px;
+  height: 12px;
+  margin: 2px;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  transform: rotate(45deg);
 }
 
 .popup strong {
