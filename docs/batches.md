@@ -48,32 +48,40 @@ smaller batch (3 drifters) that had separated from the ship and drifted steadily
 for over an hour. Drifters that merely reported the same day while stationary on
 deck, or that showed only brief ship-transit motion, stayed `pre_deploy`.
 
-## GUI: the batch filter
+## GUI: the instrument filter
 
-A "Drifters" control sits at the top-right of the map. It lists one checkbox per
-batch present in `latest.geojson`, each with a round colour swatch and the batch's
-marker count. Unchecking a box removes that batch's markers; rechecking restores
-them. Deployment batches start visible; the staging `pre_deploy` batch starts
-**hidden** (the drifters are still aboard, not in the water), so the map opens on
-the deployed drifters — recheck its row to show the staged ones.
+An **"Instruments"** control sits at the top-right of the map. It lists one
+checkbox per instrument — each drifter batch present in `latest.geojson` **and**
+each glider platform (XSPAR buoy, seagliders; see [gliders.md](gliders.md)) — with
+a colour swatch (a round one for drifter batches, the instrument colour for
+gliders) and the row's marker count. Unchecking a box removes that instrument's
+markers; rechecking restores them. Deployment batches and gliders start visible;
+the staging `pre_deploy` batch starts **hidden** (the drifters are still aboard,
+not in the water), so the map opens on the deployed drifters — recheck its row to
+show the staged ones.
 
 The control is **data-driven**: it builds one `L.featureGroup` per distinct
-`batch` value found in the data and renders a row for each. A new batch therefore
-appears automatically once the data contains it — no client code change. Known
-keys get friendly labels (`pre_deploy` → "Pre-deployment"); any other key is
-shown verbatim, so an unanticipated batch is still legible.
+instrument key — a drifter `batch`, or a glider `type` — and renders a row for
+each. A new batch or a new glider therefore appears automatically once the data
+contains it — no client code change. Known keys get friendly labels
+(`pre_deploy` → "Drifter pre", `deployment_1` → "Drifter batch 1", the gliders →
+"XSPAR buoy" / "Seagliders"); any other key is shown verbatim, so an unanticipated
+instrument is still legible.
 
 Master **overlay** rows head the list — **True track**, **Forecast** and
-**Hindcast** — each with a short line swatch in its own colour (the round swatches
-below key batches to their markers; the line swatches key overlays to their lines).
-A horizontal divider separates these line rows from the batch (marker) rows below.
-Each overlay row turns its lines and dots (see [trajectories.md](trajectories.md),
-[forecast.md](forecast.md)) on or off for every batch at once, and composes with
-the per-batch rows: a batch's overlay shows only when both its batch row and that
-overlay's row are checked. So unchecking a batch hides its markers *and* its
-trajectory, forecast and hindcast together. All overlays start hidden.
+**Hindcast** — each with a short line swatch in its own colour (the marker swatches
+below key each instrument to its markers; the line swatches key overlays to their
+lines). A horizontal divider separates these line rows from the instrument (marker)
+rows below. Each overlay row turns its lines and dots (see
+[trajectories.md](trajectories.md), [forecast.md](forecast.md)) on or off for every
+instrument at once, and composes with the per-instrument rows: an instrument's
+overlay shows only when both its own row and that overlay's row are checked. So
+unchecking an instrument hides its markers *and* its trajectory, forecast and
+hindcast together. All overlays start hidden. (Gliders ride the True-track,
+Forecast and Hindcast overlays too; a glider with a single fix has no track, only
+its marker.)
 
-This control — not the Leaflet layer control — governs all drifter visibility
+This control — not the Leaflet layer control — governs all instrument visibility
 (markers and the trajectory/forecast/hindcast overlays); the layer control
 retains the speed, flow, and ship overlays.
 

@@ -65,3 +65,11 @@ move to `done/` and gain a `docs/` counterpart.
     basemap and the base-layer selector (OpenStreetMap is the sole basemap); and
     trimmed the forecast/hindcast sidebar explainers to bare facts (no line-style
     legend, no trust guidance). **Done.**
+14. [Glider instruments](done/011-gliders.md) — the **XSPAR** spar buoy and the
+    **seagliders**, auto-discovered from the WHIRLS THREDDS catalogs and rendered
+    alongside the drifters: latest diamond markers + tracks, folded into the
+    batch control (renamed **Instruments**; batches relabelled "Drifter batch N",
+    "Drifter pre"), with true tracks in the shared orange and per-instrument
+    current-advection forecast/hindcast extended to cover them. Forecast/hindcast
+    sidebar explainers merged into one panel. **Done**
+    ([docs/gliders.md](../docs/gliders.md)).

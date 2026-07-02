@@ -92,16 +92,20 @@ keep the full track regardless. So the roster (see [batches.md](batches.md))
 decides *who* is truncated and the detection decides *where* — the roster drives
 batch colour/filtering, the detection supplies the cut point.
 
-## Control: coupled to the batch filter
+## Control: coupled to the instrument filter
 
-True tracks are governed by the **Drifters** control (top-right), not the
-Leaflet layer control — the same control that filters batches (see
-[batches.md](batches.md)). A master **True track** checkbox turns the lines and
-dots on or off for every batch at once; each batch's own checkbox turns that
-batch's markers on or off. The two compose: **a batch's track shows only
-when both its batch row and the master True track row are checked**, so
-unchecking a batch hides its markers *and* its track together. Markers start
-visible; tracks start hidden.
+True tracks are governed by the **Instruments** control (top-right), not the
+Leaflet layer control — the same control that filters drifter batches and glider
+platforms (see [batches.md](batches.md)). A master **True track** checkbox turns
+the lines and dots on or off for every instrument at once; each instrument's own
+checkbox turns that instrument's markers on or off. The two compose: **an
+instrument's track shows only when both its own row and the master True track row
+are checked**, so unchecking an instrument hides its markers *and* its track
+together. Markers start visible; tracks start hidden.
+
+The gliders' tracks share this **True track** layer, drawn in the same orange
+`TRACK_COLOR` so every past track reads as one layer — the instrument identity
+stays on the coloured diamond marker, not the track (see [gliders.md](gliders.md)).
 
 ## Rendering and stacking order
 
