@@ -26,7 +26,9 @@ Deployment-2 site (11.48°E, −37.36°S; local inertial period T_f = 19.8 h) sh
   fixed snapshot gives constant velocity — the oscillation the model *has* is
   discarded at t = 0. **Un-freezing the field recovers the inertial loop for
   free**, no slab — *to the extent CMEMS's NI amplitude is realistic.*
-- **The only open question is realism, and it's data-gated.** CMEMS's modelled NI
+- **The only open question is realism — now answered (Phase 0, below): CMEMS gets
+  the inertial phase right but only ~0.4 of the amplitude, closable with a scalar
+  gain, no slab.** CMEMS's modelled NI
   at D2 is ~2.5 cm/s; free-running globals can under-represent wind-driven NI. If
   the drifters' *observed* NI is much larger, we'd want the parked slab to add
   amplitude. Phase 0 settles this against the drifter velocities.
@@ -119,18 +121,30 @@ always-present line + 1/3/6 h marks, on an optional toggle, paused on
 
 ## Plan of work
 
-- **Phase 0 — validate (`tmp_ni/`, no `src/` changes). The gate.** Compare, at the
-  Deployment-2 (and other) drifters: **observed** NI (band-pass the drifters' own
-  derived velocities around local f) vs **CMEMS** NI sampled along-track from the
-  time-window field. Does time-dependent CMEMS advection reproduce the observed
-  loops in phase and amplitude? If amplitude falls short, quantify the deficit
-  (that, and only that, is what would revive [the slab](inertial_slab_model.md)).
-- **Phase 1 — time-dependent CMEMS advection.** Windowed `subset` in `_currents`
-  (keep `time`); linear-in-time in `_forecast._Field`; forecast + hindcast advect
-  through the window. Ships the core feature.
-- **Phase 2 — visualization.** Per the design spike: speed↔inertial toggle,
-  inertial amplitude/phase fields, animated cycloid dot. May introduce the per-cell
-  inertial decomposition.
+- **Phase 0 — validate. DONE** (`tmp_ni/phase0_compare.py`, `phase0_inertial.py`).
+  Seeded a particle at each Deployment-2 drifter's observed position at
+  2026-07-01T23:33:22Z and advected ±12 h through the hourly field vs the observed
+  track (~20 h overlap, ~1 inertial period). Result: mean drift captured
+  (separations 2–4 km over ~14 km); **inertial phase and rotation sense correct**
+  (mean-removed residuals trace closed inertial circles, the simulated one
+  concentric inside the observed); **amplitude muted to ~0.31–0.45** of observed
+  (the true tracks' sharp corners — D-559's deep cusp — are smoothed). The drifters
+  are drogued *below* the surface the model samples, where NI is weaker, so the
+  deficit is real, not a depth artifact. **Decision: not the slab.** Phase being
+  right means the gap closes with a **single scalar gain (~2.3) on the
+  CMEMS-derived inertial component** (no GFS, no spin-up), applied via the Phase-2
+  decomposition. Caveat: 3 drifters / one 20 h window / one place — indicative,
+  expose the gain as a parameter and confirm stability before baking a number in.
+- **Phase 1 — time-dependent CMEMS advection. DONE** (commit on
+  `near-inertial-forecast`). Windowed hourly `subset` in `_currents.fetch_field_window`
+  (keeps `time`); bilinear-space + linear-time in `_forecast._Field`; forecast +
+  hindcast advect through the window. This is the "more correct than frozen"
+  feature and already carries ~40 % of the inertial excursion with correct phase.
+- **Phase 2 — visualization + inertial gain.** Per the design spike: the per-cell
+  `(mean u,v, amplitude A, phase φ)` decomposition, speed↔inertial toggle, animated
+  cycloid dot — and, from Phase 0, a **calibrated gain on `A`** so the reconstructed
+  field (and the advection that reads it) matches the observed inertial amplitude,
+  not just its phase.
 - **Phase 3 — cadence.** Move the field build to a slow 6-hourly GitLab schedule;
   fast Pages build fetches the artifact (Job Artifacts API +
   `search_recent_successful_pipelines`, recompute-on-miss, `expire_in`).
