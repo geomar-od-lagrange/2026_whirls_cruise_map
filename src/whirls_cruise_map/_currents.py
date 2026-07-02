@@ -17,7 +17,7 @@ resolutions:
 from __future__ import annotations
 
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import cmocean
@@ -34,6 +34,17 @@ from . import _raster  # noqa: E402
 BBOX = {"lon_min": -10.0, "lon_max": 35.0, "lat_min": -55.0, "lat_max": -15.0}
 
 DATASET_ID = "cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i"
+
+# Hourly surface product for the *time-dependent* forecast/hindcast advection
+# field. 6-hourly (``DATASET_ID``) resolves the inertial band here (T_f ~15-24 h
+# > 12 h Nyquist), but only ~3 samples per inertial cycle, so linear-in-time
+# interpolation chords the loop; hourly (~20/cycle) traces it smoothly for a
+# negligible fetch cost (measured +0.8 s over 6-hourly for a +/-12 h window). The
+# overlays (currents.json, speed.png) still use the single-time ``DATASET_ID``
+# snapshot; only the advection field is the hourly window. See docs/forecast.md.
+WINDOW_DATASET_ID = "cmems_mod_glo_phy_anfc_0.083deg_PT1H-m"
+WINDOW_BACK_H = 12  # hours of hourly field to fetch behind now (hindcast + bracket)
+WINDOW_FWD_H = 12   # ... and ahead of now (forecast + bracket); +/-6 h advection
 
 # Coarsen the native 1/12-deg grid for the animated trails only. The speed raster
 # stays near-native (it is a small image either way and looks markedly sharper).
@@ -84,8 +95,49 @@ def fetch_field(bbox: dict = BBOX) -> xr.Dataset:
     return ds.squeeze(drop=True)
 
 
+def fetch_field_window(
+    bbox: dict = BBOX, back_h: int = WINDOW_BACK_H, fwd_h: int = WINDOW_FWD_H
+) -> xr.Dataset:
+    """Download hourly surface ``uo``/``vo`` over ``bbox`` for the window
+    ``[now-back_h, now+fwd_h]`` and return the 3-D ``(time, latitude, longitude)``
+    field with the **time dimension preserved**, land kept as NaN.
+
+    This feeds the *time-dependent* forecast/hindcast advection: the particle is
+    pushed by the current at its own clock time, so it traces the inertial loop the
+    model already carries instead of the straight streamline of a single frozen
+    snapshot. ``coordinates_selection_method="outside"`` makes the returned steps
+    *bracket* the window so the stepper always interpolates between two real times
+    at the edges. Relies on the local copernicusmarine login.
+    """
+    now = datetime.now(timezone.utc)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "currents_window.nc"
+        copernicusmarine.subset(
+            dataset_id=WINDOW_DATASET_ID,
+            variables=["uo", "vo"],
+            minimum_longitude=bbox["lon_min"],
+            maximum_longitude=bbox["lon_max"],
+            minimum_latitude=bbox["lat_min"],
+            maximum_latitude=bbox["lat_max"],
+            minimum_depth=0.49,
+            maximum_depth=0.5,
+            start_datetime=now - timedelta(hours=back_h),
+            end_datetime=now + timedelta(hours=fwd_h),
+            coordinates_selection_method="outside",
+            output_filename=str(out),
+            overwrite=True,
+        )
+        with xr.open_dataset(out) as ds:
+            ds = ds.load()
+
+    if "depth" in ds.dims:
+        ds = ds.isel(depth=0, drop=True)
+    return ds
+
+
 def valid_time(field: xr.Dataset) -> str:
-    """ISO-8601 valid time of the field (UTC, ``Z`` suffix)."""
+    """ISO-8601 valid time of the field (UTC, ``Z`` suffix). For a single-time
+    field; the windowed field carries a ``time`` dimension instead."""
     return np.datetime_as_string(field["time"].values, unit="s") + "Z"
 
 

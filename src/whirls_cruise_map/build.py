@@ -87,15 +87,15 @@ def main() -> None:
     except Exception as exc:
         print(f"WARNING: glider fetch failed, skipping gliders.geojson: {exc}")
 
-    # Currents + forecast are best-effort: positions/tracks still build if CMEMS
-    # is down. One field feeds three artifacts — the coarse vector grid (trails),
-    # the near-native speed raster + meta, and the per-drifter advection forecast
-    # — each independent, so one failing does not skip the others.
+    # Currents overlays are best-effort: positions/tracks still build if CMEMS is
+    # down. One single-time field feeds the two overlay artifacts — the coarse
+    # vector grid (trails) and the near-native speed raster + meta — each
+    # independent, so one failing does not skip the others.
     field = None
     try:
         field = _currents.fetch_field()
     except Exception as exc:
-        print(f"WARNING: CMEMS field fetch failed, skipping currents + forecast: {exc}")
+        print(f"WARNING: CMEMS field fetch failed, skipping currents overlays: {exc}")
 
     if field is not None:
         try:
@@ -112,11 +112,20 @@ def main() -> None:
                 f"WARNING: currents render failed, skipping currents artifacts: {exc}"
             )
 
-        # Per-instrument current-advection forecast (drifters + gliders; true
-        # field, NaN land); its own best-effort step so a currents-render failure
-        # doesn't suppress it.
+    # Time-dependent advection field: a separate hourly CMEMS window (independent of
+    # the single-time overlay field above), so the forecast/hindcast particle is
+    # pushed by the current at its own clock time and traces the inertial loop the
+    # model already carries — not the straight streamline of a frozen snapshot.
+    # Forecast and hindcast are independent best-effort steps.
+    window = None
+    try:
+        window = _currents.fetch_field_window()
+    except Exception as exc:
+        print(f"WARNING: CMEMS window fetch failed, skipping forecast/hindcast: {exc}")
+
+    if window is not None:
         try:
-            forecast = _forecast.forecast_geojson(field, tracks, gliders)
+            forecast = _forecast.forecast_geojson(window, tracks, gliders)
             _write_json(SITE_DATA / "forecast.geojson", forecast)
             print(
                 f"wrote forecast.geojson "
@@ -125,11 +134,8 @@ def main() -> None:
         except Exception as exc:
             print(f"WARNING: forecast step failed, skipping forecast.geojson: {exc}")
 
-        # Per-instrument current-advection hindcast (same frozen field integrated
-        # backward): where the present surface current would have carried a
-        # particle into each instrument over the past 6 h. Independent best-effort.
         try:
-            hindcast = _forecast.hindcast_geojson(field, tracks, gliders)
+            hindcast = _forecast.hindcast_geojson(window, tracks, gliders)
             _write_json(SITE_DATA / "hindcast.geojson", hindcast)
             print(
                 f"wrote hindcast.geojson "

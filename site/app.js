@@ -339,8 +339,9 @@ function buildTrackGroups(geojson) {
 // Current-advection line (forecast forward, or hindcast backward), grouped by
 // `batch` so each batch's lines+dots toggle with that batch's markers and the
 // master Forecast/Hindcast row (see buildBatchControl). For each drifter: one
-// solid line from its head along the streamline of the frozen current field,
-// in `color`, plus a small dot at each `marks` entry (1/3/6 h). Dots carry no
+// solid line from its head — the time-dependent-current advection path, which
+// curls into the model's inertial loop — in `color`, plus a small dot at each
+// `marks` entry (1/3/6 h). Dots carry no
 // popup — they are plain position marks (the line and dots are non-interactive so
 // they never swallow a click meant for a marker beneath them). Returns
 // { batch: featureGroup }.
@@ -505,9 +506,10 @@ function renderCurrentsInfo(meta) {
     `<span>${meta.vmax.toFixed(2)}</span></div>`;
 }
 
-// Renderer for the combined forecast+hindcast sidebar panel. Both are one frozen
-// field at one time and share every caveat (spelled out in the panel's static
-// note), so one status line covers them. valid_time is baked into every feature,
+// Renderer for the combined forecast+hindcast sidebar panel. Both advect through
+// the same time-dependent hourly field and share every caveat (spelled out in the
+// panel's static note), so one status line covers them. valid_time (the t=0 the
+// integration is anchored to) is baked into every feature,
 // read off the first available (forecast, else hindcast). Three states: no
 // artifact (CMEMS down / not built), built but empty (every instrument head sits
 // in a coastal NaN cell — the pre-deployment cluster at port does this), and
@@ -528,7 +530,7 @@ function renderDriftInfo(forecast, hindcast) {
       "No drift lines — every instrument head is on land or off-grid.";
     return;
   }
-  timeEl.textContent = `Current-advection through the field frozen at ${formatFixTime(valid)}.`;
+  timeEl.textContent = `Current-advection through the time-dependent field, anchored at ${formatFixTime(valid)}.`;
 }
 
 // --- ship (R/V Marion Dufresne) live track ---------------------------------
