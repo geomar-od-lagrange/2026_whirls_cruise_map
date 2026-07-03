@@ -30,8 +30,10 @@ move to `done/` and gain a `docs/` counterpart.
 7. [Ship track](done/007-md-ship-track.md) — live R/V Marion Dufresne position
    and track, fetched client-side from the Flotte Océanographique Française
    localisation API (the IPSL WHIRLS "platform positions" source), polled every
-   5 min. **Done** ([docs/ship.md](../docs/ship.md)). Agulhas II is not in that
-   API and needs a separate source.
+   5 min. **Done** ([docs/ship.md](../docs/ship.md)). The **R/V S.A. Agulhas II**
+   is added from its own source — a non-CORS IPSL THREDDS CSV, so baked at build
+   time rather than fetched live — sharing the same ship renderer
+   ([015](done/015-agulhas-ship-track.md), [docs/ship.md](../docs/ship.md)).
 8. [Intermediate positions](done/008-intermediate-positions.md) — a dot at every
    fix along each drifter and ship track, each carrying the latest-position
    popup; drifter popups gained reported + derived velocity (knots and m/s); the

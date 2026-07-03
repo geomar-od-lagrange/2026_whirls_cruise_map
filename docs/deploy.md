@@ -13,8 +13,10 @@ runner to regenerate `site/data/` fresh from upstream, then serves it.
 
 This is deliberate: the data is time-sensitive cruise data, so baking a snapshot
 into git would freeze it. Rebuilding per deploy keeps every layer as current as
-its last run. (The one exception is the ship track, fetched live in the browser
-rather than baked — see [ship.md](ship.md).)
+its last run. (The one exception is the **Marion Dufresne** ship track, fetched
+live in the browser rather than baked, because its source API is CORS-open; the
+**Agulhas II** track is baked like the rest, because its THREDDS source is not —
+see [ship.md](ship.md).)
 
 ## The `pages` job
 

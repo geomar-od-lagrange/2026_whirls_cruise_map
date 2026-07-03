@@ -12,6 +12,7 @@ and writes the JSON the Leaflet site consumes into ``site/data/``:
 - ``forecast.geojson``    per-drifter current-advection track to +6 h (1/3/6 h marks)
 - ``hindcast.geojson``    per-drifter current-advection back-track to -6 h (1/3/6 h marks)
 - ``inertial_field.json`` per-cell mean/amp/phase grid for the near-inertial animation
+- ``agulhas.json``        R/V S.A. Agulhas II position fixes (baked; no-CORS source)
 - ``build.json``          UTC timestamp of this build (sidebar data-freshness)
 
 Everything is rebuilt from a fresh full-zip pull each run; no caching.
@@ -24,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import (
+    _agulhas,
     _clean,
     _currents,
     _deploy,
@@ -97,6 +99,18 @@ def main() -> None:
         )
     except Exception as exc:
         print(f"WARNING: glider fetch failed, skipping gliders.geojson: {exc}")
+
+    # R/V S.A. Agulhas II track (best-effort). Baked, not fetched live like the
+    # Marion Dufresne: its THREDDS CSV source sends no CORS header, so the browser
+    # cannot read it — the build pulls it server-side and writes agulhas.json (see
+    # _agulhas / docs/ship.md). A failure writes nothing and the map omits the
+    # vessel; an empty result still writes [] so the client's fetch is uniform.
+    try:
+        agulhas = _agulhas.fetch_positions()
+        _write_json(SITE_DATA / "agulhas.json", agulhas)
+        print(f"wrote agulhas.json ({len(agulhas)} fixes)")
+    except Exception as exc:
+        print(f"WARNING: Agulhas fetch failed, skipping agulhas.json: {exc}")
 
     # Currents overlays are best-effort: positions/tracks still build if CMEMS is
     # down. One single-time field feeds the two overlay artifacts — the coarse

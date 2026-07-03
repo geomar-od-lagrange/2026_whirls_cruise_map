@@ -25,6 +25,7 @@ const DATA = {
   inertialField: "./data/inertial_field.json",
   build: "./data/build.json",
   gliders: "./data/gliders.geojson",
+  agulhas: "./data/agulhas.json",
 };
 
 // Flow-trail colour ramp: mostly dark, white only in the fast jet, so the green
@@ -49,8 +50,38 @@ const SHIP = {
   // Cruise-window start; matches the IPSL WHIRLS operational map. endDate is now.
   cruiseStart: "2026-06-24T00:00:00.000Z",
   refreshMs: 5 * 60 * 1000, // API reports ~every 10 min; poll at 5.
-  trackColor: "#1a1a1a",
-  haloColor: "#ffffff",
+};
+
+// The two cruise vessels share one ship renderer (makeShipLayer), differing only
+// in colour, sidebar panel, and the popup/readout rows a fix produces — so one
+// `rows(fix, prevFix)` per vessel is all that varies. See docs/ship.md.
+//
+// The Marion Dufresne is live (CORS-open API, polled in the browser) and carries
+// no reported speed/course, so its rows *derive* motion from the last track
+// segment and add its met data. The Agulhas is baked at build time (its THREDDS
+// CSV sends no CORS header, so the browser can't read it — the build writes
+// agulhas.json) and carries *reported* speed/course + status/area, but no met.
+const VESSELS = {
+  md: {
+    name: "R/V Marion Dufresne",
+    source: "Flotte Océanographique Française",
+    trackColor: "#1a1a1a",
+    haloColor: "#ffffff",
+    markerColor: "#1a1a1a",
+    panel: { time: "md-ship-time", readout: "md-ship-readout" },
+    rows: (p, prev) => mdRows(p, motionBetween(prev, p)),
+  },
+  agulhas: {
+    name: "R/V S.A. Agulhas II",
+    source: "myshiptracking.com (via IPSL WHIRLS)",
+    // Deep crimson: reads apart from the MD's near-black, the drifters'
+    // blue/teal, and the gliders' amber/sky.
+    trackColor: "#9b1c31",
+    haloColor: "#ffffff",
+    markerColor: "#9b1c31",
+    panel: { time: "agulhas-ship-time", readout: "agulhas-ship-readout" },
+    rows: (p) => agulhasRows(p),
+  },
 };
 
 // --- batch styling seam -----------------------------------------------------
@@ -817,7 +848,7 @@ function renderDriftInfo(forecast, hindcast) {
   timeEl.textContent = `Current-advection through the time-dependent field, anchored at ${formatFixTime(valid)}.`;
 }
 
-// --- ship (R/V Marion Dufresne) live track ---------------------------------
+// --- ship tracks (R/V Marion Dufresne live + R/V S.A. Agulhas II baked) ------
 
 function shipUrl(sinceISO) {
   const u = new URL(SHIP.positions);
@@ -844,14 +875,18 @@ async function fetchShip(sinceISO) {
   return Array.isArray(data) ? data : [];
 }
 
-// A dark disc with a white ring and a boat glyph — distinct from the small blue
-// drifter circles. Inline SVG (not an emoji) so it renders identically anywhere.
-function shipIcon() {
+// A coloured disc with a white ring and a boat glyph — distinct from the small
+// blue drifter circles, and per-vessel `bg` so the two ships read apart. Inline
+// SVG (not an emoji) so it renders identically anywhere; the disc background is
+// set inline on the inner span (overriding the .ship-disc CSS default).
+function shipIcon(bg) {
   return L.divIcon({
     className: "ship-marker",
     html:
+      `<span class="ship-disc" style="background:${bg}">` +
       '<svg viewBox="0 0 24 24" width="15" height="15" fill="#fff" aria-hidden="true">' +
-      '<path d="M4 15h16l-2.2 5H6.2L4 15zm2-2V6.5L12 4l6 2.5V13H6z"/></svg>',
+      '<path d="M4 15h16l-2.2 5H6.2L4 15zm2-2V6.5L12 4l6 2.5V13H6z"/></svg>' +
+      "</span>",
     iconSize: [26, 26],
     iconAnchor: [13, 13],
   });
@@ -902,12 +937,6 @@ function motionBetween(a, b) {
   };
 }
 
-// Motion of the latest fix relative to the prior one.
-const deriveMotion = (positions) =>
-  positions.length < 2
-    ? null
-    : motionBetween(positions[positions.length - 2], positions[positions.length - 1]);
-
 const fmtSpeed = (m) => (m ? speedBoth(m.speedKn / MS_TO_KN) : null);
 const fmtHeading = (m) =>
   m && m.heading != null
@@ -915,10 +944,12 @@ const fmtHeading = (m) =>
     : null;
 // ---------------------------------------------------------------------------
 
-// One row model — [label, value] pairs with nulls dropped — shared by the popup
-// and the sidebar so the two readouts can never drift. Each caller wraps the
-// pairs in its own markup.
-function shipRows(p, motion) {
+// A vessel's fix -> [label, value] rows (nulls dropped) is the one thing that
+// differs between the two ships; each `VESSELS[*].rows` produces its own, and the
+// popup and sidebar both render from it so a vessel's two readouts can't drift.
+
+// Marion Dufresne rows: derived motion (the API reports none) + its met data.
+function mdRows(p, motion) {
   const d = p.data || {};
   // Wind-speed unit is unspecified by the API (see docs/ship.md), so it is shown
   // without one; direction is degrees, temps °C, pressure hPa.
@@ -940,11 +971,33 @@ function shipRows(p, motion) {
   ].filter(([, v]) => v != null);
 }
 
-function shipPopupHtml(p, motion) {
-  const rows = shipRows(p, motion)
+// Agulhas II rows: speed/course are *reported* by the source (so no derivation),
+// plus its moving/stopped status and area; it carries no met data. Speed reads in
+// both kn and m/s like the MD; course gets a compass point like a heading.
+function agulhasRows(p) {
+  const speed = p.speed_kn != null ? speedBoth(p.speed_kn / MS_TO_KN) : null;
+  // Course is a *reported* direction, so it shares fmtDir with the drifters'
+  // reported heading — same degrees+compass formatting and negative-degree guard.
+  const course = p.course_deg != null ? fmtDir(p.course_deg) : null;
+  return [
+    ["Last fix", formatFixTime(p.date)],
+    ["Position", `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`],
+    ["Speed (reported)", speed],
+    ["Course (reported)", course],
+    ["Status", p.status],
+    ["Area", p.area],
+  ].filter(([, v]) => v != null);
+}
+
+// Popup for a `vessel`'s fix `p`; `prev` is the preceding fix (the MD derives its
+// motion from that segment, the Agulhas ignores it). Shared by the latest-position
+// marker and every track dot.
+function shipPopupHtml(vessel, p, prev) {
+  const rows = vessel
+    .rows(p, prev)
     .map(([k, v]) => `<span class="popup-label">${k}:</span> ${v}<br/>`)
     .join("");
-  return `<div class="popup"><strong>R/V Marion Dufresne</strong><br/>${rows}</div>`;
+  return `<div class="popup"><strong>${vessel.name}</strong><br/>${rows}</div>`;
 }
 
 // A fix is usable only with finite coordinates and a timestamp. The API can emit
@@ -955,12 +1008,12 @@ const isValidFix = (p) =>
   p && Number.isFinite(p.lat) && Number.isFinite(p.lon) && !!p.date;
 const byDate = (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime();
 
-// Cased polyline (white halo + dark core, legible on any basemap), a dot at each
-// 10-minute fix, and a ship marker, in one feature group. Holds the time-sorted
-// position list so live polling can append only the new tail: setPositions
-// replaces the whole track; append extends it past the last fix, drawing only
-// the fresh points.
-function makeShipLayer() {
+// Cased polyline (white halo + coloured core, legible on any basemap), a dot at
+// each fix, and a ship marker, in one feature group — for the given `vessel`
+// spec (colours, name, and per-fix rows). Holds the time-sorted position list so
+// live polling can append only the new tail: setPositions replaces the whole
+// track; append extends it past the last fix, drawing only the fresh points.
+function makeShipLayer(vessel) {
   // The cased track is non-interactive: it carries no popup, and an interactive
   // polyline would swallow clicks meant for the dots painted on top of it.
   const opts = (color, weight) => ({
@@ -970,8 +1023,8 @@ function makeShipLayer() {
     opacity: 0.95,
     interactive: false,
   });
-  const halo = L.polyline([], opts(SHIP.haloColor, 5));
-  const core = L.polyline([], opts(SHIP.trackColor, 2.5));
+  const halo = L.polyline([], opts(vessel.haloColor, 5));
+  const core = L.polyline([], opts(vessel.trackColor, 2.5));
   // Per-fix dots use the pane's default SVG renderer, not a canvas: a canvas
   // renderer spans the whole viewport and would intercept every click across the
   // map. SVG keeps each dot an individually hit-testable element, and empty pane
@@ -980,34 +1033,34 @@ function makeShipLayer() {
   const dots = L.layerGroup();
   const marker = L.marker([0, 0], {
     pane: "ship",
-    icon: shipIcon(),
+    icon: shipIcon(vessel.markerColor),
     opacity: 0, // hidden until the first fix lands
   }).bindPopup("");
   const group = L.featureGroup([halo, core, dots, marker]);
   let positions = [];
 
   // A small dot at fix `p`, sharing the latest-position popup but filled with
-  // this fix's own met data and its motion relative to the preceding fix `prev`.
+  // this fix's own data and its motion relative to the preceding fix `prev`.
   function dotFor(p, prev) {
     const dot = L.circleMarker([p.lat, p.lon], {
       pane: "shipTrack",
       radius: 2.5,
-      color: SHIP.haloColor,
+      color: vessel.haloColor,
       weight: 1,
-      fillColor: SHIP.trackColor,
+      fillColor: vessel.trackColor,
       fillOpacity: 1,
     });
-    dot.bindPopup(shipPopupHtml(p, motionBetween(prev, p)));
+    dot.bindPopup(shipPopupHtml(vessel, p, prev));
     return dot;
   }
 
   function showLatest() {
     const last = positions[positions.length - 1];
     if (!last) return;
-    const motion = deriveMotion(positions);
+    const prev = positions[positions.length - 2];
     marker.setLatLng([last.lat, last.lon]).setOpacity(1);
-    marker.setPopupContent(shipPopupHtml(last, motion));
-    renderShipInfo(last, motion);
+    marker.setPopupContent(shipPopupHtml(vessel, last, prev));
+    renderShipInfo(vessel, last, prev);
   }
 
   function setPositions(next) {
@@ -1043,24 +1096,26 @@ function makeShipLayer() {
   };
 }
 
-function renderShipInfo(p, motion) {
-  const timeEl = document.getElementById("ship-time");
-  const readEl = document.getElementById("ship-readout");
+function renderShipInfo(vessel, p, prev) {
+  const timeEl = document.getElementById(vessel.panel.time);
+  const readEl = document.getElementById(vessel.panel.readout);
   if (!timeEl) return;
   if (!p) {
-    timeEl.textContent = "Ship position unavailable.";
+    timeEl.textContent = `${vessel.name} position unavailable.`;
     if (readEl) readEl.innerHTML = "";
     return;
   }
-  timeEl.textContent = `Last fix ${formatFixTime(p.date)} — Flotte Océanographique Française.`;
+  timeEl.textContent = `Last fix ${formatFixTime(p.date)} — ${vessel.source}.`;
   // "Last fix" already shows in the hint line above, so drop it from the rows.
-  readEl.innerHTML = shipRows(p, motion)
-    .filter(([k]) => k !== "Last fix")
-    .map(
-      ([k, v]) =>
-        `<div class="ship-row"><span class="popup-label">${k}</span><span>${v}</span></div>`
-    )
-    .join("");
+  if (readEl)
+    readEl.innerHTML = vessel
+      .rows(p, prev)
+      .filter(([k]) => k !== "Last fix")
+      .map(
+        ([k, v]) =>
+          `<div class="ship-row"><span class="popup-label">${k}</span><span>${v}</span></div>`
+      )
+      .join("");
 }
 
 function osmLayer() {
@@ -1228,16 +1283,16 @@ async function main() {
   // interval keeps trying, so a later poll revives the layer once the API recovers.
   // Polls are skipped while the tab is hidden — and resumed on return — to avoid
   // hammering a third-party host in the background.
-  const ship = makeShipLayer();
+  const ship = makeShipLayer(VESSELS.md);
   let shipShown = false;
   async function pollShip() {
     if (document.hidden) return;
     ship.append(await fetchShip(ship.lastDate() ?? SHIP.cruiseStart));
     if (!ship.lastDate()) {
-      renderShipInfo(null);
+      renderShipInfo(VESSELS.md, null);
     } else if (!shipShown) {
       ship.group.addTo(map);
-      layersControl.addOverlay(ship.group, "R/V Marion Dufresne");
+      layersControl.addOverlay(ship.group, VESSELS.md.name);
       shipShown = true;
     }
   }
@@ -1245,6 +1300,35 @@ async function main() {
   setInterval(pollShip, SHIP.refreshMs);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) pollShip();
+  });
+
+  // R/V S.A. Agulhas II baked track (same-origin agulhas.json; see docs/ship.md).
+  // Unlike the MD it is a build artifact — its THREDDS CSV source is not
+  // CORS-open, so it can't be polled live in the browser — but it shares the ship
+  // renderer and the same "no fix ⇒ no dead toggle" contract. Re-fetched on the
+  // MD's cadence so a rebuild's new fixes appear without a page reload; append
+  // (the whole file each time, seeding on the first and adding only fresh fixes
+  // after) keeps that flat as the track grows over the cruise, as it does for MD.
+  const agulhas = makeShipLayer(VESSELS.agulhas);
+  let agulhasShown = false;
+  async function loadAgulhas() {
+    if (document.hidden) return;
+    const fixes = await fetchJSON(DATA.agulhas, { optional: true });
+    if (!Array.isArray(fixes) || !fixes.length) {
+      if (!agulhasShown) renderShipInfo(VESSELS.agulhas, null);
+      return;
+    }
+    agulhas.append(fixes);
+    if (!agulhasShown) {
+      agulhas.group.addTo(map);
+      layersControl.addOverlay(agulhas.group, VESSELS.agulhas.name);
+      agulhasShown = true;
+    }
+  }
+  loadAgulhas();
+  setInterval(loadAgulhas, SHIP.refreshMs);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) loadAgulhas();
   });
 }
 

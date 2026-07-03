@@ -1,10 +1,41 @@
-# ship track
+# ship tracks
 
-A live position and track for **R/V Marion Dufresne**, drawn over the drifter
-map. It mirrors the "platform positions real-time" layer on the IPSL WHIRLS
-operational map, and uses the same upstream source.
+Live positions and tracks for the two cruise vessels — **R/V Marion Dufresne**
+and **R/V S.A. Agulhas II** — drawn over the drifter map. Both use the same
+on-map rendering (a cased track, a dot at every fix, and a boat marker) and the
+same sidebar readout; they differ only in **where the data comes from** and, as a
+consequence, **whether it is fetched live in the browser or baked at build time**.
 
-## Data source
+That fork is the central design fact here, so it comes first.
+
+## Two sources, two fetch paths
+
+| | Marion Dufresne | S.A. Agulhas II |
+|---|---|---|
+| Source | Flotte Océanographique Française localisation API (JSON) | IPSL WHIRLS THREDDS `agulhas_positions.csv` |
+| CORS | open (`Access-Control-Allow-Origin: *`) | **none** — no `Access-Control-Allow-Origin` header |
+| Fetched | **live in `app.js`**, polled every 5 min | **baked** into `site/data/agulhas.json` by the build |
+| Cadence | ~10-min fixes, near-real-time | hourly scrape of myshiptracking.com |
+| Motion | **derived** client-side (API reports none) | **reported** (speed/course in the CSV) |
+| Extra fields | met (sea/air temp, pressure, wind) | status (moving/stopped), area |
+
+The CORS column decides the fetch path. A browser may only read a cross-origin
+response the server marks readable with `Access-Control-Allow-Origin`. The FOF API
+sends it (the IPSL operational map fetches it client-side for the same reason), so
+the Marion Dufresne can be a **live** layer that stays current between rebuilds.
+The THREDDS fileServer sends `Access-Control-Allow-Methods`/`-Headers` but **not**
+`-Allow-Origin`, so the browser cannot read the Agulhas CSV directly. It is
+therefore fetched **server-side by the Python build** (which has no CORS
+constraint) and written to `site/data/agulhas.json`, which the client then loads
+same-origin like every other build artifact.
+
+Baking costs little freshness here: the CSV is itself an **hourly scrape** of
+myshiptracking.com (its `source_url` / `scraped_at_utc` columns), not a realtime
+feed, so it is only as fresh as its own scraper regardless of how we fetch it.
+
+## Marion Dufresne — the live layer
+
+### Data source
 
 The French Oceanographic Fleet (Flotte Océanographique Française) publishes ship
 positions through a public localisation API:
@@ -42,7 +73,7 @@ static page can fetch it directly from the browser. A wide window returns the
 full track in one request (thousands of points over a couple of months returned
 without an obvious cap), and history reaches back well before the cruise.
 
-### Time resolution
+#### Time resolution
 
 The 10-minute grid is the **maximum resolution this API offers** — it is the
 native cadence, not a default we can override. Probing confirmed it: gaps are
@@ -57,7 +88,7 @@ vessel's `sismerId` is `MARION2`) or available directly from the cruise data
 manager. For a track line at these zoom levels 10-minute fixes are ample — at
 ~12 kn the ship advances under 4 km between them.
 
-### Field units
+#### Field units
 
 `seatemp`/`airtemp` are °C, `pressure` is hPa, and `truewinddir` is degrees —
 unambiguous from the values. The `truewindspeed` **unit is not specified by the
@@ -73,7 +104,7 @@ are *wind*, not vessel motion). So the popup/sidebar "Speed (derived)" and
 great-circle distance between two fixes over their time gap, and the initial
 great-circle bearing between them (degrees true, with a 16-point compass label).
 The same per-segment derivation labels every fix on the track, not just the
-latest — each dot (below) shows its own.
+latest — each dot shows its own.
 
 Speed is shown in **both knots and m/s** (`12.3 kn / 6.33 m/s`), so it reads on
 the same scale as the drifters' m/s velocities. Below ~0.5 kn — about 150 m over
@@ -85,67 +116,117 @@ Because it is a single-segment difference the value is instantaneous and a littl
 jumpy; smoothing over several fixes would steady it at the cost of lag, and is
 deferred.
 
-## Why client-side and live
+### Why client-side and live
 
 Every other layer on this map is a build artifact written into `site/data/` by
-the Python build. The ship is the deliberate exception — it is fetched **live in
-`app.js`**, not baked at build time.
+the Python build. The Marion Dufresne is the deliberate exception — it is fetched
+**live in `app.js`**, not baked at build time.
 
 The reason is freshness under the intended hosting. The site is a static bundle
 destined for a scheduled-rebuild GitLab Pages deploy, which has no server at view
-time. A baked `ship.geojson` would therefore freeze the vessel between rebuilds,
-which defeats the point of a "where is the ship now" layer. Fetching live keeps
-the marker current to the API's ~10-minute cadence regardless of build schedule,
-and the open CORS policy exists precisely to allow this (the IPSL map does the
-same).
+time. A baked position would therefore freeze the vessel between rebuilds, which
+defeats the point of a "where is the ship now" layer. Fetching live keeps the
+marker current to the API's ~10-minute cadence regardless of build schedule, and
+the open CORS policy exists precisely to allow this (the IPSL map does the same).
+The Agulhas cannot take this path — its source is not CORS-open (above) — so it
+is baked; the trade-off is accepted there because its source is only hourly
+anyway.
 
-The trade-off is that this one layer carries a runtime dependency on a
-third-party host. It is contained by the same graceful-fetch pattern the rest of
-the client uses: a failed request resolves to an empty list, so an outage simply
-stops the marker advancing — it never throws and never blanks the map.
+The trade-off for the live layer is a runtime dependency on a third-party host.
+It is contained by the same graceful-fetch pattern the rest of the client uses: a
+failed request resolves to an empty list, so an outage simply stops the marker
+advancing — it never throws and never blanks the map.
 
-### Also fetched at build time, for deployment detection
-
-Separately from the live client layer, the **build** pulls a one-shot snapshot of
-the same track (`_ship.fetch_track`) to detect where each drifter detached from
-the vessel and truncate its trajectory there (see
-[trajectories.md](trajectories.md)). This is a historical computation — the
-detachment already happened — so a build-time snapshot is right, and it is
-best-effort in the same way: a failed fetch just skips truncation (full tracks).
-The live map layer is unaffected either way.
-
-## Behaviour
-
-- **Initial load** fetches the whole cruise window, `cruiseStart … now`.
-  `cruiseStart` (`app.js`, the `SHIP` config) is `2026-06-24T00:00:00Z`, matching
-  the IPSL WHIRLS window start; it is a one-line constant to adjust.
 - **Live refresh** polls every 5 minutes, requesting only the window *since the
   last known fix* and appending the new tail (deduplicated by timestamp), so
   polling cost stays flat as the track grows rather than re-pulling the whole
   history each time.
-- **Rendering.** The track is a cased polyline — a white halo under a dark core —
-  so it stays legible over any basemap, with a small dot at **every 10-minute
-  fix** painted on top of it. Each dot opens the same popup as the current
-  position, filled with that fix's own met data and derived motion. The current
-  position is a dark disc with a white ring and a boat glyph, set apart from the
-  small blue drifter circles. The marker popup and a top-of-sidebar panel show the
-  last-fix time, the underway readout (sea/air temperature, pressure, wind), and
-  the derived course and speed (below).
-- **Stacking.** The track and its dots sit in a `shipTrack` pane *below* the
-  drifter markers, while the current-position marker sits in a `ship` pane on
-  top. The track runs below the drifters because the cruise departs the drifters'
-  staging port, so the early track passes through the pre-deploy cluster; were the
-  dots above the markers they would intercept clicks meant for the drifters. The
-  dots are plain SVG circle markers (not a canvas, which spans the whole viewport
-  and would block clicks map-wide). See [trajectories.md](trajectories.md).
+- **Initial load** fetches the whole cruise window, `cruiseStart … now`.
+  `cruiseStart` (`app.js`, the `SHIP` config) is `2026-06-24T00:00:00Z`, matching
+  the IPSL WHIRLS window start; it is a one-line constant to adjust.
+
+### Also fetched at build time, for deployment detection
+
+Separately from the live client layer, the **build** pulls a one-shot snapshot of
+the Marion Dufresne track (`_ship.fetch_track`) to detect where each drifter
+detached from the vessel and truncate its trajectory there (see
+[trajectories.md](trajectories.md)). This is a historical computation — the
+detachment already happened — so a build-time snapshot is right, and it is
+best-effort: a failed fetch just skips truncation (full tracks). Drifters detach
+from the Marion Dufresne, not the Agulhas, so this is Marion-Dufresne-only.
+
+## Agulhas II — the baked layer
+
+### Data source
+
+IPSL publishes the Agulhas track as a single CSV on the WHIRLS THREDDS server
+(the same host the gliders come from, see [gliders.md](gliders.md)):
+
+```
+https://thredds-x.ipsl.fr/thredds/fileServer/WHIRLS/OBSERVATIONS/SHIPS/agulhas_positions.csv
+```
+
+```
+scraped_at_utc,reported_at,lat,lon,speed_kn,course_deg,status,area,source_url
+2026-07-03T09:29:34Z,2026-07-03 08:47,-35.59410,15.37993,6.9,268,START Moving,SW OF CAPE TOWN,https://www.myshiptracking.com/vessels/sa-agulhas-ii-...
+2026-07-03T10:30:01Z,2026-07-03 10:00,-35.50905,15.55999,,284,STOP Moving,SW OF CAPE TOWN,https://www.myshiptracking.com/vessels/sa-agulhas-ii-...
+```
+
+- `reported_at` carries **no timezone** (`YYYY-MM-DD HH:MM`); it is treated as
+  **UTC** — the file's own `scraped_at_utc` is UTC and the whole app is UTC.
+- `speed_kn` / `course_deg` are **reported** SOG/COG, so — unlike the Marion
+  Dufresne — nothing is derived; `speed_kn` is blank when the vessel is stopped
+  (rendered as a dash).
+- `status` (`START Moving` / `STOP Moving`) and `area` are free text shown as-is.
+- There is **no met data** — the underway readout the Marion Dufresne panel shows
+  has no Agulhas equivalent.
+
+`_agulhas.fetch_positions()` fetches and parses the CSV server-side in the build
+(best-effort, like the gliders: any failure yields `[]` and the map simply omits
+the vessel), and `build.py` writes the result to `site/data/agulhas.json`. That
+artifact is a **plain JSON array of fix objects** deliberately shaped like the
+live FOF API's array (`{date, lat, lon, …}`), so the client's ship renderer
+consumes both with no conversion. An empty result still writes `[]`, keeping the
+client's optional fetch uniform.
+
+### Behaviour
+
+The client loads `agulhas.json` same-origin and re-fetches it on the Marion
+Dufresne's 5-minute cadence, so a scheduled rebuild's new fixes appear without a
+page reload. It feeds the whole file to the same `append` path the Marion
+Dufresne uses — seeding the track on the first load, then adding only fixes newer
+than the last one — so redraw cost stays flat as the track grows over the cruise
+rather than rebuilding every dot each poll. The layer follows the same "no fix ⇒
+no dead toggle" contract: the overlay and marker appear only once at least one
+fix has loaded.
+
+## Shared rendering
+
+Both vessels feed one renderer (`makeShipLayer(vessel)` in `app.js`) driven by a
+per-vessel **spec** in `VESSELS`. The spec carries the vessel name, its source
+attribution, its track/marker colours, its sidebar panel element ids, and the one
+thing that genuinely differs — a `rows(fix, prevFix)` function turning a fix into
+the `[label, value]` pairs the popup and sidebar both render (so a vessel's two
+readouts can never drift). The Marion Dufresne's rows derive motion and add met;
+the Agulhas's use the reported speed/course plus status/area.
+
+- **Rendering.** The track is a cased polyline — a white halo under a coloured
+  core — so it stays legible over any basemap, with a small dot at every fix
+  painted on top of it. Each dot opens the same popup as the current position,
+  filled with that fix's own data. The current position is a coloured disc with a
+  white ring and a boat glyph, set apart from the small blue drifter circles. The
+  two vessels are told apart by colour: the Marion Dufresne is near-black
+  (`#1a1a1a`), the Agulhas deep crimson (`#9b1c31`) — both distinct from the
+  drifters' blue/teal and the gliders' amber/sky. A top-of-sidebar panel per
+  vessel shows the last-fix time, source, and that vessel's readout rows.
+- **Stacking.** The tracks and dots sit in a `shipTrack` pane *below* the drifter
+  markers, while the current-position markers sit in a `ship` pane on top. The
+  tracks run below the drifters because the cruise departs the drifters' staging
+  port, so the early track passes through the pre-deploy cluster; were the dots
+  above the markers they would intercept clicks meant for the drifters. The dots
+  are plain SVG circle markers (not a canvas, which spans the whole viewport and
+  would block clicks map-wide). See [trajectories.md](trajectories.md).
 - **Map fit is unchanged.** The opening view still fits the drifter cluster; the
-  ship is not folded into the fit because it can be far offshore, which would zoom
-  the map out past the drifters the map exists to show. Toggle the layer off, or
-  pan/zoom, to follow the vessel.
-
-## Limitation: Marion Dufresne only
-
-This API covers the **French** fleet only (Antea, L'Atalante, Côtes de la Manche,
-L'Europe, Marion Dufresne, Pourquoi Pas?, Thalia, Thalassa, Tethys II). The South
-African **R/V S.A. Agulhas II** is not in it, so this layer tracks the Marion
-Dufresne alone. Adding the Agulhas II would require a separate position source.
+  ships are not folded into the fit because they can be far offshore, which would
+  zoom the map out past the drifters the map exists to show. Toggle a layer off,
+  or pan/zoom, to follow a vessel.
