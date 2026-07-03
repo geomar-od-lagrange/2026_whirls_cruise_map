@@ -100,7 +100,7 @@ Point adds the latest fix record, the LineString a per-vertex `fixes` list align
 with `coordinates` (each `{date_UTC, derived_speed_mps, derived_heading_deg}`).
 Gliders carry no reported velocity or battery, so — unlike the drifter fix record
 ([trajectories.md](trajectories.md)) — only the **derived** velocity is emitted
-(mean speed and initial bearing of the segment from the previous fix); the popup
+(mean speed and initial bearing of the segment from the previous fix); the tooltip
 shows a dash for the fields a glider lacks.
 
 ## Client: instruments in the batch control
@@ -114,7 +114,7 @@ The gliders join the same top-right control as the drifter batches — renamed
   the drifters' circles, coloured per type (XSPAR amber `#f59e0b`, seaglider blue
   `#38bdf8` — the operational map's own colours); and
 - **track groups** (`buildGliderTrackGroups`, keyed by `type`) — a line plus a
-  popup-bearing dot per fix, drawn in the **shared orange `TRACK_COLOR`** so every
+  tooltip-bearing dot per fix, drawn in the **shared orange `TRACK_COLOR`** so every
   past track (drifter or glider) reads as the one **True track** layer. Instrument
   identity stays on the coloured marker, not the track.
 

@@ -53,7 +53,7 @@ const SHIP = {
 };
 
 // The two cruise vessels share one ship renderer (makeShipLayer), differing only
-// in colour, sidebar panel, and the popup/readout rows a fix produces — so one
+// in colour, sidebar panel, and the tooltip/readout rows a fix produces — so one
 // `rows(fix, prevFix)` per vessel is all that varies. See docs/ship.md.
 //
 // The Marion Dufresne is live (CORS-open API, polled in the browser) and carries
@@ -168,7 +168,7 @@ function startClock() {
 }
 
 // 16-point compass label for a bearing in degrees true. Shared by the drifter
-// popups and the ship readout.
+// tooltips and the ship readout.
 const COMPASS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
                  "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
 const compassPoint = (deg) => COMPASS[Math.round(deg / 22.5) % 16];
@@ -299,7 +299,7 @@ function buildBatchGroups(geojson) {
       pane: "drifters",
       bubblingMouseEvents: false, // background clicks (not this) clear selection
     });
-    marker.bindPopup(popupHtml(feature.properties, marker.getLatLng()));
+    marker.bindTooltip(popupHtml(feature.properties, marker.getLatLng()));
     const dNumber = feature.properties?.D_number;
     if (dNumber != null) {
       registerPart(dNumber, (s) => styleHead(marker, base, s));
@@ -421,8 +421,8 @@ const HINDCAST_COLOR = "#d81b8c";
 
 // Trajectories, grouped by `batch` so each batch's lines+dots toggle with that
 // batch's markers (see buildBatchControl). For each drifter: one line, plus a
-// small dot at every fix. Each dot carries the same popup as the drifter's main
-// marker, but filled with *that fix's* own time, battery, and reported/derived
+// small dot at every fix. Each dot carries the same hover tooltip as the drifter's
+// main marker, but filled with *that fix's* own time, battery, and reported/derived
 // velocity — read from the per-vertex `fixes` array that rides parallel to
 // `coordinates`. Tolerates a
 // `fixes`-less artifact from an older build: the dot then falls back to the
@@ -459,8 +459,8 @@ function buildTrackGroups(geojson) {
         bubblingMouseEvents: false, // background clicks (not this) clear selection
       });
       // The fix record already carries date/battery/reported+derived velocity;
-      // add the line-level identity for the same popup as the main marker.
-      dot.bindPopup(popupHtml({ D_number, batch, ...fix }, dot.getLatLng()));
+      // add the line-level identity for the same tooltip as the main marker.
+      dot.bindTooltip(popupHtml({ D_number, batch, ...fix }, dot.getLatLng()));
       if (D_number != null) {
         registerPart(D_number, (s) => dot.setStyle(dotStyle(s)));
         dot.on("click", () => selectInstrument(D_number));
@@ -852,7 +852,7 @@ function buildGliderMarkerGroups(geojson) {
     const marker = L.marker([lat, lng], {
       icon: gliderIcon(type),
       zIndexOffset: 500,
-    }).bindPopup(gliderPopupHtml(feature.properties, { lat, lng }));
+    }).bindTooltip(gliderPopupHtml(feature.properties, { lat, lng }));
     if (id != null) {
       registerPart(id, (s) => marker.setIcon(gliderIcon(type, s)));
       marker.on("click", () => selectInstrument(id));
@@ -864,7 +864,7 @@ function buildGliderMarkerGroups(geojson) {
 
 // Glider tracks, one feature group per `type`, keyed like buildGliderMarkerGroups
 // so they ride the "True track" overlay against the matching instrument row. Per
-// platform (from its track LineString): a line plus a popup-bearing dot per fix —
+// platform (from its track LineString): a line plus a tooltip-bearing dot per fix —
 // mirroring buildTrackGroups, and (like it) registered for click-to-highlight
 // under the platform `id`, so clicking a glider's line, a dot or its head selects
 // it. Drawn in TRACK_COLOR, the single true-track colour shared with the drifters
@@ -898,7 +898,7 @@ function buildGliderTrackGroups(geojson) {
         fillOpacity: 0.9,
         bubblingMouseEvents: false, // background clicks (not this) clear selection
       });
-      dot.bindPopup(gliderPopupHtml({ id, type, ...(fixes?.[i] ?? {}) }, dot.getLatLng()));
+      dot.bindTooltip(gliderPopupHtml({ id, type, ...(fixes?.[i] ?? {}) }, dot.getLatLng()));
       if (id != null) {
         registerPart(id, (s) => dot.setStyle(dotStyle(s)));
         dot.on("click", () => selectInstrument(id));
@@ -1161,11 +1161,11 @@ function makeShipLayer(vessel) {
     pane: "ship",
     icon: shipIcon(vessel.markerColor),
     opacity: 0, // hidden until the first fix lands
-  }).bindPopup("");
+  }).bindTooltip("");
   const group = L.featureGroup([halo, core, dots, marker]);
   let positions = [];
 
-  // A small dot at fix `p`, sharing the latest-position popup but filled with
+  // A small dot at fix `p`, sharing the latest-position tooltip but filled with
   // this fix's own data and its motion relative to the preceding fix `prev`.
   function dotFor(p, prev) {
     const dot = L.circleMarker([p.lat, p.lon], {
@@ -1176,7 +1176,7 @@ function makeShipLayer(vessel) {
       fillColor: vessel.trackColor,
       fillOpacity: 1,
     });
-    dot.bindPopup(shipPopupHtml(vessel, p, prev));
+    dot.bindTooltip(shipPopupHtml(vessel, p, prev));
     return dot;
   }
 
@@ -1185,7 +1185,7 @@ function makeShipLayer(vessel) {
     if (!last) return;
     const prev = positions[positions.length - 2];
     marker.setLatLng([last.lat, last.lon]).setOpacity(1);
-    marker.setPopupContent(shipPopupHtml(vessel, last, prev));
+    marker.setTooltipContent(shipPopupHtml(vessel, last, prev));
     renderShipInfo(vessel, last, prev);
   }
 
@@ -1276,6 +1276,12 @@ async function main() {
   map.createPane("shipTrack").style.zIndex = 640;
   map.createPane("drifters").style.zIndex = 650;
   map.createPane("ship").style.zIndex = 660;
+
+  // Hover tooltips must float above every marker. Leaflet's default tooltipPane is
+  // z-index 650 — tied with the drifters pane and *below* the ship pane (660) — so
+  // heads would otherwise paint over the tooltip. Lift it above both (still below
+  // the 700 popupPane) so a fix's tooltip is never occluded by a marker.
+  map.getPane("tooltipPane").style.zIndex = 680;
 
   // Clicking the empty map clears any track selection. Track elements set
   // bubblingMouseEvents:false, so their clicks don't reach here — only genuine

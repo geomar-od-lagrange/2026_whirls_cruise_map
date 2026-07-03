@@ -92,14 +92,14 @@ manager. For a track line at these zoom levels 10-minute fixes are ample — at
 
 `seatemp`/`airtemp` are °C, `pressure` is hPa, and `truewinddir` is degrees —
 unambiguous from the values. The `truewindspeed` **unit is not specified by the
-API** and is not asserted here: the popup and sidebar show the bare number. Do
+API** and is not asserted here: the tooltip and sidebar show the bare number. Do
 not relabel it as knots or m/s without confirming with the source.
 
 ### Course & speed are derived, not reported
 
 The API exposes **no ship speed-over-ground or course-over-ground** — a record is
 only `lat`/`lon`/`date` plus the met fields above (`truewinddir`/`truewindspeed`
-are *wind*, not vessel motion). So the popup/sidebar "Speed (derived)" and
+are *wind*, not vessel motion). So the tooltip/sidebar "Speed (derived)" and
 "Heading (derived)" are computed client-side from a **track segment**: the
 great-circle distance between two fixes over their time gap, and the initial
 great-circle bearing between them (degrees true, with a 16-point compass label).
@@ -206,14 +206,14 @@ Both vessels feed one renderer (`makeShipLayer(vessel)` in `app.js`) driven by a
 per-vessel **spec** in `VESSELS`. The spec carries the vessel name, its source
 attribution, its track/marker colours, its sidebar panel element ids, and the one
 thing that genuinely differs — a `rows(fix, prevFix)` function turning a fix into
-the `[label, value]` pairs the popup and sidebar both render (so a vessel's two
+the `[label, value]` pairs the tooltip and sidebar both render (so a vessel's two
 readouts can never drift). The Marion Dufresne's rows derive motion and add met;
 the Agulhas's use the reported speed/course plus status/area.
 
 - **Rendering.** The track is a cased polyline — a white halo under a coloured
   core — so it stays legible over any basemap, with a small dot at every fix
-  painted on top of it. Each dot opens the same popup as the current position,
-  filled with that fix's own data. The current position is a coloured disc with a
+  painted on top of it. Each dot shows, on hover, the same tooltip as the current
+  position, filled with that fix's own data. The current position is a coloured disc with a
   white ring and a boat glyph, set apart from the small blue drifter circles. The
   two vessels are told apart by colour: the Marion Dufresne is near-black
   (`#1a1a1a`), the Agulhas deep crimson (`#9b1c31`) — both distinct from the
@@ -225,7 +225,10 @@ the Agulhas's use the reported speed/course plus status/area.
   port, so the early track passes through the pre-deploy cluster; were the dots
   above the markers they would intercept clicks meant for the drifters. The dots
   are plain SVG circle markers (not a canvas, which spans the whole viewport and
-  would block clicks map-wide). See [trajectories.md](trajectories.md).
+  would block clicks map-wide). Leaflet's `tooltipPane` is lifted above both the
+  `drifters` and `ship` panes (its default z-index would tie/sit below them), so a
+  fix's hover tooltip floats over every marker instead of being occluded. See
+  [trajectories.md](trajectories.md).
 - **Map fit is unchanged.** The opening view still fits the drifter cluster; the
   ships are not folded into the fit because they can be far offshore, which would
   zoom the map out past the drifters the map exists to show. Toggle a layer off,

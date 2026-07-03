@@ -20,10 +20,10 @@ isolate, and its whole path — port, on deck — is what a viewer wants). A dri
 with fewer than two drawn fixes (single-fix, or a deployed one still on the
 vessel) has no line and so no dots; it still shows its latest-position marker.
 
-## Popups: every fix carries the marker's popup
+## Tooltips: every fix shows the marker's info on hover
 
-Each dot — and the latest-position marker — opens the **same popup**, filled
-with *that fix's* own data:
+Each dot — and the latest-position marker — shows the **same tooltip on hover**,
+filled with *that fix's* own data:
 
 - **identity** (`D_number`), **last fix** time, **battery**;
 - **velocity, derived and reported, side by side**;
@@ -31,7 +31,7 @@ with *that fix's* own data:
 
 The two velocity rows exist because the drifters' *reported* velocity columns
 (`U_speed_mps` / `U_Dir_deg`) are unreliable, especially before deployment. So
-the popup shows them next to a velocity **derived** from the track itself — the
+the tooltip shows them next to a velocity **derived** from the track itself — the
 mean speed and initial bearing of the segment from the previous fix to this one
 — and lets the viewer compare the two rather than trusting either alone. A fix's
 derived row is blank (`—`) when there is nothing to derive from: a track's first
@@ -58,7 +58,7 @@ properties:
 
 `latest_geojson` carries the same per-fix payload in each Point's properties
 (its latest fix, derived against the prior one). Non-finite cells are written as
-`null`, never `NaN`, so the JSON parses client-side and the popup renders a dash.
+`null`, never `NaN`, so the JSON parses client-side and the tooltip renders a dash.
 The client reads `fixes[i]` for the dot at `coordinates[i]`; a `fixes`-less
 artifact from an older build degrades gracefully (dots fall back to the
 line-level identity with blank time/velocity).
@@ -141,19 +141,21 @@ and the desaturated others are the two ends of that treatment.
 Restyling happens **in place** and mutates each layer's options (`setStyle` /
 `setIcon`), so the styling survives a batch toggle's remove/re-add: a hidden track
 is restyled too and shows correctly the moment its instrument is re-enabled.
-Selection also composes with popups — a click on a dot or head both opens that
-fix's popup *and* selects the instrument — and with the empty-map clear, which
-works because the track elements set `bubblingMouseEvents: false`, so only genuine
-background clicks reach the map's `click` handler.
+Click and hover are cleanly separated: **hovering** a dot or head shows that fix's
+tooltip (see above), while **clicking** selects the instrument — the tooltip is
+non-interactive (`pointer-events: none`), so it never intercepts the click.
+Selection also composes with the empty-map clear, which works because the track
+elements set `bubblingMouseEvents: false`, so only genuine background clicks reach
+the map's `click` handler.
 
 ## Rendering and stacking order
 
 The trajectory lines and dots draw **below** the latest-position markers, which
 stay on top. The line **is interactive** — it selects its drifter on click (it
-carries no popup). Because the line and its dots resolve to the same drifter,
+carries no tooltip). Because the line and its dots resolve to the same drifter,
 there is no click for the line to "swallow": whichever the pointer lands on, the
 result is the same selection. Dots are individual SVG circle markers (each
-independently hit-testable, and each also bearing that fix's popup).
+independently hit-testable, and each also bearing that fix's hover tooltip).
 
 The ship track and its per-fix dots sit **below the drifter markers** too, for a
 specific reason: the cruise departs the drifters' staging port, so the early ship
