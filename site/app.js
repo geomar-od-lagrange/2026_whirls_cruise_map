@@ -8,7 +8,7 @@
  *   hindcast.geojson               -> per-drifter current-advection back-track (off)
  *   speed.png + currents_meta.json -> surface-speed shading (imageOverlay)
  *   currents.json                  -> leaflet-velocity flow trails (optional)
- *   inertial_field.json            -> animated near-inertial vector field (off)
+ *   inertial_field.json            -> animated near-inertial particle tracks (off)
  *   awaiting.json                  -> sidebar list, no map geometry
  *   build.json                     -> sidebar "data freshness" build time
  */
@@ -379,68 +379,113 @@ function buildAdvectionGroups(geojson, color) {
 }
 
 // --- near-inertial animation -------------------------------------------------
-// Animates the near-inertial (NI) rotary current the CMEMS field carries,
-// reconstructed analytically on the client from a per-cell (mean, amplitude,
-// phase) decomposition shipped in inertial_field.json (see
+// Animates the near-inertial (NI) rotary current the CMEMS field carries as
+// flowing particle TRACKS (streaklines) — the same "moving dot leaving a
+// fading trail" visual language as the "Current flow" leaflet-velocity layer
+// below, but reconstructed analytically on the client from a per-cell (mean,
+// amplitude, phase) decomposition shipped in inertial_field.json (see
 // plans/014-near-inertial-animation.md):
 //   u(t) + i·v(t) = (mean_u + i·mean_v) + amp · exp(i·(phase − f·dt))
 //   f = 2·Ω·sin(lat)     (Ω = omega, from the header; f < 0 in the SH)
 // A single wall clock sweeps dt over [0, 24h) every INERTIAL_LOOP_S seconds; a
 // canvas in the "inertial" pane redraws every animation frame. This is *not*
 // the previously-dropped animated drift dot (a marker walking the
-// forecast/hindcast polylines, removed in e9b339c) — this animates the field.
-
-// The mean current dominates the NI amplitude ~10-20x here, so mean+NI would
-// read as near-static vectors with an imperceptible wobble. NI-only (mean
-// subtracted) is what makes the rotation legible, hence the default false;
-// flipping this to true is the only change needed to show mean+NI (both
-// fields ship regardless, so no rebuild is needed to try it).
-const SHOW_MEAN = false;
+// forecast/hindcast polylines, removed in e9b339c) — this animates a
+// standalone particle field, not a marker on a fixed track.
+//
+// Particles are advected through the FULL reconstructed field, mean current
+// included, not the NI term alone: the NI orbit here is only ~350 m across —
+// sub-pixel at map scale — so an NI-only particle would barely move. The mean
+// current is what carries a particle visibly across the screen; the NI term
+// shows up as the CURL superimposed on that drift as dt sweeps the 24 h loop,
+// which is exactly the motion a frozen-snapshot flow layer cannot show (the
+// whole point of this overlay). So there is no "NI-only" toggle/constant here
+// — unlike the dropped arrow build, tracks always include the mean.
 
 const INERTIAL_LOOP_S = 12; // wall-clock seconds per animation loop
 const INERTIAL_SPAN_S = 24 * 3600; // dt sweeps [0, 24h) per loop
-// Glyph length per unit speed, clamped so a strong cell doesn't dominate the
-// canvas — purely cosmetic, the amp/phase reconstruction stays unscaled true
-// m/s (plan 014 "no gamma" / plan 013's no-gain finding). Tuned for the
-// DEFAULT NI-only mode: the near-inertial residual is only ~0.02-0.05 m/s
-// (the mean is subtracted), ~15-20x smaller than the full current, so the
-// scale is correspondingly larger — at 30 px/(m/s) every arrow was sub-pixel
-// and the <1px guard blanked the whole field. If you flip SHOW_MEAN=true,
-// drop this back to ~30 or the mean-dominated vectors all clamp to one length.
-const INERTIAL_PX_PER_MPS = 500;
-const INERTIAL_MAX_PX = 28;
+
+// Particle system, classic wind-map style: a fixed pool of particles, each a
+// plain {lon, lat, age} record, reseeded at a fresh random in-bounds position
+// (with age reset) once it goes stale.
+const INERTIAL_MAX_PARTICLES = 2000; // pool size, tuned for a legible density
+const INERTIAL_MAX_AGE = 300; // frames before forced respawn (~5s @ 60fps)
+// Per-frame alpha of the destination-out canvas clear — low -> long fading
+// trails, high -> short ones. Purely cosmetic.
+const INERTIAL_FADE_ALPHA = 0.05;
+// Degrees of geographic displacement per (m/s) of reconstructed speed, per
+// frame. Decouples the *visual* advection speed from real time (like
+// leaflet-velocity's velocityScale — real time would be imperceptibly slow:
+// a 0.1-0.3 m/s current moves ~0.01 m per animation frame). Deliberately slow:
+// the near-inertial CURL is the message, and it only reads if a particle lives
+// through enough of the 24 h loop's field rotation to trace a curved path
+// rather than a fast straight streak. Nudge up for livelier flow, down to
+// emphasise the curl. Paired with INERTIAL_MAX_AGE (longer life = longer arc).
+const INERTIAL_ADVECT_SCALE = 0.012;
+const INERTIAL_LINE_WIDTH = 1.3; // thin, so overlapping trails don't clump
+
 // Cyan, distinct from the orange true track, the violet forecast / magenta
 // hindcast advection lines, and the dark->white flow-trail ramp.
 const INERTIAL_COLOR = "#22d3ee";
 
-// Precomputed ONCE from the header geometry: a flat array of plain records
-// {lat, lon, mean_u, mean_v, amp, phase, f}, skipping null (land) cells. `f`
-// keeps its southern-hemisphere sign so the rotation direction is physical.
-// Row 0 is the northmost row (la1 = north edge), row-major from the NW
-// corner — identical convention to the currents/speed artifacts.
+// Precomputed ONCE from the fetched artifact: the grid geometry (header) plus
+// the four flat mean_u/mean_v/amp/phase arrays, kept addressable by
+// row*nx+col so sampleInertialField can bilinearly interpolate the
+// reconstructed velocity at an arbitrary particle position rather than
+// snapping to cell centers. Row 0 is the northmost row (la1 = north edge),
+// row-major from the NW corner, land = null — identical convention to the
+// currents/speed artifacts.
 function buildInertialField(inertialField) {
   const { header, mean_u, mean_v, amp, phase } = inertialField;
-  const { nx, ny, lo1, la1, dx, dy, omega } = header;
-  const cells = [];
-  for (let row = 0; row < ny; row++) {
-    const lat = la1 - row * dy;
-    const f = 2 * omega * Math.sin((lat * Math.PI) / 180);
-    for (let col = 0; col < nx; col++) {
-      const idx = row * nx + col;
-      const a = amp[idx];
-      if (a == null) continue; // land
-      cells.push({
-        lat,
-        lon: lo1 + col * dx,
-        mean_u: mean_u[idx] ?? 0,
-        mean_v: mean_v[idx] ?? 0,
-        amp: a,
-        phase: phase[idx] ?? 0,
-        f,
-      });
-    }
-  }
-  return { layer: new InertialLayer(), cells };
+  return { layer: new InertialLayer(), grid: { header, mean_u, mean_v, amp, phase } };
+}
+
+// Bilinearly reconstruct (u, v), in m/s, at an arbitrary (lon, lat) and
+// animation time dt (seconds). Reconstructs the full mean+NI velocity at each
+// of the 4 surrounding grid corners first, then bilinearly blends the
+// resulting u/v — NOT phase interpolation, which would not commute with the
+// cos/sin reconstruction. Returns null if any of the 4 corners is off-grid or
+// land (null in the source arrays): the caller treats that as no-data and
+// respawns the particle rather than advecting it across a coastline.
+function sampleInertialField(grid, lon, lat, dt) {
+  const { nx, ny, lo1, la1, dx, dy, omega } = grid.header;
+  const colF = (lon - lo1) / dx;
+  const rowF = (la1 - lat) / dy;
+  const col0 = Math.floor(colF);
+  const row0 = Math.floor(rowF);
+  const col1 = col0 + 1;
+  const row1 = row0 + 1;
+  if (col0 < 0 || row0 < 0 || col1 >= nx || row1 >= ny) return null;
+  const fx = colF - col0;
+  const fy = rowF - row0;
+
+  const corner = (row, col) => {
+    const idx = row * nx + col;
+    const a = grid.amp[idx];
+    if (a == null) return null; // land / no-data
+    const clat = la1 - row * dy;
+    const f = 2 * omega * Math.sin((clat * Math.PI) / 180);
+    const theta = grid.phase[idx] - f * dt;
+    return {
+      u: (grid.mean_u[idx] ?? 0) + a * Math.cos(theta),
+      v: (grid.mean_v[idx] ?? 0) + a * Math.sin(theta),
+    };
+  };
+
+  const c00 = corner(row0, col0);
+  const c01 = corner(row0, col1);
+  const c10 = corner(row1, col0);
+  const c11 = corner(row1, col1);
+  if (!c00 || !c01 || !c10 || !c11) return null;
+
+  const w00 = (1 - fx) * (1 - fy);
+  const w01 = fx * (1 - fy);
+  const w10 = (1 - fx) * fy;
+  const w11 = fx * fy;
+  return {
+    u: c00.u * w00 + c01.u * w01 + c10.u * w10 + c11.u * w11,
+    v: c00.v * w00 + c01.v * w01 + c10.v * w10 + c11.v * w11,
+  };
 }
 
 // A plain canvas living in the "inertial" pane. Sized to the map viewport and
@@ -485,6 +530,13 @@ class InertialLayer extends L.Layer {
       this._canvas.height = size.y;
     }
     L.DomUtil.setPosition(this._canvas, this._map.containerPointToLayerPoint([0, 0]));
+    // Trails accumulate in screen space (fading, not reprojected per pixel),
+    // so a pan/zoom/resize would otherwise smear old trails across the new
+    // view — the same failure mode the "Current flow" layer avoids by
+    // clearing on interaction (see main()). Particles themselves live in
+    // geographic coordinates and simply re-trail from the new view.
+    const ctx = this.getContext();
+    if (ctx) ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
   }
 }
 
@@ -493,9 +545,32 @@ class InertialLayer extends L.Layer {
 // skips ahead instead of drifting), requestAnimationFrame gives a free
 // document.hidden pause (rAF does not fire in hidden tabs), and the tick
 // self-gates on map.hasLayer so the idle cost is a hash lookup. Started once
-// in main(), never stopped; with no cells (missing artifact) it never starts.
-function startInertialClock(map, cells, layer) {
-  if (!cells.length) return;
+// in main(), never stopped; with no grid (missing artifact) it never starts.
+//
+// Particle state is a plain array owned by this closure, not attached to any
+// Leaflet object: each particle is {lon, lat, age}. A particle respawns at a
+// fresh random in-bounds position (age reset to 0) when it goes stale
+// (age > INERTIAL_MAX_AGE), when its velocity sample is no-data (land/
+// off-grid), or when advection has carried it outside the field's bounds.
+// Initial ages are randomized so the whole pool doesn't restart in lockstep.
+function startInertialClock(map, grid, layer) {
+  if (!grid) return;
+  const { lo1, lo2, la1, la2 } = grid.header;
+  const lonMin = Math.min(lo1, lo2);
+  const lonMax = Math.max(lo1, lo2);
+  const latMin = Math.min(la1, la2);
+  const latMax = Math.max(la1, la2);
+
+  const randomPosition = () => ({
+    lon: lonMin + Math.random() * (lonMax - lonMin),
+    lat: latMin + Math.random() * (latMax - latMin),
+  });
+
+  const particles = [];
+  for (let i = 0; i < INERTIAL_MAX_PARTICLES; i++) {
+    particles.push({ ...randomPosition(), age: Math.floor(Math.random() * INERTIAL_MAX_AGE) });
+  }
+
   const tick = () => {
     if (!map.hasLayer(layer)) {
       requestAnimationFrame(tick);
@@ -507,31 +582,47 @@ function startInertialClock(map, cells, layer) {
       return;
     }
     const { width, height } = ctx.canvas;
-    ctx.clearRect(0, 0, width, height);
+
+    // Fade the previous frame instead of hard-clearing, so particles leave
+    // fading tails: destination-out erases a fraction of the existing
+    // pixels' alpha each frame rather than wiping the canvas outright.
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.fillStyle = `rgba(0, 0, 0, ${INERTIAL_FADE_ALPHA})`;
+    ctx.fillRect(0, 0, width, height);
+    ctx.globalCompositeOperation = "source-over";
 
     const tau01 = ((performance.now() / 1000) % INERTIAL_LOOP_S) / INERTIAL_LOOP_S;
     const dt = tau01 * INERTIAL_SPAN_S;
 
     ctx.strokeStyle = INERTIAL_COLOR;
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = INERTIAL_LINE_WIDTH;
     ctx.beginPath();
-    for (const cell of cells) {
-      const theta = cell.phase - cell.f * dt;
-      let u = cell.amp * Math.cos(theta);
-      let v = cell.amp * Math.sin(theta);
-      if (SHOW_MEAN) {
-        u += cell.mean_u;
-        v += cell.mean_v;
+    for (const p of particles) {
+      const sample = sampleInertialField(grid, p.lon, p.lat, dt);
+      if (!sample) {
+        Object.assign(p, randomPosition(), { age: 0 });
+        continue; // no-data (land/off-grid): respawn, draw nothing this frame
       }
-      const speed = Math.hypot(u, v);
-      const len = Math.min(speed * INERTIAL_PX_PER_MPS, INERTIAL_MAX_PX);
-      if (len < 1) continue; // too short to read — also guards the /speed below
-      const p = map.latLngToContainerPoint([cell.lat, cell.lon]);
-      // Screen space: east = +x (matches u); north = -y (screen y grows down).
-      const x2 = p.x + (u / speed) * len;
-      const y2 = p.y - (v / speed) * len;
-      ctx.moveTo(p.x, p.y);
-      ctx.lineTo(x2, y2);
+      const { u, v } = sample;
+      const newLat = p.lat + v * INERTIAL_ADVECT_SCALE;
+      const newLon = p.lon + (u * INERTIAL_ADVECT_SCALE) / Math.cos((p.lat * Math.PI) / 180);
+      const stale =
+        p.age + 1 > INERTIAL_MAX_AGE ||
+        newLon < lonMin ||
+        newLon > lonMax ||
+        newLat < latMin ||
+        newLat > latMax;
+      if (stale) {
+        Object.assign(p, randomPosition(), { age: 0 });
+        continue; // aged out or left the field: respawn, draw nothing this frame
+      }
+      const p0 = map.latLngToContainerPoint([p.lat, p.lon]);
+      const p1 = map.latLngToContainerPoint([newLat, newLon]);
+      ctx.moveTo(p0.x, p0.y);
+      ctx.lineTo(p1.x, p1.y);
+      p.lon = newLon;
+      p.lat = newLat;
+      p.age += 1;
     }
     ctx.stroke();
 
@@ -1037,15 +1128,15 @@ async function main() {
     map.on("moveend zoomend", () => flowLayer.setData(currents));
   }
 
-  // Near-inertial animation: a rotating vector field reconstructed client-side
+  // Near-inertial animation: flowing particle tracks reconstructed client-side
   // from inertial_field.json (see the "near-inertial animation" block above).
   // Default OFF (buildInertialField never addTo(map)s it) — missing artifact
   // means no layer and no control row. The clock starts once, immediately;
   // it self-gates on map.hasLayer so it costs nothing while the layer is off.
   if (inertialField) {
-    const { layer: inertialLayer, cells: inertialCells } = buildInertialField(inertialField);
+    const { layer: inertialLayer, grid: inertialGrid } = buildInertialField(inertialField);
     overlays["Near-inertial animation"] = inertialLayer;
-    startInertialClock(map, inertialCells, inertialLayer);
+    startInertialClock(map, inertialGrid, inertialLayer);
   }
 
   // Trajectories and the current-advection forecast/hindcast, each grouped by
