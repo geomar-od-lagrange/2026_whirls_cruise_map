@@ -10,6 +10,14 @@ from ._clean import PRE_DEPLOY_BATCH
 
 _EARTH_RADIUS_M = 6_371_000.0
 
+# A glider track's leading fixes can be the launch vessel carrying it out to the
+# deployment site. A Seaglider's own horizontal speed is ~0.25 m/s (0.1–0.4 m/s
+# through water; up to ~1 m/s over ground with the current), while a ship steams
+# at several m/s — so an inbound speed above this cleanly marks a still-aboard
+# transit fix. Set in the wide gap between the two: above any glide+current ground
+# speed here, well below ship transit (4+ m/s observed). See _drop_leading_transit.
+GLIDER_TRANSIT_MPS = 2.0
+
 
 def _feature_collection(features: list[dict]) -> dict:
     return {"type": "FeatureCollection", "features": features}
@@ -98,6 +106,40 @@ def _glider_fix_record(pt, prev_pt) -> dict:
     }
 
 
+def _drop_leading_transit(
+    fixes: list, threshold: float = GLIDER_TRANSIT_MPS
+) -> list:
+    """Drop a glider track's leading vessel-transit fixes, returning the deployed
+    remainder.
+
+    Walk from the start while each fix's *inbound* speed exceeds ``threshold`` —
+    the launch vessel carrying the glider — and keep from the first fix it reached
+    at its own (sub-threshold) speed: its deployment. **Only this leading run is
+    cut.** Once deployed, every later fix is kept unchanged, however fast — the map
+    shows raw positions, and a post-deployment speed spike is treated as noise, not
+    a re-truncation. The convention matches drifter deployment detection
+    (:func:`_deploy.deployment_starts`): the drop point (last transit fix) is
+    excluded, so the drawn track begins at the first free fix.
+
+    A track with no leading transit (its first hop is already sub-threshold) is
+    returned whole. One carried the whole way (every hop above threshold) returns
+    empty — no free track yet, only the marker, exactly as a still-attached drifter.
+    ``fixes`` is the ``(time, lat, lon)`` list; the first fix has no inbound speed
+    and so is never transit on its own.
+    """
+    last_transit = 0
+    for i in range(1, len(fixes)):
+        speed, _ = _segment_motion(
+            (fixes[i - 1][1], fixes[i - 1][2], fixes[i - 1][0]),
+            (fixes[i][1], fixes[i][2], fixes[i][0]),
+        )
+        if speed is not None and speed > threshold:
+            last_transit = i
+        else:
+            break
+    return fixes[last_transit + 1 :] if last_transit else fixes
+
+
 def gliders_geojson(platforms: list) -> dict:
     """FeatureCollection for the glider platforms (see :mod:`._gliders`).
 
@@ -107,12 +149,19 @@ def gliders_geojson(platforms: list) -> dict:
     colour and label); the Point adds the latest :func:`_glider_fix_record`, the
     LineString a per-vertex ``fixes`` list aligned with ``coordinates`` (so the
     client draws a popup-bearing dot per fix, as it does for drifter tracks).
+
+    The **Point** is always the raw latest fix. The **LineString** is the glider's
+    *deployed* track only: its leading vessel-transit fixes are dropped
+    (:func:`_drop_leading_transit`), so — like a truncated drifter — the first
+    drawn fix is the first free one (its derived velocity blank, deriving from
+    nothing). A glider still being carried out (no free track yet) has fewer than
+    two deployed fixes and so draws only its marker.
     """
     features = []
     for p in platforms:
-        fixes = p.fixes
-        last = fixes[-1]
-        prev = (fixes[-2][1], fixes[-2][2], fixes[-2][0]) if len(fixes) >= 2 else None
+        raw = p.fixes
+        last = raw[-1]
+        prev = (raw[-2][1], raw[-2][2], raw[-2][0]) if len(raw) >= 2 else None
         features.append(
             {
                 "type": "Feature",
@@ -124,6 +173,7 @@ def gliders_geojson(platforms: list) -> dict:
                 },
             }
         )
+        fixes = _drop_leading_transit(raw)
         if len(fixes) < 2:
             continue
         coords, fix_recs, prev_pt = [], [], None

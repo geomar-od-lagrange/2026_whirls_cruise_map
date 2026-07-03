@@ -65,9 +65,34 @@ dead platform can't suppress the rest, and a total failure yields no
 
 `_geojson.gliders_geojson` writes one `FeatureCollection`. Per platform:
 
-- a **`Point`** at its most-recent fix; and
-- a **`LineString`** track when it has ≥2 fixes (a single-fix platform — the XSPAR
-  with one report — has only the marker, no line).
+- a **`Point`** at its most-recent (raw) fix; and
+- a **`LineString`** track when it has ≥2 **deployed** fixes (a single-fix platform
+  — the XSPAR with one report — has only the marker, no line).
+
+### Leading vessel-transit is pruned from the track
+
+A glider's first fixes can be the launch vessel carrying it out to the deployment
+site, not the glider drifting. `_drop_leading_transit` removes that leading run:
+it walks from the start while each fix's *inbound* speed exceeds
+`GLIDER_TRANSIT_MPS` (2.0 m/s) and keeps from the first fix the glider reached at
+its own, sub-threshold speed — its deployment. The threshold sits in the wide gap
+between the two regimes: a Seaglider's horizontal speed is ~0.25 m/s (0.1–0.4 m/s
+through water, up to ~1 m/s over ground with the current), while a ship steams at
+several m/s (4–7 m/s seen on the transit legs). So the cut cleanly separates
+carried-aboard fixes from free drift, without needing to know *which* vessel
+(Marion Dufresne or Agulhas II) launched the glider — unlike the drifter rule,
+this is speed-based and vessel-agnostic (contrast [trajectories.md](trajectories.md)'s
+ship-proximity `_deploy`).
+
+**Only the leading run is cut.** Once a glider is deployed, every later fix is kept
+unchanged, however fast — the map shows raw, unprocessed positions, so a
+post-deployment speed spike is treated as noise, not a reason to re-truncate. The
+convention matches drifter truncation: the drop point (last transit fix) is
+excluded, so the drawn track begins at the first free fix, whose derived velocity
+is blank (it derives from nothing). A glider still being carried out — every hop
+above threshold — has no free track yet and draws only its marker. The **`Point`
+is always the raw latest fix**, unaffected by the prune (the latest fix is well
+past deployment).
 
 Coordinates are `[lon, lat]`. Properties carry `id` (from the CSV filename) and
 `type` (`xspar` / `seaglider`, which keys the client's colour and label); the
