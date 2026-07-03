@@ -549,26 +549,48 @@ class InertialLayer extends L.Layer {
 //
 // Particle state is a plain array owned by this closure, not attached to any
 // Leaflet object: each particle is {lon, lat, age}. A particle respawns at a
-// fresh random in-bounds position (age reset to 0) when it goes stale
-// (age > INERTIAL_MAX_AGE), when its velocity sample is no-data (land/
-// off-grid), or when advection has carried it outside the field's bounds.
-// Initial ages are randomized so the whole pool doesn't restart in lockstep.
+// fresh random position inside the current VIEWPORT (age reset to 0) when it
+// goes stale (age > INERTIAL_MAX_AGE), when its velocity sample is no-data
+// (land/off-grid), or when advection carries it out of the viewport. Seeding
+// and culling within the viewport (clamped to the field) — rather than across
+// the whole field — is what scales the on-screen trace density with zoom: the
+// fixed pool always populates what you're looking at, so it packs denser as
+// you zoom in instead of thinning to a handful of particles. Initial ages are
+// randomized so the whole pool doesn't restart in lockstep.
 function startInertialClock(map, grid, layer) {
   if (!grid) return;
   const { lo1, lo2, la1, la2 } = grid.header;
-  const lonMin = Math.min(lo1, lo2);
-  const lonMax = Math.max(lo1, lo2);
-  const latMin = Math.min(la1, la2);
-  const latMax = Math.max(la1, la2);
+  const fieldLonMin = Math.min(lo1, lo2);
+  const fieldLonMax = Math.max(lo1, lo2);
+  const fieldLatMin = Math.min(la1, la2);
+  const fieldLatMax = Math.max(la1, la2);
 
-  const randomPosition = () => ({
-    lon: lonMin + Math.random() * (lonMax - lonMin),
-    lat: latMin + Math.random() * (latMax - latMin),
+  // The sampling/culling box for this frame: the map viewport intersected with
+  // the field's coverage. `empty` when the viewport is entirely off the field
+  // (panned away from the cruise bbox) — nothing to seed or draw.
+  const viewBounds = () => {
+    const b = map.getBounds();
+    const lonMin = Math.max(fieldLonMin, b.getWest());
+    const lonMax = Math.min(fieldLonMax, b.getEast());
+    const latMin = Math.max(fieldLatMin, b.getSouth());
+    const latMax = Math.min(fieldLatMax, b.getNorth());
+    return { lonMin, lonMax, latMin, latMax, empty: lonMin >= lonMax || latMin >= latMax };
+  };
+
+  const randomPosition = (vb) => ({
+    lon: vb.lonMin + Math.random() * (vb.lonMax - vb.lonMin),
+    lat: vb.latMin + Math.random() * (vb.latMax - vb.latMin),
   });
 
   const particles = [];
-  for (let i = 0; i < INERTIAL_MAX_PARTICLES; i++) {
-    particles.push({ ...randomPosition(), age: Math.floor(Math.random() * INERTIAL_MAX_AGE) });
+  {
+    const vb0 = viewBounds();
+    const seed = vb0.empty
+      ? { lonMin: fieldLonMin, lonMax: fieldLonMax, latMin: fieldLatMin, latMax: fieldLatMax }
+      : vb0;
+    for (let i = 0; i < INERTIAL_MAX_PARTICLES; i++) {
+      particles.push({ ...randomPosition(seed), age: Math.floor(Math.random() * INERTIAL_MAX_AGE) });
+    }
   }
 
   const tick = () => {
@@ -591,6 +613,12 @@ function startInertialClock(map, grid, layer) {
     ctx.fillRect(0, 0, width, height);
     ctx.globalCompositeOperation = "source-over";
 
+    const vb = viewBounds();
+    if (vb.empty) {
+      requestAnimationFrame(tick); // viewport is off the field — nothing to draw
+      return;
+    }
+
     const tau01 = ((performance.now() / 1000) % INERTIAL_LOOP_S) / INERTIAL_LOOP_S;
     const dt = tau01 * INERTIAL_SPAN_S;
 
@@ -600,7 +628,7 @@ function startInertialClock(map, grid, layer) {
     for (const p of particles) {
       const sample = sampleInertialField(grid, p.lon, p.lat, dt);
       if (!sample) {
-        Object.assign(p, randomPosition(), { age: 0 });
+        Object.assign(p, randomPosition(vb), { age: 0 });
         continue; // no-data (land/off-grid): respawn, draw nothing this frame
       }
       const { u, v } = sample;
@@ -608,13 +636,13 @@ function startInertialClock(map, grid, layer) {
       const newLon = p.lon + (u * INERTIAL_ADVECT_SCALE) / Math.cos((p.lat * Math.PI) / 180);
       const stale =
         p.age + 1 > INERTIAL_MAX_AGE ||
-        newLon < lonMin ||
-        newLon > lonMax ||
-        newLat < latMin ||
-        newLat > latMax;
+        newLon < vb.lonMin ||
+        newLon > vb.lonMax ||
+        newLat < vb.latMin ||
+        newLat > vb.latMax;
       if (stale) {
-        Object.assign(p, randomPosition(), { age: 0 });
-        continue; // aged out or left the field: respawn, draw nothing this frame
+        Object.assign(p, randomPosition(vb), { age: 0 });
+        continue; // aged out or left the viewport: respawn, draw nothing this frame
       }
       const p0 = map.latLngToContainerPoint([p.lat, p.lon]);
       const p1 = map.latLngToContainerPoint([newLat, newLon]);
