@@ -380,27 +380,26 @@ function buildAdvectionGroups(geojson, color) {
 
 // --- near-inertial animation -------------------------------------------------
 // Animates the near-inertial (NI) rotary current the CMEMS field carries as
-// flowing particle TRACKS (streaklines) — the same "moving dot leaving a
-// fading trail" visual language as the "Current flow" leaflet-velocity layer
-// below, but reconstructed analytically on the client from a per-cell (mean,
-// amplitude, phase) decomposition shipped in inertial_field.json (see
-// plans/014-near-inertial-animation.md):
+// particle TRACKS that trace the local inertial circle — moving dots leaving
+// fading trails, reconstructed analytically on the client from a per-cell
+// (mean, amplitude, phase) decomposition shipped in inertial_field.json (see
+// plans/014-near-inertial-animation.md). The per-cell velocity is
 //   u(t) + i·v(t) = (mean_u + i·mean_v) + amp · exp(i·(phase − f·dt))
 //   f = 2·Ω·sin(lat)     (Ω = omega, from the header; f < 0 in the SH)
-// A single wall clock sweeps dt over [0, 24h) every INERTIAL_LOOP_S seconds; a
-// canvas in the "inertial" pane redraws every animation frame. This is *not*
-// the previously-dropped animated drift dot (a marker walking the
-// forecast/hindcast polylines, removed in e9b339c) — this animates a
-// standalone particle field, not a marker on a fixed track.
+// but advection uses the NI term ALONE — u = amp·cos(phase−f·dt),
+// v = amp·sin(phase−f·dt) — so a particle circles in place at the inertial
+// frequency instead of being swept away by the background current. A single
+// wall clock sweeps dt over [0, 24h) every INERTIAL_LOOP_S seconds; a canvas
+// in the "inertial" pane redraws every frame. This is *not* the dropped
+// animated drift dot (a marker walking the forecast/hindcast polylines,
+// removed in e9b339c) — it animates a standalone particle field.
 //
-// Particles are advected through the FULL reconstructed field, mean current
-// included, not the NI term alone: the NI orbit here is only ~350 m across —
-// sub-pixel at map scale — so an NI-only particle would barely move. The mean
-// current is what carries a particle visibly across the screen; the NI term
-// shows up as the CURL superimposed on that drift as dt sweeps the 24 h loop,
-// which is exactly the motion a frozen-snapshot flow layer cannot show (the
-// whole point of this overlay). So there is no "NI-only" toggle/constant here
-// — unlike the dropped arrow build, tracks always include the mean.
+// Excluding the mean is deliberate: it isolates the pure inertial rotation.
+// The true orbit is only ~350 m across (sub-pixel), so INERTIAL_ADVECT_SCALE
+// magnifies it into a visible circle whose on-screen radius grows with zoom —
+// legible when zoomed into the drifter cloud, vanishingly small zoomed out.
+// The shipped mean_u/mean_v go unused by advection but stay in the artifact as
+// the decomposition's documented seam (a future mean+NI mode is a one-liner).
 
 const INERTIAL_LOOP_S = 12; // wall-clock seconds per animation loop
 const INERTIAL_SPAN_S = 24 * 3600; // dt sweeps [0, 24h) per loop
@@ -408,20 +407,19 @@ const INERTIAL_SPAN_S = 24 * 3600; // dt sweeps [0, 24h) per loop
 // Particle system, classic wind-map style: a fixed pool of particles, each a
 // plain {lon, lat, age} record, reseeded at a fresh random in-bounds position
 // (with age reset) once it goes stale.
-const INERTIAL_MAX_PARTICLES = 2000; // pool size, tuned for a legible density
+const INERTIAL_MAX_PARTICLES = 1200; // pool size, tuned for a legible density
 const INERTIAL_MAX_AGE = 300; // frames before forced respawn (~5s @ 60fps)
 // Per-frame alpha of the destination-out canvas clear — low -> long fading
 // trails, high -> short ones. Purely cosmetic.
 const INERTIAL_FADE_ALPHA = 0.05;
-// Degrees of geographic displacement per (m/s) of reconstructed speed, per
-// frame. Decouples the *visual* advection speed from real time (like
-// leaflet-velocity's velocityScale — real time would be imperceptibly slow:
-// a 0.1-0.3 m/s current moves ~0.01 m per animation frame). Deliberately slow:
-// the near-inertial CURL is the message, and it only reads if a particle lives
-// through enough of the 24 h loop's field rotation to trace a curved path
-// rather than a fast straight streak. Nudge up for livelier flow, down to
-// emphasise the curl. Paired with INERTIAL_MAX_AGE (longer life = longer arc).
-const INERTIAL_ADVECT_SCALE = 0.012;
+// Degrees of geographic displacement per (m/s) of NI speed, per frame.
+// Decouples the *visual* advection from real time (like leaflet-velocity's
+// velocityScale). With NI-only advection this doubles as the orbit magnifier:
+// the ~350 m physical inertial circle is sub-pixel, so this scales it up to a
+// visible loop. The orbital *angular* rate is fixed by the 24 h loop, so this
+// sets the circle's RADIUS (and thus the tangential speed), not its period —
+// larger = bigger, faster circles. Nudge to taste.
+const INERTIAL_ADVECT_SCALE = 0.0072;
 const INERTIAL_LINE_WIDTH = 1.3; // thin, so overlapping trails don't clump
 
 // Cyan, distinct from the orange true track, the violet forecast / magenta
@@ -440,12 +438,14 @@ function buildInertialField(inertialField) {
   return { layer: new InertialLayer(), grid: { header, mean_u, mean_v, amp, phase } };
 }
 
-// Bilinearly reconstruct (u, v), in m/s, at an arbitrary (lon, lat) and
-// animation time dt (seconds). Reconstructs the full mean+NI velocity at each
-// of the 4 surrounding grid corners first, then bilinearly blends the
-// resulting u/v — NOT phase interpolation, which would not commute with the
-// cos/sin reconstruction. Returns null if any of the 4 corners is off-grid or
-// land (null in the source arrays): the caller treats that as no-data and
+// Bilinearly reconstruct the near-inertial (u, v), in m/s, at an arbitrary
+// (lon, lat) and animation time dt (seconds). The MEAN current is deliberately
+// excluded (see the layer header) so particles trace the pure inertial circle;
+// only the rotary NI term amp·exp(i(phase−f·dt)) is reconstructed. Evaluates
+// it at each of the 4 surrounding grid corners first, then bilinearly blends
+// the resulting u/v — NOT phase interpolation, which would not commute with
+// the cos/sin reconstruction. Returns null if any of the 4 corners is off-grid
+// or land (null in the source arrays): the caller treats that as no-data and
 // respawns the particle rather than advecting it across a coastline.
 function sampleInertialField(grid, lon, lat, dt) {
   const { nx, ny, lo1, la1, dx, dy, omega } = grid.header;
@@ -467,8 +467,8 @@ function sampleInertialField(grid, lon, lat, dt) {
     const f = 2 * omega * Math.sin((clat * Math.PI) / 180);
     const theta = grid.phase[idx] - f * dt;
     return {
-      u: (grid.mean_u[idx] ?? 0) + a * Math.cos(theta),
-      v: (grid.mean_v[idx] ?? 0) + a * Math.sin(theta),
+      u: a * Math.cos(theta), // near-inertial only; mean excluded (see header)
+      v: a * Math.sin(theta),
     };
   };
 
