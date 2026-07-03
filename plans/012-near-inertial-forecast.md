@@ -1,12 +1,13 @@
 # Near-inertial forecast/hindcast via a time-dependent current field
 
-**Status: DRAFT for discussion.** Reframed after five research/validation spikes
-(2026-07-02). **Decision: no slab model** — the near-inertial (NI) oscillation is
-already present in the CMEMS current field; the fix is to stop advecting through a
+**Status: Phases 0–2 done; Phases 3 (cadence) and 4 (docs) open.**
+**Decision: no slab model** — the near-inertial (NI) oscillation is already
+present in the CMEMS current field; the fix is to stop advecting through a
 *frozen* snapshot and advect through a **time-dependent** field instead. The
-Pollard–Millard slab approach is parked in
-[inertial_slab_model.md](inertial_slab_model.md) (deferred/obsolete). Nothing in
-`src/` is touched until Phase 0 validates against the drifters' own velocities.
+Pollard–Millard slab was later tested against winds and drifters and **dropped
+permanently** ([done/inertial_slab_model.md](done/inertial_slab_model.md));
+the amplitude-gain question is **resolved to no gain**
+([done/013-inertial-gain-generalization.md](done/013-inertial-gain-generalization.md)).
 
 ## The decisive finding
 
@@ -26,12 +27,16 @@ Deployment-2 site (11.48°E, −37.36°S; local inertial period T_f = 19.8 h) sh
   fixed snapshot gives constant velocity — the oscillation the model *has* is
   discarded at t = 0. **Un-freezing the field recovers the inertial loop for
   free**, no slab — *to the extent CMEMS's NI amplitude is realistic.*
-- **The only open question is realism — now answered (Phase 0, below): CMEMS gets
-  the inertial phase right but only ~0.4 of the amplitude, closable with a scalar
-  gain, no slab.** CMEMS's modelled NI
-  at D2 is ~2.5 cm/s; free-running globals can under-represent wind-driven NI. If
-  the drifters' *observed* NI is much larger, we'd want the parked slab to add
-  amplitude. Phase 0 settles this against the drifter velocities.
+- **The only open question was realism — answered in two steps.** Phase 0
+  (below) found CMEMS gets the inertial phase right but only ~0.31–0.45 of the
+  amplitude at the D2 site, suggesting a scalar gain. The broadened 23-drifter
+  survey
+  ([done/013-inertial-gain-generalization.md](done/013-inertial-gain-generalization.md))
+  then showed the ratio is site- and time-dependent (deployment medians
+  0.40–0.66, factor-~3 spread window-to-window) with no driver usable at
+  forecast time — so **no gain is applied**, and the slab (tested there too)
+  is dropped: it is in phase with CMEMS's own wind-forced NI, so adding it
+  would double-count.
 
 Validation scripts + plots: `tmp_ni/` (rotary spectrum, hodograph, NI time series).
 
@@ -131,23 +136,29 @@ always-present line + 1/3/6 h marks, on an optional toggle, paused on
   (the true tracks' sharp corners — D-559's deep cusp — are smoothed). The drifters
   are drogued *below* the surface the model samples, where NI is weaker, so the
   deficit is real, not a depth artifact. **Decision: not the slab.** Phase being
-  right means the gap closes with a **single scalar gain (~2.3) on the
-  CMEMS-derived inertial component** (no GFS, no spin-up), applied via the Phase-2
-  decomposition. Caveat: 3 drifters / one 20 h window / one place — indicative,
-  expose the gain as a parameter and confirm stability before baking a number in.
+  right suggested the gap might close with a single scalar gain (~2.3) on the
+  CMEMS-derived inertial component — with the caveat: 3 drifters / one 20 h
+  window / one place. The broadened survey (013) confirmed the caveat, not the
+  gain: the ~2.3 came from the most under-energized site/time sampled; across
+  all 23 drifters the median sim/obs ratio is 0.65 and no scalar or
+  parameterized gain generalizes.
 - **Phase 1 — time-dependent CMEMS advection. DONE** (commit on
   `near-inertial-forecast`). Windowed hourly `subset` in `_currents.fetch_field_window`
   (keeps `time`); bilinear-space + linear-time in `_forecast._Field`; forecast +
   hindcast advect through the window. This is the "more correct than frozen"
   feature and already carries ~40 % of the inertial excursion with correct phase.
-- **Phase 2 — visualization + inertial gain.** Per the design spike: the per-cell
-  `(mean u,v, amplitude A, phase φ)` decomposition, speed↔inertial toggle, animated
-  cycloid dot — and, from Phase 0, a **calibrated gain on `A`** so the reconstructed
-  field (and the advection that reads it) matches the observed inertial amplitude,
-  not just its phase. **Whether one scalar gain generalizes across deployments,
-  space, and time is itself open** — gated by
-  [013-inertial-gain-generalization.md](013-inertial-gain-generalization.md); until
-  it's answered, un-gained (phase-right, honest) is the default.
+- **Phase 2 — visualization + inertial gain. DONE.** The per-cell
+  `(mean u,v, amplitude A, phase φ)` decomposition (`_inertial.py`), the
+  inertial-amplitude overlay (`inertial.png` + `inertial_meta.json`, toggling
+  exclusively against the speed shading) and the animated ±6 h dot walking
+  each forecast/hindcast polyline shipped. The gain question is **resolved:
+  Branch C, no gain**
+  ([done/013-inertial-gain-generalization.md](done/013-inertial-gain-generalization.md));
+  the gain is exposed as a parameter defaulting to 1.0 (`_inertial.GAIN`) —
+  the seam where a validated gain would plug in (the advection still reads the
+  raw hourly window; with gain 1.0 the two are equivalent). The animated NI
+  *flow-trail* reconstruction (rebuilding the leaflet-velocity background from
+  mean + A + φ) is deferred.
 - **Phase 3 — cadence.** Move the field build to a slow 6-hourly GitLab schedule;
   fast Pages build fetches the artifact (Job Artifacts API +
   `search_recent_successful_pipelines`, recompute-on-miss, `expire_in`).
@@ -157,6 +168,7 @@ always-present line + 1/3/6 h marks, on an optional toggle, paused on
 
 ## Out of scope
 
-- The Pollard–Millard slab — parked in [inertial_slab_model.md](inertial_slab_model.md).
+- The Pollard–Millard slab — tested and dropped permanently
+  ([done/inertial_slab_model.md](done/inertial_slab_model.md)).
 - SMOC / tidal CMEMS (no inertial gain here; would double-count tides + Stokes).
 - A standalone climatological NI map.

@@ -8,5 +8,7 @@
 - toggle for showing the true (free-drift) track of selected instruments, drifters truncated at deployment
 - toggle for a per-instrument current-advection forecast (solid line to +6 h, dots at 1/3/6 h)
 - toggle for a per-instrument current-advection hindcast (solid line back to −6 h, dots at 1/3/6 h)
+- toggle for an animated dot per forecast and hindcast line, walking the ±6 h drift on one shared looping clock
 - an "Instruments" control to show/hide each drifter batch and each glider platform independently
 - overlay of today's cmems surface currents (analysis / forecast t=0)
+- overlay of the near-inertial amplitude derived from the same current window, mutually exclusive with the current-speed shading

@@ -14,7 +14,6 @@ failure returns ``[]`` and the map simply shows no gliders.
 from __future__ import annotations
 
 import csv
-import io
 import re
 import urllib.request
 import xml.etree.ElementTree as ET

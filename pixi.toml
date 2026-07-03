@@ -27,7 +27,7 @@ ruff = ">=0.15.12,<0.16"
 [tasks]
 build = "python -m whirls_cruise_map.build"
 serve = "python -m http.server --directory site 8000"
-test = "pytest -q"
+test = "pytest -q tests"
 
 [tasks.dev]
 depends-on = ["build"]

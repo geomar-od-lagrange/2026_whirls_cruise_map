@@ -42,7 +42,7 @@ move to `done/` and gain a `docs/` counterpart.
    track to 6 h (RK4 through the frozen CMEMS field, NaN land so it stops at the
    coast), solid line with 1/3/6 h dots, toggled per-batch like trajectories.
    **Done** ([docs/forecast.md](../docs/forecast.md)). Frozen single field and
-   surface-current-only; time-varying multi-step advection → BACKLOG.
+   surface-current-only at the time; time-varying advection landed later — see 15.
 10. Automation & hosting — GitLab CI builds the site and publishes it to GitLab
     Pages on `git.geomar.de` (push, manual, or scheduled pipelines); CMEMS
     credentials via masked CI/CD variables. **Done**
@@ -76,14 +76,18 @@ move to `done/` and gain a `docs/` counterpart.
 15. [Near-inertial forecast/hindcast](012-near-inertial-forecast.md) — the drift
     forecast/hindcast advects through a **time-dependent hourly CMEMS field**
     instead of a frozen snapshot, so the path curls into the near-inertial loop the
-    model carries (the drifters' visible corners). **Phase 1 done** (built +
-    validated; [docs/forecast.md](../docs/forecast.md)). Phase 0 confirmed CMEMS has
-    the inertial **phase** right but ~0.4 of the **amplitude**; the fix is a scalar
-    gain on the model's own inertial component, not a wind slab (parked in
-    [inertial_slab_model.md](inertial_slab_model.md)). **Open:** Phase 2
-    (per-cell `(mean, A, φ)` decomposition + gain + speed/inertial visualization),
+    model carries (the drifters' visible corners). **Phases 1–2 done** (built +
+    validated; [docs/forecast.md](../docs/forecast.md)): time-dependent advection,
+    per-cell `(mean, A, φ)` decomposition, inertial-amplitude overlay
+    (speed↔inertial toggle), animated ±6 h dot. The amplitude gain resolved to
+    **no gain** (see 16), exposed as a parameter defaulting to 1.0; the wind slab
+    was tested and dropped
+    ([done/inertial_slab_model.md](done/inertial_slab_model.md)). **Open:**
     Phase 3 (slow-tier cadence + artifact cache).
-16. [Inertial-gain generalization](013-inertial-gain-generalization.md) — does one
-    scalar amplitude gain hold across deployments (D1 has corners too), space, and
-    time, or does it need parameterizing / dropping? Gates the gain half of 15's
-    Phase 2. **Open** (offline investigation).
+16. [Inertial-gain generalization](done/013-inertial-gain-generalization.md) —
+    does one scalar amplitude gain hold across deployments (D1 has corners too),
+    space, and time, or does it need parameterizing / dropping? **Resolved
+    (Branch C — no gain):** across all 23 drifters the sim/obs amplitude ratio
+    spreads ~3× (deployment medians 0.66 / 0.40; phase right) with no driver
+    usable at forecast time, so the un-gained field ships and the gain stays a
+    parameter defaulting to 1.0 (`_inertial.GAIN`).

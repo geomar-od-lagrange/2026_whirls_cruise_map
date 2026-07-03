@@ -7,14 +7,16 @@ Unscheduled ideas, not yet promoted to a plan.
 - **Track thinning** — simplify/decimate dense trajectories (the ship's 10-min
   grid, ≤5 min drifter snapshots over weeks) for rendering performance, now that
   every fix draws a dot.
+- **GPS despike at ingestion** — several Deployment-1 drifters show single-fix
+  out-and-back GPS spikes (one stray fix implying 15–140 m/s to both
+  neighbours; seen in D-577, D-602, D-606, D-610, D-630, worst in D-611 and
+  D-612 with 4 each, per the 2026-07-03 inertial survey). The build currently
+  ingests them raw into tracks, markers, and the derived popup speeds. A
+  despike in `_clean.py` — e.g. flag a fix whose implied speed exceeds a
+  threshold on **both** adjacent segments — would clean tracks and popups.
 - **Awaiting-first-fix view** — surface staged-but-not-yet-transmitting drifters.
 - **Currents bbox auto-fit** — track the drifter cloud instead of a fixed box.
 - **Time scrubber** — animate positions/tracks over time.
-- **Time-varying drift forecast** — the drift forecast (`docs/forecast.md`)
-  advects through a single *frozen* CMEMS field, so its 6 h mark spans ~one full
-  6-hourly field step. Advect through several forecast timesteps instead for a
-  faithful multi-step track; the natural next step if the frozen 6 h proves too
-  coarse. Costs more data + an interpolation-in-time in the stepper.
 - **Flow-trail land bleed** — the animated current trails reach onto land near
   the coast while the speed shading stops cleanly at it. Cause: leaflet-velocity
   needs a hole-free grid and has no land mask, so land is fed in as zero velocity
