@@ -1,30 +1,33 @@
 """Per-cell near-inertial decomposition of the hourly current window.
 
-Library code with no build consumer: an amplitude overlay rendered from this
-module was built and then dropped by decision on review; the decomposition
-stays as the seam the planned gain skill test and a future compressed advection
-artifact would plug into (``plans/012-near-inertial-forecast.md``).
-
 The hourly CMEMS window that drives the forecast/hindcast advection
 (:func:`whirls_cruise_map._currents.fetch_field_window`) already carries the
 near-inertial (NI) oscillation these latitudes ring with — phase and rotation
 sense correct, amplitude muted (``plans/012-near-inertial-forecast.md``,
 Phase 0). :func:`decompose` separates that window, per grid cell, into a mean
 current plus one rotating inertial-frequency component (``mean_u``, ``mean_v``,
-``amp``, ``phase``); :func:`to_inertial_png` renders the amplitude as a
-Mercator-warped raster (cmocean ``amp``, land transparent) structured exactly
-like the surface-speed shading.
+``amp``, ``phase``).
 
 The four 2-D fields plus their reference time are also the storage-lean seam a
-future compressed advection artifact would read: the whole ~25-step hourly
-window reconstructs analytically as ``u + i v ~= (mean_u + i mean_v) +
-amp * exp(i (phase - f (t - t_ref)))`` — a handful of static rasters instead of
-an hourly time series.
+compressed advection artifact reads instead of an hourly time series: the
+whole ~25-step hourly window reconstructs analytically as
+``u + i v ~= (mean_u + i mean_v) + amp * exp(i (phase - f (t - t_ref)))``.
+:func:`to_inertial_field_json` ships exactly that reconstruction seam — the
+four flat fields plus the geometry/timing needed to evaluate it — as the
+``inertial_field.json`` artifact the client reconstructs the near-inertial
+*animation* from (``plans/014-near-inertial-animation.md``); the client
+sweeps ``t - t_ref`` itself, so no time series ever crosses the wire.
+:func:`to_inertial_png` renders the amplitude alone as a Mercator-warped
+raster (cmocean ``amp``, land transparent) structured exactly like the
+surface-speed shading; built and then dropped from ``build.py`` by decision
+on review (an amplitude-only overlay), it stays as library code — a second,
+simpler seam onto the same decomposition.
 
 The amplitude ships **un-gained** (see :data:`GAIN`): the drifter calibration
 found the model's NI amplitude low by a factor that does not generalize, and an
 unvalidated multiplier that over-corrects some drifters while under-correcting
-others is worse than an honest field.
+others is worse than an honest field. :func:`to_inertial_field_json` ships
+``amp`` straight from :func:`decompose`, same reasoning.
 """
 from __future__ import annotations
 
@@ -54,6 +57,12 @@ GAIN = 1.0
 AMP_CMAP = cmocean.cm.amp
 AMP_CLIP_PERCENTILE = 99
 COLORBAR_STOPS = 16
+
+# Coarsen the native 1/12-deg grid for the animated NI field. Coarser than
+# _currents.COARSEN_STRIDE (3): the animation draws arrows, not particles, and
+# the NI field is spatially smooth, so a sparser grid reads just as well at a
+# fraction of the payload — ~68x60 -> ~4k cells over the cruise bbox.
+INERTIAL_STRIDE = 8
 
 
 # --- decomposition -----------------------------------------------------------
@@ -188,3 +197,72 @@ def to_inertial_png(decomp: xr.Dataset, gain: float = GAIN) -> tuple[bytes, dict
         "gain": float(gain),
     }
     return png, meta
+
+
+# --- animation field (JSON) --------------------------------------------------
+
+def to_inertial_field_json(decomp: xr.Dataset, stride: int = INERTIAL_STRIDE) -> dict:
+    """Flatten the decomposition to the JSON vector field the client
+    reconstructs the rotating near-inertial current from analytically
+    (``plans/014-near-inertial-animation.md``): per cell, ``mean_u``,
+    ``mean_v``, ``amp``, ``phase`` plus the geometry/timing needed to
+    evaluate ``amp * exp(i (phase - f (t - t_ref)))`` at any client-side
+    ``t``.
+
+    Geometry mirrors ``_currents.to_velocity_json``/``_component``: ``stride``
+    is applied here (via ``.isel``) rather than in :func:`decompose`, which
+    stays full-resolution for other consumers; the surviving cells are then
+    sorted latitude-descending, longitude-ascending and raveled in C (row-
+    major) order, so ``la1``/``la2`` are the north/south edges and flat index
+    ``row * nx + col`` addresses the cell at ``lat = la1 - row * dy``,
+    ``lon = lo1 + col * dx`` — identical convention to the leaflet-velocity
+    header, so the same grid math applies.
+
+    Unlike ``to_velocity_json``, this ships four *analytic* fields, not two
+    velocity components, and applies **no** ``_scale_for_animation`` gamma:
+    ``amp`` is true, un-gained m/s (:data:`GAIN` = 1.0) straight from
+    :func:`decompose`, because the client reconstructs a physical rotation
+    from it, not just a direction-preserving trail. Land is JSON ``null``
+    (NaN converted to ``None`` before serialisation — ``json.dumps`` would
+    otherwise emit a bare, invalid ``NaN``) rather than the leaflet-velocity
+    convention of zero: this is an analytic field the client evaluates
+    per-frame, not a grid a bilinear-interpolating library walks, so there is
+    no need to paper over land with a fake current. A cell that is NaN in the
+    decomposition (see :func:`decompose`'s land handling) is ``null`` in all
+    four output arrays together. Values are rounded to 4 dp to keep the
+    payload small.
+    """
+    coarse = decomp.isel(
+        latitude=slice(None, None, stride),
+        longitude=slice(None, None, stride),
+    )
+    coarse = coarse.sortby("latitude", ascending=False).sortby(
+        "longitude", ascending=True
+    )
+    lats = coarse["latitude"].values
+    lons = coarse["longitude"].values
+
+    def flat(name: str) -> list[float | None]:
+        values = coarse[name].values.ravel(order="C")
+        return [None if np.isnan(v) else round(float(v), 4) for v in values]
+
+    header = {
+        "nx": int(lons.size),
+        "ny": int(lats.size),
+        "lo1": float(lons.min()),
+        "lo2": float(lons.max()),
+        "la1": float(lats.max()),
+        "la2": float(lats.min()),
+        "dx": float(abs(lons[1] - lons[0])),
+        "dy": float(abs(lats[1] - lats[0])),
+        "t_ref": decomp.attrs["t_ref"],
+        "omega": OMEGA,
+        "units": "m.s-1",
+    }
+    return {
+        "header": header,
+        "mean_u": flat("mean_u"),
+        "mean_v": flat("mean_v"),
+        "amp": flat("amp"),
+        "phase": flat("phase"),
+    }

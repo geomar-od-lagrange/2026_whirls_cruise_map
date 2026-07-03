@@ -11,6 +11,7 @@ and writes the JSON the Leaflet site consumes into ``site/data/``:
 - ``currents_meta.json``  bounds, vmax, valid-time and colourbar for the client
 - ``forecast.geojson``    per-drifter current-advection track to +6 h (1/3/6 h marks)
 - ``hindcast.geojson``    per-drifter current-advection back-track to -6 h (1/3/6 h marks)
+- ``inertial_field.json`` per-cell mean/amp/phase grid for the near-inertial animation
 - ``build.json``          UTC timestamp of this build (sidebar data-freshness)
 
 Everything is rebuilt from a fresh full-zip pull each run; no caching.
@@ -22,7 +23,17 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import _clean, _currents, _deploy, _fetch, _forecast, _geojson, _gliders, _ship
+from . import (
+    _clean,
+    _currents,
+    _deploy,
+    _fetch,
+    _forecast,
+    _geojson,
+    _gliders,
+    _inertial,
+    _ship,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SITE_DATA = REPO_ROOT / "site" / "data"
@@ -143,6 +154,19 @@ def main() -> None:
             )
         except Exception as exc:
             print(f"WARNING: hindcast step failed, skipping hindcast.geojson: {exc}")
+
+        # Near-inertial animation field: the same hourly window, decomposed once
+        # into a per-cell mean + rotary term (plans/014-near-inertial-animation.md).
+        # The client sweeps the rotation itself, so no time series crosses the wire.
+        try:
+            decomp = _inertial.decompose(window)
+            _write_json(
+                SITE_DATA / "inertial_field.json",
+                _inertial.to_inertial_field_json(decomp),
+            )
+            print(f"wrote inertial_field.json (valid {decomp.attrs['t_ref']})")
+        except Exception as exc:
+            print(f"WARNING: inertial field step failed, skipping inertial_field.json: {exc}")
 
 
 if __name__ == "__main__":

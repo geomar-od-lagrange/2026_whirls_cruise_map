@@ -8,6 +8,7 @@
  *   hindcast.geojson               -> per-drifter current-advection back-track (off)
  *   speed.png + currents_meta.json -> surface-speed shading (imageOverlay)
  *   currents.json                  -> leaflet-velocity flow trails (optional)
+ *   inertial_field.json            -> animated near-inertial vector field (off)
  *   awaiting.json                  -> sidebar list, no map geometry
  *   build.json                     -> sidebar "data freshness" build time
  */
@@ -21,6 +22,7 @@ const DATA = {
   currents: "./data/currents.json",
   meta: "./data/currents_meta.json",
   speed: "./data/speed.png",
+  inertialField: "./data/inertial_field.json",
   build: "./data/build.json",
   gliders: "./data/gliders.geojson",
 };
@@ -375,6 +377,164 @@ function buildAdvectionGroups(geojson, color) {
   }
   return groups;
 }
+
+// --- near-inertial animation -------------------------------------------------
+// Animates the near-inertial (NI) rotary current the CMEMS field carries,
+// reconstructed analytically on the client from a per-cell (mean, amplitude,
+// phase) decomposition shipped in inertial_field.json (see
+// plans/014-near-inertial-animation.md):
+//   u(t) + i·v(t) = (mean_u + i·mean_v) + amp · exp(i·(phase − f·dt))
+//   f = 2·Ω·sin(lat)     (Ω = omega, from the header; f < 0 in the SH)
+// A single wall clock sweeps dt over [0, 24h) every INERTIAL_LOOP_S seconds; a
+// canvas in the "inertial" pane redraws every animation frame. This is *not*
+// the previously-dropped animated drift dot (a marker walking the
+// forecast/hindcast polylines, removed in e9b339c) — this animates the field.
+
+// The mean current dominates the NI amplitude ~10-20x here, so mean+NI would
+// read as near-static vectors with an imperceptible wobble. NI-only (mean
+// subtracted) is what makes the rotation legible, hence the default false;
+// flipping this to true is the only change needed to show mean+NI (both
+// fields ship regardless, so no rebuild is needed to try it).
+const SHOW_MEAN = false;
+
+const INERTIAL_LOOP_S = 12; // wall-clock seconds per animation loop
+const INERTIAL_SPAN_S = 24 * 3600; // dt sweeps [0, 24h) per loop
+// Glyph length per unit speed, clamped so a fast cell doesn't dominate the
+// canvas — cosmetic only, the underlying amp/phase reconstruction is
+// unscaled true m/s (see plan 014, "no gamma" / plan 013's no-gain finding).
+const INERTIAL_PX_PER_MPS = 30;
+const INERTIAL_MAX_PX = 22;
+// Cyan, distinct from the orange true track, the violet forecast / magenta
+// hindcast advection lines, and the dark->white flow-trail ramp.
+const INERTIAL_COLOR = "#22d3ee";
+
+// Precomputed ONCE from the header geometry: a flat array of plain records
+// {lat, lon, mean_u, mean_v, amp, phase, f}, skipping null (land) cells. `f`
+// keeps its southern-hemisphere sign so the rotation direction is physical.
+// Row 0 is the northmost row (la1 = north edge), row-major from the NW
+// corner — identical convention to the currents/speed artifacts.
+function buildInertialField(inertialField) {
+  const { header, mean_u, mean_v, amp, phase } = inertialField;
+  const { nx, ny, lo1, la1, dx, dy, omega } = header;
+  const cells = [];
+  for (let row = 0; row < ny; row++) {
+    const lat = la1 - row * dy;
+    const f = 2 * omega * Math.sin((lat * Math.PI) / 180);
+    for (let col = 0; col < nx; col++) {
+      const idx = row * nx + col;
+      const a = amp[idx];
+      if (a == null) continue; // land
+      cells.push({
+        lat,
+        lon: lo1 + col * dx,
+        mean_u: mean_u[idx] ?? 0,
+        mean_v: mean_v[idx] ?? 0,
+        amp: a,
+        phase: phase[idx] ?? 0,
+        f,
+      });
+    }
+  }
+  return { layer: new InertialLayer(), cells };
+}
+
+// A plain canvas living in the "inertial" pane. Sized to the map viewport and
+// repositioned on every move/zoom/viewreset/resize so its top-left cancels the
+// pane's live drag transform: `containerPointToLayerPoint([0,0])` is exactly
+// the negative of that transform (both public Leaflet APIs), so setting the
+// canvas's own position to it keeps the canvas glued to the container's
+// (0,0) regardless of an in-progress drag — which in turn keeps every frame's
+// `map.latLngToContainerPoint(...)` draw call lined up with the canvas pixels
+// it draws into. Default OFF (never `addTo(map)` here) — the layer-control row
+// is its only way onto the map. Carries no animation state itself: the cell
+// records (see buildInertialField) are kept in a plain array owned by
+// startInertialClock, not attached to this — or any — Leaflet object.
+class InertialLayer extends L.Layer {
+  onAdd(map) {
+    this._canvas = L.DomUtil.create("canvas", "inertial-canvas");
+    // Decorative, non-interactive: let drags, clicks, and the grab cursor pass
+    // straight through to the map and the markers above it (plan 014).
+    this._canvas.style.pointerEvents = "none";
+    map.getPane("inertial").appendChild(this._canvas);
+    this._reset = this._reset.bind(this);
+    map.on("move zoom viewreset resize", this._reset);
+    this._reset();
+    return this;
+  }
+
+  onRemove(map) {
+    map.off("move zoom viewreset resize", this._reset);
+    L.DomUtil.remove(this._canvas);
+    this._canvas = null;
+  }
+
+  getContext() {
+    return this._canvas ? this._canvas.getContext("2d") : null;
+  }
+
+  _reset() {
+    if (!this._canvas || !this._map) return;
+    const size = this._map.getSize();
+    if (this._canvas.width !== size.x || this._canvas.height !== size.y) {
+      this._canvas.width = size.x;
+      this._canvas.height = size.y;
+    }
+    L.DomUtil.setPosition(this._canvas, this._map.containerPointToLayerPoint([0, 0]));
+  }
+}
+
+// The shared animation clock — modeled on the reverted startDriftDotClock
+// (commit 60c82db): wall-clock phase via performance.now() (a dropped frame
+// skips ahead instead of drifting), requestAnimationFrame gives a free
+// document.hidden pause (rAF does not fire in hidden tabs), and the tick
+// self-gates on map.hasLayer so the idle cost is a hash lookup. Started once
+// in main(), never stopped; with no cells (missing artifact) it never starts.
+function startInertialClock(map, cells, layer) {
+  if (!cells.length) return;
+  const tick = () => {
+    if (!map.hasLayer(layer)) {
+      requestAnimationFrame(tick);
+      return;
+    }
+    const ctx = layer.getContext();
+    if (!ctx) {
+      requestAnimationFrame(tick);
+      return;
+    }
+    const { width, height } = ctx.canvas;
+    ctx.clearRect(0, 0, width, height);
+
+    const tau01 = ((performance.now() / 1000) % INERTIAL_LOOP_S) / INERTIAL_LOOP_S;
+    const dt = tau01 * INERTIAL_SPAN_S;
+
+    ctx.strokeStyle = INERTIAL_COLOR;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (const cell of cells) {
+      const theta = cell.phase - cell.f * dt;
+      let u = cell.amp * Math.cos(theta);
+      let v = cell.amp * Math.sin(theta);
+      if (SHOW_MEAN) {
+        u += cell.mean_u;
+        v += cell.mean_v;
+      }
+      const speed = Math.hypot(u, v);
+      const len = Math.min(speed * INERTIAL_PX_PER_MPS, INERTIAL_MAX_PX);
+      if (len < 1) continue; // too short to read — also guards the /speed below
+      const p = map.latLngToContainerPoint([cell.lat, cell.lon]);
+      // Screen space: east = +x (matches u); north = -y (screen y grows down).
+      const x2 = p.x + (u / speed) * len;
+      const y2 = p.y - (v / speed) * len;
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(x2, y2);
+    }
+    ctx.stroke();
+
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+// ---------------------------------------------------------------------------
 
 // --- gliders ----------------------------------------------------------------
 // The WHIRLS glider platforms (see docs/gliders.md): the XSPAR spar buoy and the
@@ -800,13 +960,14 @@ async function main() {
 
   const overlays = {};
 
-  // Layer stack, bottom -> top: speed shading -> flow -> ship track+dots ->
-  // drifters -> ship marker. The ship track sits *below* the drifters so its
-  // per-fix dots can't intercept clicks meant for the drifter markers where the
-  // two overlap — the cruise starts from the drifters' staging port, so the early
-  // ship track runs right through the pre-deploy cluster. The ship's current
-  // position marker stays on top.
+  // Layer stack, bottom -> top: speed shading -> near-inertial animation ->
+  // flow -> ship track+dots -> drifters -> ship marker. The ship track sits
+  // *below* the drifters so its per-fix dots can't intercept clicks meant for
+  // the drifter markers where the two overlap — the cruise starts from the
+  // drifters' staging port, so the early ship track runs right through the
+  // pre-deploy cluster. The ship's current position marker stays on top.
   map.createPane("shading").style.zIndex = 350;
+  map.createPane("inertial").style.zIndex = 360;
   map.createPane("shipTrack").style.zIndex = 640;
   map.createPane("drifters").style.zIndex = 650;
   map.createPane("ship").style.zIndex = 660;
@@ -827,6 +988,7 @@ async function main() {
   // Surface currents, from one CMEMS field: speed shading + flow trails.
   const meta = await fetchJSON(DATA.meta, { optional: true });
   const currents = await fetchJSON(DATA.currents, { optional: true });
+  const inertialField = await fetchJSON(DATA.inertialField, { optional: true });
 
   // Speed shading: a Mercator-warped PNG in the bottom data pane. The PNG is at
   // the native CMEMS grid resolution (one pixel per cell); `crisp` disables the
@@ -868,6 +1030,17 @@ async function main() {
       if (cv) cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
     });
     map.on("moveend zoomend", () => flowLayer.setData(currents));
+  }
+
+  // Near-inertial animation: a rotating vector field reconstructed client-side
+  // from inertial_field.json (see the "near-inertial animation" block above).
+  // Default OFF (buildInertialField never addTo(map)s it) — missing artifact
+  // means no layer and no control row. The clock starts once, immediately;
+  // it self-gates on map.hasLayer so it costs nothing while the layer is off.
+  if (inertialField) {
+    const { layer: inertialLayer, cells: inertialCells } = buildInertialField(inertialField);
+    overlays["Near-inertial animation"] = inertialLayer;
+    startInertialClock(map, inertialCells, inertialLayer);
   }
 
   // Trajectories and the current-advection forecast/hindcast, each grouped by
