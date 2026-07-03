@@ -11,8 +11,6 @@ and writes the JSON the Leaflet site consumes into ``site/data/``:
 - ``currents_meta.json``  bounds, vmax, valid-time and colourbar for the client
 - ``forecast.geojson``    per-drifter current-advection track to +6 h (1/3/6 h marks)
 - ``hindcast.geojson``    per-drifter current-advection back-track to -6 h (1/3/6 h marks)
-- ``inertial.png``        near-inertial amplitude raster from the hourly window
-- ``inertial_meta.json``  bounds, vmax, valid-time, colourbar and gain for the client
 - ``build.json``          UTC timestamp of this build (sidebar data-freshness)
 
 Everything is rebuilt from a fresh full-zip pull each run; no caching.
@@ -24,17 +22,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import (
-    _clean,
-    _currents,
-    _deploy,
-    _fetch,
-    _forecast,
-    _geojson,
-    _gliders,
-    _inertial,
-    _ship,
-)
+from . import _clean, _currents, _deploy, _fetch, _forecast, _geojson, _gliders, _ship
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SITE_DATA = REPO_ROOT / "site" / "data"
@@ -128,7 +116,7 @@ def main() -> None:
     # the single-time overlay field above), so the forecast/hindcast particle is
     # pushed by the current at its own clock time and traces the inertial loop the
     # model already carries — not the straight streamline of a frozen snapshot.
-    # Forecast, hindcast, and the inertial overlay are independent best-effort steps.
+    # Forecast and hindcast are independent best-effort steps.
     window = None
     try:
         window = _currents.fetch_field_window()
@@ -155,25 +143,6 @@ def main() -> None:
             )
         except Exception as exc:
             print(f"WARNING: hindcast step failed, skipping hindcast.geojson: {exc}")
-
-        # Near-inertial decomposition of the same hourly window: per-cell mean +
-        # one inertial-frequency rotary component, rendered as an amplitude
-        # raster (the speed<->inertial overlay toggle). Shipped un-gained — see
-        # _inertial.GAIN for why and for the calibration seam.
-        try:
-            decomp = _inertial.decompose(window)
-            png, meta = _inertial.to_inertial_png(decomp)
-            (SITE_DATA / "inertial.png").write_bytes(png)
-            _write_json(SITE_DATA / "inertial_meta.json", meta)
-            print(
-                f"wrote inertial.png + inertial_meta.json "
-                f"(valid {meta['valid_time']}, "
-                f"vmax {meta['vmax']:.2f} {meta['units']}, gain {meta['gain']:g})"
-            )
-        except Exception as exc:
-            print(
-                f"WARNING: inertial step failed, skipping inertial artifacts: {exc}"
-            )
 
 
 if __name__ == "__main__":

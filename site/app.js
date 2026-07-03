@@ -6,9 +6,7 @@
  *   tracks.geojson                 -> trajectory lines (off by default)
  *   forecast.geojson               -> per-drifter current-advection track (off)
  *   hindcast.geojson               -> per-drifter current-advection back-track (off)
- *   (forecast + hindcast also feed the animated ±6 h drift-dot overlay)
  *   speed.png + currents_meta.json -> surface-speed shading (imageOverlay)
- *   inertial.png + inertial_meta.json -> near-inertial amplitude shading (off)
  *   currents.json                  -> leaflet-velocity flow trails (optional)
  *   awaiting.json                  -> sidebar list, no map geometry
  *   build.json                     -> sidebar "data freshness" build time
@@ -23,8 +21,6 @@ const DATA = {
   currents: "./data/currents.json",
   meta: "./data/currents_meta.json",
   speed: "./data/speed.png",
-  inertial: "./data/inertial.png",
-  inertialMeta: "./data/inertial_meta.json",
   build: "./data/build.json",
   gliders: "./data/gliders.geojson",
 };
@@ -380,103 +376,6 @@ function buildAdvectionGroups(geojson, color) {
   return groups;
 }
 
-// --- animated drift dot -----------------------------------------------------
-// One dot per forecast/hindcast line, replaying the ±6 h advection as motion:
-// each dot walks its polyline outward from the instrument head on a single
-// shared, looping clock (startDriftDotClock below). LOOP_S wall-clock seconds
-// map onto HORIZON_H hours of advection, so tau — the hours-since-anchor the
-// dots have reached — sweeps 0 → 6 h every 12 s and wraps.
-const DOT_LOOP_S = 12; // wall-clock seconds per animation loop
-const DOT_HORIZON_H = 6; // advection hours replayed per loop (the ±6 h horizon)
-
-// Build the dot markers from a list of { geojson, color } sources — mirroring
-// buildAdvectionGroups' { batch: featureGroup } shape, but merging *all* sources
-// into the same per-batch groups, so a batch's forecast and hindcast dots live
-// in one group and toggle together under one instrument-control row. Dots are
-// white-rimmed discs filled with their line's colour (forecast violet /
-// hindcast magenta), non-interactive like the lines they ride, starting at the
-// line's first vertex (the instrument head). Alongside the groups this returns
-// a flat list of { marker, coords, vertexMin } records for the clock to drive —
-// plain parallel data, kept outside the markers rather than monkey-patched onto
-// Leaflet internals. `vertex_min` (minutes between polyline vertices) comes
-// from the feature; artifacts from before it existed fall back to 15.
-function buildDriftDotGroups(sources) {
-  const groups = {};
-  const dots = [];
-  for (const { geojson, color } of sources) {
-    for (const feature of geojson?.features ?? []) {
-      if (feature.geometry?.type !== "LineString") continue;
-      const coords = feature.geometry.coordinates;
-      if (!coords?.length) continue; // a vertexless line has nowhere to put a dot
-      const { batch, vertex_min } = feature.properties ?? {};
-      const marker = L.circleMarker(
-        [coords[0][1], coords[0][0]], // GeoJSON stores [lng, lat]
-        {
-          radius: 4.5,
-          weight: 1.5,
-          color: "#ffffff",
-          fillColor: color,
-          fillOpacity: 1,
-          interactive: false,
-        }
-      );
-      (groups[batch ?? "unknown"] ??= L.featureGroup()).addLayer(marker);
-      dots.push({
-        marker,
-        coords,
-        // Guard against a zero/negative cadence in a malformed artifact — it
-        // would send the fractional index below zero and crash the clock.
-        vertexMin: Number.isFinite(vertex_min) && vertex_min > 0 ? vertex_min : 15,
-      });
-    }
-  }
-  return { groups, dots };
-}
-
-// Position along a GeoJSON [lng, lat] coordinate list at fractional vertex
-// index `t`, linearly interpolated between the two bracketing vertices, as a
-// Leaflet [lat, lng] pair. A line shorter than `t` — the build truncates an
-// integration that ran aground or off-grid — clamps to its last vertex: the
-// dot honestly stops where the integration stopped, until the loop wraps.
-function pointAlongLine(coords, t) {
-  const last = coords.length - 1;
-  if (t >= last) {
-    const [lng, lat] = coords[last];
-    return [lat, lng];
-  }
-  const i = Math.floor(t);
-  const f = t - i;
-  const [lng0, lat0] = coords[i];
-  const [lng1, lat1] = coords[i + 1];
-  return [lat0 + f * (lat1 - lat0), lng0 + f * (lng1 - lng0)];
-}
-
-// The shared animation clock: one requestAnimationFrame loop drives every dot
-// from the same time base, so all dots stay in phase — the hindcast dot walks
-// its backward line at the same tau as the forecast dot walks forward, and the
-// pair splits symmetrically from the head. tau derives from wall time
-// (performance.now) rather than a per-frame accumulator, so a dropped frame
-// skips ahead instead of letting dots drift apart. Per-dot work is skipped for
-// any marker not on the map (its batch row or the master row unchecked), so
-// the idle overlay costs only a hash lookup per dot per frame; and
-// requestAnimationFrame does not fire in hidden tabs, which pauses the whole
-// animation for free. Called once at init — with no dots at all (both
-// artifacts missing) the loop never starts.
-function startDriftDotClock(map, dots) {
-  if (!dots.length) return;
-  const tick = () => {
-    const tauH =
-      (((performance.now() / 1000) % DOT_LOOP_S) / DOT_LOOP_S) * DOT_HORIZON_H;
-    for (const { marker, coords, vertexMin } of dots) {
-      if (!map.hasLayer(marker)) continue;
-      marker.setLatLng(pointAlongLine(coords, (tauH * 60) / vertexMin));
-    }
-    requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
-}
-// ---------------------------------------------------------------------------
-
 // --- gliders ----------------------------------------------------------------
 // The WHIRLS glider platforms (see docs/gliders.md): the XSPAR spar buoy and the
 // seagliders, built server-side into gliders.geojson (a latest Point + a track
@@ -590,14 +489,7 @@ function renderAwaiting(ids) {
   }
 }
 
-// Sidebar "Surface currents" panel. It mirrors whichever shading raster is
-// active on the map — surface speed or near-inertial amplitude — because the
-// two rasters are exclusive views of the same shading slot (see main) and the
-// panel has one legend/hint slot to match. `view` picks the wording; the
-// gradient, vmax and units always come from the active raster's own meta. The
-// inertial hint names its amplitude gain only when the raster is actually
-// gained (gain ≠ 1): at gain 1 there is nothing to caveat, so nothing is shown.
-function renderCurrentsInfo(meta, view = "speed") {
+function renderCurrentsInfo(meta) {
   const timeEl = document.getElementById("currents-time");
   const legendEl = document.getElementById("speed-legend");
   if (!meta) {
@@ -605,19 +497,12 @@ function renderCurrentsInfo(meta, view = "speed") {
     legendEl.innerHTML = "";
     return;
   }
-  let label = "speed";
-  let desc = "CMEMS analysis/forecast";
-  if (view === "inertial") {
-    label = "inertial amplitude";
-    desc = "near-inertial amplitude";
-    if (meta.gain != null && meta.gain !== 1) desc += `, gain ×${meta.gain}`;
-  }
-  timeEl.textContent = `Valid ${formatFixTime(meta.valid_time)} — ${desc}.`;
+  timeEl.textContent = `Valid ${formatFixTime(meta.valid_time)} — CMEMS analysis/forecast.`;
   const gradient = meta.colorbar.join(", ");
   legendEl.innerHTML =
     `<div class="legend-bar" style="background:linear-gradient(to right, ${gradient})"></div>` +
     `<div class="legend-scale"><span>0</span>` +
-    `<span>${label} (${meta.units})</span>` +
+    `<span>speed (${meta.units})</span>` +
     `<span>${meta.vmax.toFixed(2)}</span></div>`;
 }
 
@@ -939,21 +824,16 @@ async function main() {
     map.fitBounds(bounds, { padding: [40, 40], maxZoom: 9 });
   }
 
-  // Surface currents, from one CMEMS field: speed shading + flow trails. The
-  // near-inertial amplitude raster is a derived view of the same currents
-  // (optional: it only exists once the build emits it — missing means no layer,
-  // no control entry, and the panel behaves exactly as without it).
+  // Surface currents, from one CMEMS field: speed shading + flow trails.
   const meta = await fetchJSON(DATA.meta, { optional: true });
   const currents = await fetchJSON(DATA.currents, { optional: true });
-  const inertialMeta = await fetchJSON(DATA.inertialMeta, { optional: true });
 
   // Speed shading: a Mercator-warped PNG in the bottom data pane. The PNG is at
   // the native CMEMS grid resolution (one pixel per cell); `crisp` disables the
   // browser's default bilinear upscaling so the cells render as sharp pixels
   // instead of a smooth blur.
-  let speedLayer = null;
   if (meta && meta.bounds) {
-    speedLayer = L.imageOverlay(DATA.speed, meta.bounds, {
+    const speedLayer = L.imageOverlay(DATA.speed, meta.bounds, {
       pane: "shading",
       opacity: 0.85,
       className: "crisp-raster",
@@ -961,55 +841,7 @@ async function main() {
     speedLayer.addTo(map);
     overlays["Current speed"] = speedLayer;
   }
-
-  // Near-inertial amplitude shading: the same Mercator-warped-PNG recipe as the
-  // speed raster (same bounds/warping convention, same pane, same crisp
-  // pixels), but default OFF — it is an alternative reading of the currents,
-  // not an addition, so it is not added to the map here and the layer-control
-  // row is its only entry point.
-  let inertialLayer = null;
-  if (inertialMeta && inertialMeta.bounds) {
-    inertialLayer = L.imageOverlay(DATA.inertial, inertialMeta.bounds, {
-      pane: "shading",
-      opacity: 0.85,
-      className: "crisp-raster",
-    });
-    overlays["Inertial amplitude"] = inertialLayer;
-  }
-
-  // The sidebar panel documents whichever shading raster is on the map,
-  // defaulting to the speed wording (also when neither is shown: the legend
-  // then describes the default view, as it always has).
-  const syncCurrentsPanel = () =>
-    inertialLayer && map.hasLayer(inertialLayer)
-      ? renderCurrentsInfo(inertialMeta, "inertial")
-      : renderCurrentsInfo(meta, "speed");
-  syncCurrentsPanel();
-
-  if (inertialLayer) {
-    // "Current speed" and "Inertial amplitude" are two views of the same
-    // shading slot: both are near-opaque full-domain rasters in the same pane,
-    // so showing both would only overpaint one with the other. Checking one
-    // therefore unchecks the other. The removal is deferred a tick: the layer
-    // control suppresses its checkbox re-sync (`_handlingClick`) while it is
-    // itself processing the click that fired this event, so a synchronous
-    // removeLayer here would leave the other box visually checked (and the
-    // next click would resurrect its layer). Removed after the control
-    // finishes, the layer's `remove` event makes the control untick the box
-    // itself — no manual checkbox bookkeeping.
-    map.on("overlayadd", (e) => {
-      const other =
-        e.layer === speedLayer ? inertialLayer
-        : e.layer === inertialLayer ? speedLayer
-        : null;
-      if (other) setTimeout(() => map.removeLayer(other), 0);
-    });
-    // Re-render the panel whenever either raster toggles, so the legend and
-    // hint always describe what is on screen.
-    map.on("overlayadd overlayremove", (e) => {
-      if (e.layer === speedLayer || e.layer === inertialLayer) syncCurrentsPanel();
-    });
-  }
+  renderCurrentsInfo(meta);
 
   // Flow trails: dark->white ramp keyed to speed, so the bright jet pops over the
   // shading. The magnitude is sqrt-compressed server-side so slow eddies animate,
@@ -1050,18 +882,6 @@ async function main() {
   const hindcastGroups = hindcast ? buildAdvectionGroups(hindcast, HINDCAST_COLOR) : {};
   renderDriftInfo(forecast, hindcast);
 
-  // Animated drift dot: one dot per forecast/hindcast line, replaying the ±6 h
-  // advection on the shared clock. Built from both artifacts at once so a
-  // batch's forecast and hindcast dots share one group (one instrument-control
-  // row governs both); either artifact may be missing — the builder just skips
-  // it. The clock starts once here and runs for the page's lifetime; with no
-  // dots (both artifacts missing) it never starts at all.
-  const drift = buildDriftDotGroups([
-    { geojson: forecast, color: FORECAST_COLOR },
-    { geojson: hindcast, color: HINDCAST_COLOR },
-  ]);
-  startDriftDotClock(map, drift.dots);
-
   // Glider platforms (XSPAR buoy + seagliders) are instruments in the same
   // control as the drifter batches: their latest markers join the instrument
   // rows, their tracks the "True track" overlay. Optional so a missing file can't
@@ -1093,14 +913,6 @@ async function main() {
     },
     { label: "Forecast (1/3/6 h)", groups: forecastGroups, on: false, color: FORECAST_COLOR },
     { label: "Hindcast (1/3/6 h)", groups: hindcastGroups, on: false, color: HINDCAST_COLOR },
-    // The dot row carries both forecast and hindcast dots; its swatch shows the
-    // forecast violet (a row has one swatch — the dots themselves are two-tone).
-    {
-      label: "Animated dot (±6 h)",
-      groups: drift.groups,
-      on: false,
-      color: FORECAST_COLOR,
-    },
   ]).addTo(map);
 
   // Awaiting-first-fix sidebar.

@@ -1,6 +1,7 @@
 # Near-inertial forecast/hindcast via a time-dependent current field
 
-**Status: Phases 0–2 done; Phases 3 (cadence) and 4 (docs) open.**
+**Status: Phases 0–2 resolved (Phase 2's map visualization was built, then
+dropped by decision on review); Phases 3 (cadence) and 4 (docs) open.**
 **Decision: no slab model** — the near-inertial (NI) oscillation is already
 present in the CMEMS current field; the fix is to stop advecting through a
 *frozen* snapshot and advect through a **time-dependent** field instead. The
@@ -147,18 +148,19 @@ always-present line + 1/3/6 h marks, on an optional toggle, paused on
   (keeps `time`); bilinear-space + linear-time in `_forecast._Field`; forecast +
   hindcast advect through the window. This is the "more correct than frozen"
   feature and already carries ~40 % of the inertial excursion with correct phase.
-- **Phase 2 — visualization + inertial gain. DONE.** The per-cell
-  `(mean u,v, amplitude A, phase φ)` decomposition (`_inertial.py`), the
-  inertial-amplitude overlay (`inertial.png` + `inertial_meta.json`, toggling
-  exclusively against the speed shading) and the animated ±6 h dot walking
-  each forecast/hindcast polyline shipped. The gain question is **resolved:
-  Branch C, no gain**
+- **Phase 2 — visualization + inertial gain. RESOLVED.** The per-cell
+  `(mean u,v, amplitude A, phase φ)` decomposition landed as a tested library
+  module (`_inertial.py`, `tests/test_inertial.py`). The gain question is
+  **resolved: Branch C, no gain**
   ([done/013-inertial-gain-generalization.md](done/013-inertial-gain-generalization.md));
-  the gain is exposed as a parameter defaulting to 1.0 (`_inertial.GAIN`) —
-  the seam where a validated gain would plug in (the advection still reads the
-  raw hourly window; with gain 1.0 the two are equivalent). The animated NI
-  *flow-trail* reconstruction (rebuilding the leaflet-velocity background from
-  mean + A + φ) is deferred.
+  the gain stays a parameter defaulting to 1.0 (`_inertial.GAIN`) — the seam
+  where a validated gain would plug in (the advection reads the raw hourly
+  window; with gain 1.0 the two are equivalent). The map visualization — the
+  inertial-amplitude overlay and the animated ±6 h dot — was built and then
+  **dropped by decision after review**; the decomposition stays library-only,
+  with no build artifact. The animated NI *flow-trail* reconstruction
+  (rebuilding the leaflet-velocity background from mean + A + φ) remains
+  parked, unbuilt.
 - **Phase 3 — cadence.** Move the field build to a slow 6-hourly GitLab schedule;
   fast Pages build fetches the artifact (Job Artifacts API +
   `search_recent_successful_pipelines`, recompute-on-miss, `expire_in`).

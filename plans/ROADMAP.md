@@ -76,12 +76,13 @@ move to `done/` and gain a `docs/` counterpart.
 15. [Near-inertial forecast/hindcast](012-near-inertial-forecast.md) — the drift
     forecast/hindcast advects through a **time-dependent hourly CMEMS field**
     instead of a frozen snapshot, so the path curls into the near-inertial loop the
-    model carries (the drifters' visible corners). **Phases 1–2 done** (built +
+    model carries (the drifters' visible corners). **Phases 1–2 resolved** (built +
     validated; [docs/forecast.md](../docs/forecast.md)): time-dependent advection,
-    per-cell `(mean, A, φ)` decomposition, inertial-amplitude overlay
-    (speed↔inertial toggle), animated ±6 h dot. The amplitude gain resolved to
-    **no gain** (see 16), exposed as a parameter defaulting to 1.0; the wind slab
-    was tested and dropped
+    plus the per-cell `(mean, A, φ)` decomposition as a tested library module
+    (`_inertial.py`, no build artifact). The inertial-amplitude overlay and the
+    animated ±6 h dot were built and then **dropped by decision after review**.
+    The amplitude gain resolved to **no gain** (see 16), exposed as a parameter
+    defaulting to 1.0; the wind slab was tested and dropped
     ([done/inertial_slab_model.md](done/inertial_slab_model.md)). **Open:**
     Phase 3 (slow-tier cadence + artifact cache).
 16. [Inertial-gain generalization](done/013-inertial-gain-generalization.md) —

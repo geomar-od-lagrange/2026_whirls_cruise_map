@@ -227,11 +227,9 @@ def _advection_geojson(
     position). One whose head is already on land/off-grid yields no usable line
     (``<2`` vertices) and is skipped. Coordinates are ``[lon, lat]``. Properties:
     the head identity (``D_number`` for drifters, ``id`` for gliders), ``batch``
-    (the instrument key its marker/track toggle under), ``valid_time``,
-    ``vertex_min`` (minutes between polyline vertices, so the client maps vertex
-    index <-> minutes for the animated dot), and ``marks`` — the
-    ``{hours, lon, lat}`` the integration reached (``hours`` signed by
-    ``direction``).
+    (the instrument key its marker/track toggle under), ``valid_time``, and
+    ``marks`` — the ``{hours, lon, lat}`` the integration reached (``hours`` signed
+    by ``direction``).
     """
     sampler = _Field(field)
     # Anchor t=0 to the window time nearest now (the forecast's "present"); the
@@ -251,12 +249,7 @@ def _advection_geojson(
             {
                 "type": "Feature",
                 "geometry": {"type": "LineString", "coordinates": coords},
-                "properties": {
-                    **props,
-                    "valid_time": valid,
-                    "vertex_min": int(VERTEX_MIN),
-                    "marks": marks,
-                },
+                "properties": {**props, "valid_time": valid, "marks": marks},
             }
         )
     return {"type": "FeatureCollection", "features": features}

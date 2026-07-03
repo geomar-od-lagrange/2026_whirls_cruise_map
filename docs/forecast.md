@@ -84,11 +84,12 @@ markers use, all refreshed together each run.
   `plans/done/inertial_slab_model.md`.
 - **Coefficient decomposition.** Fit per-cell `(mean, near-inertial amplitude,
   phase)` and reconstruct the field analytically, instead of shipping the hourly
-  window. Partially realized: the decomposition exists (`_inertial.py`) and
-  drives the near-inertial amplitude overlay (below), but the advection still
-  reads the raw hourly window; using the reconstruction as the advected /
-  cached field remains future work (`plans/012-near-inertial-forecast.md`,
-  Phase 3).
+  window. The decomposition exists as library code with no build artifact
+  (`_inertial.py`: a per-cell `(mean, A, φ)` least-squares fit of the hourly
+  window, `GAIN = 1.0` as the calibration seam); it is the seam a future
+  validated amplitude gain or a compressed advection artifact would plug into
+  (`plans/012-near-inertial-forecast.md`, Phase 3). The advection reads the
+  raw hourly window.
 - **Client-side integration over `currents.json`.** Rejected: that grid is
   magnitude-compressed (wrong speeds), coarsened, and land-bled.
 
@@ -136,10 +137,7 @@ displacement). Properties:
   reached, with `hours` **signed by direction** (positive in the forecast,
   negative in the hindcast); parallels the per-vertex `fixes` pattern in
   [`tracks_geojson`](trajectories.md), so the client places the dots without
-  re-deriving timing;
-- `vertex_min` (`15`) — the polyline's vertex spacing in minutes, so the
-  client can map vertex index ↔ elapsed time. This is the clock the animated
-  dot (below) walks.
+  re-deriving timing.
 
 An instrument whose head is already on land or off-grid yields no usable line
 (`<2` vertices) and is skipped; it still shows its latest-position marker. Each
@@ -169,19 +167,6 @@ master row are checked**, so unchecking an instrument hides its markers, its tra
 its forecast *and* its hindcast together. Default off. (Gliders carry a forecast
 and hindcast; the drifters carry all three overlays.)
 
-### Animated dot (±6 h)
-
-A further master row, **Animated dot (±6 h)**, animates the drift itself: one
-dot per forecast line (violet) and one per hindcast line (magenta), each
-walking its polyline on a **single shared looping clock** — 6 h of drift maps
-to 12 s of animation, so all dots move in sync. Vertex index maps to elapsed
-time via each feature's `vertex_min`. The row composes with the instrument
-rows exactly like Forecast and Hindcast do: an instrument's dots show only
-when both its own row and the master row are checked. A line that was
-truncated early (e.g. stopped at the coast) holds its dot at the endpoint
-until the loop wraps. The animation is driven by `requestAnimationFrame`, so
-hidden tabs pause it.
-
 The sidebar **Drift forecast & hindcast** panel — the two were merged, being the
 same field with the same caveats — states the `valid_time` (the integration's
 t = 0) via `renderDriftInfo(forecast, hindcast)`, with a static note that the lines
@@ -189,38 +174,3 @@ advect a **surface point particle by the currents only** (no wind, waves, or the
 instrument's own motion) and that the hindcast is a current back-track, not the
 observed track. `valid_time` is read off the first available feature — one window,
 one anchor time for every line.
-
-## Near-inertial amplitude overlay
-
-`_inertial.py` decomposes the same hourly current window the advection uses
-into a per-cell **mean plus rotating near-inertial component**: a
-least-squares fit of `w(t) = m + C·e^(−i f (t − t_ref))` over the window,
-where `w = uo + i·vo`, `f = 2Ω sin(lat)` is the local inertial frequency
-(negative in the Southern Hemisphere, so the reconstructed vector rotates
-counter-clockwise — the SH-anticyclonic sense), and `t_ref` is the window time
-nearest now — the same t = 0 the advection anchors to. Per cell this yields
-the mean `(u, v)`, the near-inertial amplitude `A = |C|` (m/s) and the phase
-`φ = arg C`. The least-squares form separates mean from oscillation cleanly
-even though the ~24 h window is not an integer number of inertial periods;
-toward the bbox's northern edge (−15°, inertial period ~46 h) the window
-covers only about half a period, so `A` is noisier there.
-
-The build emits two artifacts following the surface-speed pattern:
-**`inertial.png`**, a Mercator-warped RGBA raster of `GAIN·A` (cmocean `amp`
-colormap, land transparent, clipped at the 99th percentile), and
-**`inertial_meta.json`** (`valid_time`, `bounds`, `vmax`, `units` `"m/s"`,
-`colorbar`, `gain` — the same shape as `currents_meta.json` plus the gain).
-
-In the client the overlay appears as **Inertial amplitude** in the layer
-control, an `imageOverlay` **mutually exclusive with Current speed** —
-enabling one disables the other — and the sidebar surface-currents legend
-swaps to whichever raster is active.
-
-**The gain seam.** `_inertial.GAIN` (module constant, default **1.0**) scales
-`A` for the overlay and is recorded in `inertial_meta.json`. It is the seam
-where a validated amplitude calibration would plug in; the drifter validation
-found no gain that generalizes
-(`plans/done/013-inertial-gain-generalization.md`), so the default stays
-un-gained. The advection itself reads the raw hourly window, not the
-reconstruction — with `GAIN = 1.0` the two are equivalent, while a validated
-gain ≠ 1 would require the advection to read the reconstruction instead.

@@ -219,10 +219,9 @@ body {
   flex: 0 0 auto;
 }
 
-/* Line swatch for the overlay (True track / Forecast / Hindcast / Animated
-   dot) rows — a short bar keying the checkbox to the coloured layers it
-   toggles, as the round .batch-swatch keys a batch row to its circular
-   markers. */
+/* Line swatch for the overlay (True track / Forecast / Hindcast) rows — a
+   short bar keying the checkbox to the coloured layers it toggles, as the
+   round .batch-swatch keys a batch row to its circular markers. */
 .batch-line-swatch {
   width: 14px;
   height: 3px;

@@ -1,5 +1,9 @@
-"""Per-cell near-inertial decomposition of the hourly current window, and the
-amplitude overlay rendered from it.
+"""Per-cell near-inertial decomposition of the hourly current window.
+
+Library code with no build consumer: an amplitude overlay rendered from this
+module was built and then dropped by decision on review; the decomposition
+stays as the seam the planned gain skill test and a future compressed advection
+artifact would plug into (``plans/012-near-inertial-forecast.md``).
 
 The hourly CMEMS window that drives the forecast/hindcast advection
 (:func:`whirls_cruise_map._currents.fetch_field_window`) already carries the
@@ -9,8 +13,7 @@ Phase 0). :func:`decompose` separates that window, per grid cell, into a mean
 current plus one rotating inertial-frequency component (``mean_u``, ``mean_v``,
 ``amp``, ``phase``); :func:`to_inertial_png` renders the amplitude as a
 Mercator-warped raster (cmocean ``amp``, land transparent) structured exactly
-like the surface-speed shading, so the client toggles speed <-> inertial over
-one overlay code path.
+like the surface-speed shading.
 
 The four 2-D fields plus their reference time are also the storage-lean seam a
 future compressed advection artifact would read: the whole ~25-step hourly
