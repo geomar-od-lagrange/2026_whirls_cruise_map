@@ -112,12 +112,53 @@ point series (06-21 → 07-03); observed NI from detrended drifter velocities.
   demodulation, ~1.9 vs ~1.5 by rotary-RMS — the same non-generalization the
   survey shows.
 
+### Vorticity refraction: effective f at Deployment 2
+
+**Question.** Background vorticity shifts the local inertial frequency
+(f_eff = f + ζ/2, Kunze 1985), so if D2 sits in an eddy, part of the
+position-space "amplitude ratio" could be a frequency/radius effect
+(loop radius = U/ω) rather than an energy deficit.
+
+**Method.** ζ from centered differences of the time-mean hourly CMEMS window,
+mapped ±2° around both clusters (SSH as sanity overlay); observed and
+simulated residual rotation frequencies fitted per D2 drifter (a two-rotary
+fit — validated on synthetics; simpler trend/demodulation fits are biased by
+the eddy swirl); consistency checked via the differential sim-vs-obs phase.
+
+- **D2 sits inside a coherent anticyclone** in CMEMS (SSH high to +0.65 m
+  centered ≈ 11.4°E/−37.7°S): ζ/(2f) ≈ **−0.122** at all three drifters
+  (across-cluster spread 0.0004), so |f_eff| = 0.878 |f| and the effective
+  period is ~22.4 h vs the latitude value 19.7 h. Note the sign: an SH
+  anticyclone *slows* the loops and *enlarges* the radius per unit velocity.
+  The D1 cluster straddles the anticyclone's NE rim (ζ/(2f) −0.11 … +0.07,
+  mixed sign).
+- **The advection already carries this physics:** the CMEMS-advected particle
+  loops at the model's f_eff (fitted ω_sim ≈ 0.80–0.82 |f|, ~1σ from the
+  predicted 0.878) — eddy refraction of the forecast loop needs no fix.
+- **ω_obs is only weakly constrained** by ≲2 inertial periods over a broadband
+  eddy background (direct fits: ±0.2 |f|); the sharper differential-phase
+  estimate gives ω_obs ≈ 0.85–0.95 |f| — partial-to-full refraction. An
+  apparent growing phase lag in the survey's D2 windows did not survive the
+  longer record (non-monotone, ~−1.4°/h; |f| = 18.3°/h for scale).
+- **Amplitude verdict:** the frequency factor enters the position-space ratio
+  as ω_obs/ω_sim ≈ **1.0–1.1** — the sim's slower rotation slightly *inflates*
+  its loops, masking rather than explaining the deficit. The D2 ratio ~0.40
+  stands (0.40 ≈ velocity ratio 0.35–0.53 × ~1.05), and the underlying
+  velocity/energy shortfall is marginally *worse* after the correction. D1's
+  kinematic factor is the same (1.05 ± 0.06), so its higher ratio is not a
+  frequency artifact.
+- **Caveat worth keeping:** forecast loop period/radius near eddy rims shift
+  with the *model's* ζ (up to ~12 % in period here) — where CMEMS misplaces or
+  mis-intensifies an eddy, the loop geometry inherits that error.
+
 ## Resolution — Branch C, no gain
 
 The ratio is scattered (C), not clustered (A), and its only correlates are not
 knowable at forecast time (not B). The un-gained time-dependent field stays:
 phase-correct, carrying ~0.4–0.65 of the observed NI amplitude depending on
-site. The slab is dropped permanently — it fails on amplitude *and* would
+site. Vorticity refraction does not soften this: the effective-f correction is
+a ≤10–20 % kinematic refinement that slightly *deepens* the energy shortfall.
+The slab is dropped permanently — it fails on amplitude *and* would
 double-count in phase ([inertial_slab_model.md](inertial_slab_model.md)).
 Phase 2 of [012](../012-near-inertial-forecast.md) ships with the per-cell
 decomposition and the gain exposed as a parameter defaulting to **1.0**
