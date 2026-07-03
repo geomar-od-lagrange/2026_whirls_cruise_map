@@ -399,11 +399,16 @@ const SHOW_MEAN = false;
 
 const INERTIAL_LOOP_S = 12; // wall-clock seconds per animation loop
 const INERTIAL_SPAN_S = 24 * 3600; // dt sweeps [0, 24h) per loop
-// Glyph length per unit speed, clamped so a fast cell doesn't dominate the
-// canvas — cosmetic only, the underlying amp/phase reconstruction is
-// unscaled true m/s (see plan 014, "no gamma" / plan 013's no-gain finding).
-const INERTIAL_PX_PER_MPS = 30;
-const INERTIAL_MAX_PX = 22;
+// Glyph length per unit speed, clamped so a strong cell doesn't dominate the
+// canvas — purely cosmetic, the amp/phase reconstruction stays unscaled true
+// m/s (plan 014 "no gamma" / plan 013's no-gain finding). Tuned for the
+// DEFAULT NI-only mode: the near-inertial residual is only ~0.02-0.05 m/s
+// (the mean is subtracted), ~15-20x smaller than the full current, so the
+// scale is correspondingly larger — at 30 px/(m/s) every arrow was sub-pixel
+// and the <1px guard blanked the whole field. If you flip SHOW_MEAN=true,
+// drop this back to ~30 or the mean-dominated vectors all clamp to one length.
+const INERTIAL_PX_PER_MPS = 500;
+const INERTIAL_MAX_PX = 28;
 // Cyan, distinct from the orange true track, the violet forecast / magenta
 // hindcast advection lines, and the dark->white flow-trail ramp.
 const INERTIAL_COLOR = "#22d3ee";
