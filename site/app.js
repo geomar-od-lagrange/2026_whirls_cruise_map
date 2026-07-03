@@ -95,6 +95,7 @@ const BATCH_STYLES = {
   pre_deploy: { color: "#7a7a7a", fillColor: "#a8a8a8" },
   deployment_1: { color: "#1f5fa8", fillColor: "#3a8ddb" }, // blue
   deployment_2: { color: "#0d7d72", fillColor: "#17b3a3" }, // teal
+  deployment_3: { color: "#b5540e", fillColor: "#e8791f" }, // orange
 };
 const DEPLOYED_STYLE = { color: "#1f5fa8", fillColor: "#3a8ddb" };
 function styleForBatch(batch) {
@@ -112,6 +113,7 @@ const BATCH_LABELS = {
   pre_deploy: "Drifter pre",
   deployment_1: "Drifter batch 1",
   deployment_2: "Drifter batch 2",
+  deployment_3: "Drifter batch 3",
 };
 // Instrument rows share this control: drifter batches use BATCH_LABELS; glider
 // types (xspar/seaglider) fall back to their GLIDER_STYLES label so they read as
