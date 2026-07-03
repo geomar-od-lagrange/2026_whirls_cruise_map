@@ -204,19 +204,107 @@ function popupHtml(props, latlng) {
     </div>`;
 }
 
+// --- click-to-highlight: instrument track selection -------------------------
+// Every instrument that carries a track — a drifter, a seaglider, the XSPAR — is
+// a set of clickable elements: its trajectory line, its per-fix dots, and its
+// latest-position head marker (built by buildTrackGroups/buildBatchGroups for
+// drifters, buildGliderTrackGroups/buildGliderMarkerGroups for gliders). Each
+// element registers a restyle callback here under its instrument key (a drifter
+// D_number or a glider id); clicking any of them selects that instrument.
+// Selecting *brightens* its line and dots and enlarges its head, and
+// *desaturates* every other instrument — greying the rest rather than fading it,
+// so one track lifts out of the tangle while the others stay legible. Clicking the
+// selection again, or the empty map (via bubblingMouseEvents:false + a map "click"
+// handler in main), clears it. Ship tracks are deliberately not registered — they
+// carry no selection. (See docs/trajectories.md.)
+//
+// A part registers a `restyle(state)` closure — state is "selected" | "dim" |
+// "normal" — rather than the raw layer, so each element kind (SVG circle/line vs.
+// glider divIcon) owns how it renders each state. restyle mutates layer options
+// (setStyle / setIcon), so the styling survives a batch toggle's remove/re-add.
+// TRACK_COLOR (defined below) is read at call time, never at load.
+const SELECTED_COLOR = "#ff8c42"; // brighter than TRACK_COLOR for the picked track
+
+// Mix a hex colour toward its own grey (luminance) by `amount` in [0,1] — reduces
+// saturation without touching opacity, which is how un-selected tracks are dimmed.
+function desaturate(hex, amount = 0.72) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const grey = 0.3 * r + 0.59 * g + 0.11 * b;
+  const hx = (c) => Math.round(c + (grey - c) * amount).toString(16).padStart(2, "0");
+  return `#${hx(r)}${hx(g)}${hx(b)}`;
+}
+
+const trackParts = {}; // instrument key -> [restyle(state), ...]
+let selectedInstrument = null;
+
+const stateFor = (key) =>
+  key === selectedInstrument ? "selected" : selectedInstrument ? "dim" : "normal";
+
+// Register a freshly-built element's restyler and immediately apply the current
+// selection state, so a part built while a selection is active renders correctly.
+function registerPart(key, restyle) {
+  (trackParts[key] ??= []).push(restyle);
+  restyle(stateFor(key));
+}
+
+function applySelection() {
+  for (const key of Object.keys(trackParts))
+    for (const restyle of trackParts[key]) restyle(stateFor(key));
+}
+
+// Toggle: clicking the current selection clears it; another instrument replaces it.
+function selectInstrument(key) {
+  selectedInstrument = key === selectedInstrument ? null : key;
+  applySelection();
+}
+
+// Shared line/dot restylers — all track lines and dots are TRACK_COLOR, so both
+// drifter and glider elements use these. Opacity is held constant across states:
+// dimming is by desaturation, not transparency.
+const lineStyle = (state) =>
+  state === "selected"
+    ? { color: SELECTED_COLOR, weight: 5, opacity: 1 }
+    : { color: state === "dim" ? desaturate(TRACK_COLOR) : TRACK_COLOR, weight: 2, opacity: 0.85 };
+const dotStyle = (state) => {
+  const c =
+    state === "selected" ? SELECTED_COLOR : state === "dim" ? desaturate(TRACK_COLOR) : TRACK_COLOR;
+  return { color: c, fillColor: c, opacity: 1, fillOpacity: state === "selected" ? 1 : 0.9 };
+};
+// A drifter head is a per-batch circleMarker: hold its batch colour, enlarge it
+// when selected, and desaturate that batch colour when another instrument is.
+function styleHead(marker, base, state) {
+  const dim = state === "dim";
+  marker.setStyle({
+    color: dim ? desaturate(base.color) : base.color,
+    fillColor: dim ? desaturate(base.fillColor) : base.fillColor,
+    opacity: 1,
+    fillOpacity: base.fillOpacity,
+  });
+  marker.setRadius(state === "selected" ? base.radius + 3 : base.radius);
+}
+
 // Group latest-position markers into one feature group per `batch` value, so the
-// batch filter control can toggle each independently. Returns { batch: group }.
+// batch filter control can toggle each independently. Each marker also registers
+// as its drifter's head and selects that drifter on click. Returns { batch: group }.
 function buildBatchGroups(geojson) {
   const groups = {};
   for (const feature of geojson.features ?? []) {
     if (feature.geometry?.type !== "Point") continue;
     const [lng, lat] = feature.geometry.coordinates;
     const batch = feature.properties?.batch ?? "unknown";
+    const base = styleForBatch(batch);
     const marker = L.circleMarker([lat, lng], {
-      ...styleForBatch(batch),
+      ...base,
       pane: "drifters",
+      bubblingMouseEvents: false, // background clicks (not this) clear selection
     });
     marker.bindPopup(popupHtml(feature.properties, marker.getLatLng()));
+    const dNumber = feature.properties?.D_number;
+    if (dNumber != null) {
+      registerPart(dNumber, (s) => styleHead(marker, base, s));
+      marker.on("click", () => selectInstrument(dNumber));
+    }
     (groups[batch] ??= L.featureGroup()).addLayer(marker);
   }
   return groups;
@@ -338,9 +426,10 @@ const HINDCAST_COLOR = "#d81b8c";
 // velocity — read from the per-vertex `fixes` array that rides parallel to
 // `coordinates`. Tolerates a
 // `fixes`-less artifact from an older build: the dot then falls back to the
-// line-level identity (D_number/batch) with an unknown time. The line is
-// non-interactive so it never swallows a click meant for a dot or a marker
-// below it. Returns { batch: featureGroup }.
+// line-level identity (D_number/batch) with an unknown time. The line and dots
+// are interactive: clicking either selects the drifter (see selectInstrument);
+// both resolve to the same drifter, so there is no click to "swallow". Returns
+// { batch: featureGroup }.
 function buildTrackGroups(geojson) {
   const groups = {};
   for (const feature of geojson.features ?? []) {
@@ -349,10 +438,16 @@ function buildTrackGroups(geojson) {
     const key = batch ?? "unknown";
     const group = (groups[key] ??= L.featureGroup());
     const coords = feature.geometry.coordinates;
-    L.polyline(
-      coords.map(([lng, lat]) => [lat, lng]),
-      { color: TRACK_COLOR, weight: 2, opacity: 0.8, interactive: false }
-    ).addTo(group);
+    const line = L.polyline(coords.map(([lng, lat]) => [lat, lng]), {
+      color: TRACK_COLOR,
+      weight: 2,
+      opacity: 0.85,
+      bubblingMouseEvents: false, // background clicks (not this) clear selection
+    }).addTo(group);
+    if (D_number != null) {
+      registerPart(D_number, (s) => line.setStyle(lineStyle(s)));
+      line.on("click", () => selectInstrument(D_number));
+    }
     coords.forEach(([lng, lat], i) => {
       const fix = fixes?.[i] ?? {};
       const dot = L.circleMarker([lat, lng], {
@@ -361,10 +456,15 @@ function buildTrackGroups(geojson) {
         weight: 1,
         fillColor: TRACK_COLOR,
         fillOpacity: 0.9,
+        bubblingMouseEvents: false, // background clicks (not this) clear selection
       });
       // The fix record already carries date/battery/reported+derived velocity;
       // add the line-level identity for the same popup as the main marker.
       dot.bindPopup(popupHtml({ D_number, batch, ...fix }, dot.getLatLng()));
+      if (D_number != null) {
+        registerPart(D_number, (s) => dot.setStyle(dotStyle(s)));
+        dot.on("click", () => selectInstrument(D_number));
+      }
       group.addLayer(dot);
     });
   }
@@ -707,10 +807,17 @@ const GLIDER_STYLES = {
 const gliderStyle = (type) =>
   GLIDER_STYLES[type] ?? { color: "#38bdf8", label: type ?? "Glider" };
 
-function gliderIcon(type) {
+// `state` ("normal" | "selected" | "dim") drives the click-to-highlight look: a
+// selected glider gets a `-selected` class (CSS scales its diamond up); a dimmed
+// one desaturates its fill, mirroring the drifter heads. Size is constant so the
+// icon's anchor never shifts — the scale-up is CSS transform only.
+function gliderIcon(type, state = "normal") {
+  const base = gliderStyle(type).color;
+  const color = state === "dim" ? desaturate(base) : base;
+  const cls = state === "selected" ? "glider-marker glider-marker-selected" : "glider-marker";
   return L.divIcon({
-    className: "glider-marker",
-    html: `<span style="background:${gliderStyle(type).color}"></span>`,
+    className: cls,
+    html: `<span style="background:${color}"></span>`,
     iconSize: [16, 16],
     iconAnchor: [8, 8],
   });
@@ -740,12 +847,16 @@ function buildGliderMarkerGroups(geojson) {
   const groups = {};
   for (const feature of geojson.features ?? []) {
     if (feature.geometry?.type !== "Point") continue;
-    const { type } = feature.properties ?? {};
+    const { id, type } = feature.properties ?? {};
     const [lng, lat] = feature.geometry.coordinates;
     const marker = L.marker([lat, lng], {
       icon: gliderIcon(type),
       zIndexOffset: 500,
     }).bindPopup(gliderPopupHtml(feature.properties, { lat, lng }));
+    if (id != null) {
+      registerPart(id, (s) => marker.setIcon(gliderIcon(type, s)));
+      marker.on("click", () => selectInstrument(id));
+    }
     (groups[type] ??= L.featureGroup()).addLayer(marker);
   }
   return groups;
@@ -753,12 +864,14 @@ function buildGliderMarkerGroups(geojson) {
 
 // Glider tracks, one feature group per `type`, keyed like buildGliderMarkerGroups
 // so they ride the "True track" overlay against the matching instrument row. Per
-// platform (from its track LineString): a non-interactive line plus a
-// popup-bearing dot per fix — mirroring buildTrackGroups. Drawn in TRACK_COLOR,
-// the single true-track colour shared with the drifters (the instrument identity
-// stays on the coloured marker); this keeps every past track reading as one
-// layer. A single-fix platform (e.g. the XSPAR with one report) has no LineString
-// and so no track group, only its marker. Returns { type: featureGroup }.
+// platform (from its track LineString): a line plus a popup-bearing dot per fix —
+// mirroring buildTrackGroups, and (like it) registered for click-to-highlight
+// under the platform `id`, so clicking a glider's line, a dot or its head selects
+// it. Drawn in TRACK_COLOR, the single true-track colour shared with the drifters
+// (the instrument identity stays on the coloured marker); this keeps every past
+// track reading as one layer. A single-fix platform (e.g. the XSPAR with one
+// report) has no LineString and so no track group, only its marker. Returns
+// { type: featureGroup }.
 function buildGliderTrackGroups(geojson) {
   const groups = {};
   for (const feature of geojson.features ?? []) {
@@ -766,10 +879,16 @@ function buildGliderTrackGroups(geojson) {
     const { id, type, fixes } = feature.properties ?? {};
     const group = (groups[type] ??= L.featureGroup());
     const coords = feature.geometry.coordinates;
-    L.polyline(
-      coords.map(([lng, lat]) => [lat, lng]),
-      { color: TRACK_COLOR, weight: 2, opacity: 0.85, interactive: false }
-    ).addTo(group);
+    const line = L.polyline(coords.map(([lng, lat]) => [lat, lng]), {
+      color: TRACK_COLOR,
+      weight: 2,
+      opacity: 0.85,
+      bubblingMouseEvents: false, // background clicks (not this) clear selection
+    }).addTo(group);
+    if (id != null) {
+      registerPart(id, (s) => line.setStyle(lineStyle(s)));
+      line.on("click", () => selectInstrument(id));
+    }
     coords.forEach(([lng, lat], i) => {
       const dot = L.circleMarker([lat, lng], {
         radius: 3,
@@ -777,8 +896,13 @@ function buildGliderTrackGroups(geojson) {
         weight: 1,
         fillColor: TRACK_COLOR,
         fillOpacity: 0.9,
+        bubblingMouseEvents: false, // background clicks (not this) clear selection
       });
       dot.bindPopup(gliderPopupHtml({ id, type, ...(fixes?.[i] ?? {}) }, dot.getLatLng()));
+      if (id != null) {
+        registerPart(id, (s) => dot.setStyle(dotStyle(s)));
+        dot.on("click", () => selectInstrument(id));
+      }
       group.addLayer(dot);
     });
   }
@@ -1152,6 +1276,16 @@ async function main() {
   map.createPane("shipTrack").style.zIndex = 640;
   map.createPane("drifters").style.zIndex = 650;
   map.createPane("ship").style.zIndex = 660;
+
+  // Clicking the empty map clears any track selection. Track elements set
+  // bubblingMouseEvents:false, so their clicks don't reach here — only genuine
+  // background clicks do (see the click-to-highlight block above).
+  map.on("click", () => {
+    if (selectedInstrument != null) {
+      selectedInstrument = null;
+      applySelection();
+    }
+  });
 
   // Latest positions (required). Group by batch first to drive the fit; the
   // groups are added near the end so the markers sit above the shading and flow

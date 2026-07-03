@@ -274,6 +274,13 @@ body {
   transform: rotate(45deg);
 }
 
+/* Selected (click-to-highlight): scale the diamond up in place. Keeps rotate in
+   the transform so the scale composes with it; the icon size/anchor are
+   unchanged, so the marker doesn't jump. */
+.glider-marker-selected span {
+  transform: rotate(45deg) scale(1.45);
+}
+
 .popup strong {
   font-size: 0.95rem;
 }

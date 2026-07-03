@@ -107,12 +107,53 @@ The gliders' tracks share this **True track** layer, drawn in the same orange
 `TRACK_COLOR` so every past track reads as one layer — the instrument identity
 stays on the coloured diamond marker, not the track (see [gliders.md](gliders.md)).
 
+## Selection: click a track to highlight it
+
+Clicking any part of an instrument — its **line**, one of its **dots**, or its
+**latest-position head marker** — selects that instrument: its line **brightens**
+(to a lighter orange) and thickens, and its head enlarges, while **every other
+instrument desaturates** — greyed rather than faded, so it recedes without
+vanishing. One track lifts out of the overlapping tangle while the rest stay
+legible. Clicking the selected instrument again, or clicking the empty map, clears
+the selection.
+
+Selection spans **every instrument that carries a track** — the drifters *and* the
+gliders (seagliders, the XSPAR) — since all their tracks share the one orange
+`TRACK_COLOR`. Only the ship tracks are excluded (they are not registered). The
+current-advection forecast/hindcast lines are not part of it either.
+
+The mechanism is a small registry keyed by instrument (a drifter `D_number` or a
+glider `id`). Each element *registers a restyle callback* as it is built — in
+`buildTrackGroups`/`buildBatchGroups` (drifters) and
+`buildGliderTrackGroups`/`buildGliderMarkerGroups` (gliders) — and selects its
+instrument on click; `applySelection` calls every registered callback with the new
+state (`"selected"` / `"dim"` / `"normal"`). A callback per element, rather than a
+shared restyler, lets each element kind render each state its own way: SVG
+lines/dots via `setStyle` (colour swapped for the brighter or the desaturated
+tone), and the gliders' `divIcon` heads via `setIcon` (a CSS class scales the
+selected diamond; the dim fill is desaturated in the icon HTML).
+
+Dimming is by **desaturation, not transparency**: `desaturate()` mixes a colour
+toward its own luminance-grey, leaving opacity untouched, so a de-emphasised track
+stays readable against the basemap. The selected track's brighter `SELECTED_COLOR`
+and the desaturated others are the two ends of that treatment.
+
+Restyling happens **in place** and mutates each layer's options (`setStyle` /
+`setIcon`), so the styling survives a batch toggle's remove/re-add: a hidden track
+is restyled too and shows correctly the moment its instrument is re-enabled.
+Selection also composes with popups — a click on a dot or head both opens that
+fix's popup *and* selects the instrument — and with the empty-map clear, which
+works because the track elements set `bubblingMouseEvents: false`, so only genuine
+background clicks reach the map's `click` handler.
+
 ## Rendering and stacking order
 
 The trajectory lines and dots draw **below** the latest-position markers, which
-stay on top and clickable. The line is **non-interactive** — it carries no popup
-and must not swallow a click meant for a dot or a marker. Dots are individual SVG
-circle markers (each independently hit-testable).
+stay on top. The line **is interactive** — it selects its drifter on click (it
+carries no popup). Because the line and its dots resolve to the same drifter,
+there is no click for the line to "swallow": whichever the pointer lands on, the
+result is the same selection. Dots are individual SVG circle markers (each
+independently hit-testable, and each also bearing that fix's popup).
 
 The ship track and its per-fix dots sit **below the drifter markers** too, for a
 specific reason: the cruise departs the drifters' staging port, so the early ship
