@@ -33,8 +33,6 @@ _GROUPS = [
     ),
 ]
 
-_XSPAR_DATE = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{2,4})\s+(\d{1,2}):(\d{2})$")
-
 
 class Platform(NamedTuple):
     """One glider platform: ``id`` (from the CSV filename), ``type``
@@ -71,42 +69,45 @@ def _csv_datasets(catalog_xml: str) -> list[tuple[str, str]]:
     return out
 
 
-def _parse_time(gtype: str, raw: str) -> datetime | None:
+def _parse_time(raw: str) -> datetime | None:
     """Parse a fix time to tz-aware UTC; ``None`` if unparseable.
 
-    Seaglider times are ISO ``YYYY-MM-DD HH:MM:SS`` (UTC). XSPAR times are
-    ``M/D/YY H:MM``; we mirror the operational site's ``parseXsparGliderDate`` —
-    expand a 2-digit year, and if the result predates 2020 (the upstream year
-    field is unreliable) fall back to the current UTC year, so a stale-looking
-    ``7/2/16`` reads as this year's fix.
+    The WHIRLS feeds mix three time encodings, and the format no longer tracks
+    the platform *type* — even the two seagliders differ — so we detect it per
+    value instead of keying on the type:
+
+    - Unix epoch seconds, e.g. ``1783078052.0`` (one seaglider emits this);
+    - ISO ``YYYY-MM-DD HH:MM:SS`` with no offset, read as UTC (another seaglider);
+    - ISO with an explicit offset, e.g. ``2026-07-02 00:00:00+00:00`` (XSPAR).
     """
     raw = raw.strip()
-    if gtype == "xspar":
-        m = _XSPAR_DATE.match(raw)
-        if not m:
-            return None
-        month, day, year, hour, minute = (int(g) for g in m.groups())
-        if year < 100:
-            year += 2000
-        if year < 2020:
-            year = datetime.now(timezone.utc).year
+    if not raw:
+        return None
+    # A bare number is Unix epoch seconds; an ISO string fails float() and falls
+    # through to the parser below.
+    try:
+        epoch = float(raw)
+    except ValueError:
+        pass
+    else:
         try:
-            return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
-        except ValueError:
+            return datetime.fromtimestamp(epoch, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
             return None
     try:
-        return datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
+        dt = datetime.fromisoformat(raw)
     except ValueError:
         return None
+    # Naive timestamps are UTC; offset-aware ones are normalised to UTC.
+    return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _parse_csv(gtype: str, text: str) -> list[tuple[datetime, float, float]]:
+def _parse_csv(text: str) -> list[tuple[datetime, float, float]]:
     """Time-sorted ``(time, lat, lon)`` fixes from a track CSV.
 
-    Column order differs between platforms (XSPAR ``Time,Latitude,Longitude``;
-    seaglider ``time,longitude,latitude``), so we map by header *name*, not
-    position. XSPAR uses CR-only line endings; ``csv`` over the split lines
-    handles both that and the seaglider's ``\\n``.
+    Column order differs between (and within) platform types — some feeds put
+    ``longitude`` before ``latitude`` — so we map by header *name*, not position.
+    ``csv`` over ``splitlines()`` handles LF and any stray CR-only endings alike.
     """
     lines = text.splitlines()
     if not lines:
@@ -125,7 +126,7 @@ def _parse_csv(gtype: str, text: str) -> list[tuple[datetime, float, float]]:
     for row in reader:
         if len(row) <= max(ti, lai, loi):
             continue
-        t = _parse_time(gtype, row[ti])
+        t = _parse_time(row[ti])
         try:
             lat, lon = float(row[lai]), float(row[loi])
         except ValueError:
@@ -150,7 +151,7 @@ def fetch_gliders() -> list[Platform]:
             continue
         for pid, csv_url in datasets:
             try:
-                fixes = _parse_csv(gtype, _get(csv_url))
+                fixes = _parse_csv(_get(csv_url))
             except Exception:
                 continue
             if fixes:

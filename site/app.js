@@ -869,8 +869,8 @@ function buildGliderMarkerGroups(geojson) {
 // under the platform `id`, so clicking a glider's line, a dot or its head selects
 // it. Drawn in TRACK_COLOR, the single true-track colour shared with the drifters
 // (the instrument identity stays on the coloured marker); this keeps every past
-// track reading as one layer. A single-fix platform (e.g. the XSPAR with one
-// report) has no LineString and so no track group, only its marker. Returns
+// track reading as one layer. A platform with a single deployed fix has no
+// LineString and so no track group, only its marker. Returns
 // { type: featureGroup }.
 function buildGliderTrackGroups(geojson) {
   const groups = {};

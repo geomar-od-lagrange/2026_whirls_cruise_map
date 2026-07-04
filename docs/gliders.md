@@ -14,8 +14,8 @@ under *Gliders* — the THREDDS tree nests them at
 it draws from, so the XSPAR is documented here with the seagliders rather than on
 its own; the code likewise treats it as one glider `type` among others (auto-
 discovered from the same catalog structure), so a shared doc matches the shared
-mechanism. Where the distinction matters — the CR-only `M/D/YY` CSV, the amber
-marker colour, the single-fix (marker-only) case — it is called out per type below.
+mechanism. Where the distinction matters — the amber marker colour — it is called
+out per type below.
 
 ## Source: the WHIRLS THREDDS server
 
@@ -33,20 +33,26 @@ takes every `<dataset>` whose `urlPath` ends `.csv`, and downloads it from
 XSPAR) therefore appears with **no code change** — it is picked up from the
 catalog on the next build.
 
-### CSV quirks — parsed by header name, not position
+### CSV quirks — parsed by header name and detected time format
 
-The two feeds differ, so the parser maps columns by their **header name**
-(lower-cased), never by order:
+The feeds are inconsistent in two ways the parser absorbs.
 
-- XSPAR: `Time,Latitude,Longitude`, **CR-only** line endings, date `M/D/YY H:MM`.
-- Seaglider: `time,longitude,latitude` (**longitude before latitude**), date ISO
-  `YYYY-MM-DD HH:MM:SS` (UTC).
+**Column order varies**, including *which* of latitude/longitude comes first
+(both XSPAR and the seagliders currently emit `longitude` before `latitude`), so
+the parser maps columns by their **header name** (lower-cased), never by order.
+It needs `time`, `latitude`, and `longitude`; a feed missing any is skipped.
 
-XSPAR dates get the operational site's own fallback (`parseXsparGliderDate`):
-read `M/D/YY H:MM` as UTC, expand a 2-digit year, and — because the upstream year
-field is unreliable — if the result predates 2020, use the **current UTC year**
-instead. So a stale-looking `7/2/16` reads as this year's fix. Seaglider dates
-parse straight as ISO UTC.
+**Time encoding varies per value, not per platform type** — the two seagliders
+even disagree with each other — so `_parse_time` detects the format of each cell
+rather than keying on the type. It handles three encodings:
+
+- Unix epoch seconds, e.g. `1783078052.0` (one seaglider emits this);
+- ISO `YYYY-MM-DD HH:MM:SS` with no offset, read as UTC (another seaglider);
+- ISO with an explicit offset, e.g. `2026-07-02 00:00:00+00:00` (XSPAR).
+
+A bare number is read as epoch; anything else is handed to `datetime.fromisoformat`
+(naive → UTC, offset-aware → normalised to UTC). Line endings (LF or a stray
+CR-only feed) are handled by parsing over `splitlines()`.
 
 ## Why build-time, not client-live
 
@@ -66,8 +72,8 @@ dead platform can't suppress the rest, and a total failure yields no
 `_geojson.gliders_geojson` writes one `FeatureCollection`. Per platform:
 
 - a **`Point`** at its most-recent (raw) fix; and
-- a **`LineString`** track when it has ≥2 **deployed** fixes (a single-fix platform
-  — the XSPAR with one report — has only the marker, no line).
+- a **`LineString`** track when it has ≥2 **deployed** fixes (a platform with a
+  single deployed fix has only the marker, no line).
 
 ### Leading vessel-transit is pruned from the track
 
