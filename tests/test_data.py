@@ -104,6 +104,36 @@ def test_drifters_round_trip(tmp_path):
     assert _no_tmp_files(tmp_path)
 
 
+def test_drifters_csv_ordered_by_time_for_append(tmp_path):
+    """The on-disk drifters.csv is ordered by ``(time_utc, platform_id)`` — not
+    grouped by platform — so a rebuild only appends the newest fixes at EOF and a
+    client can range-download the tail. Uses interleaved timestamps so time-order
+    and platform-order genuinely differ, and reads the raw file (``read_drifters``
+    re-sorts by platform, so it cannot see the on-disk order)."""
+    rows = [
+        ("D2", _ts(2026, 7, 1, 5, 0, 0), -36.0, 11.0, 0.1, 10.0, "G", "pre_deploy"),
+        ("D1", _ts(2026, 7, 1, 10, 0, 0), -37.0, 12.0, 0.3, 90.0, "A", "deployment_1"),
+        ("D1", _ts(2026, 7, 1, 1, 0, 0), -37.1, 12.1, 0.4, 95.0, "A", "deployment_1"),
+    ]
+    tracks = pd.DataFrame(
+        rows,
+        columns=[
+            "D_number", "date_UTC", "Latitude", "Longitude",
+            "U_speed_mps", "U_Dir_deg", "batteryState", "batch",
+        ],
+    )
+    _data.write_drifters(tmp_path, tracks)
+
+    df = pd.read_csv(tmp_path / "drifters.csv")
+    assert df["time_utc"].tolist() == [
+        "2026-07-01T01:00:00Z",
+        "2026-07-01T05:00:00Z",
+        "2026-07-01T10:00:00Z",
+    ]
+    # Chronological across platforms, not D1,D1,D2 grouped.
+    assert df["platform_id"].tolist() == ["D1", "D2", "D1"]
+
+
 def test_drifters_batch_falls_back_to_roster_without_platforms_csv(tmp_path):
     """No platforms.csv written -> batch comes from the package roster / falls
     back to PRE_DEPLOY_BATCH (a drifter unknown to the roster)."""

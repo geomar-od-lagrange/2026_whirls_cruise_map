@@ -75,6 +75,29 @@ The two ships stay two separate files rather than one `ships.csv`: the Agulhas
 carries SOG/COG/status/area the Marion Dufresne's API does not, so a merged
 table would be half the columns blank for one vessel or the other.
 
+### Row order and incremental download
+
+`drifters.csv` is ordered by `(time_utc, platform_id)` — chronological, then by
+id to break ties — **not** grouped by platform. This is a download-transport
+choice, not a semantic one. Because the newest fixes always sit at the end of
+the file, a rebuild only *appends* rows there, so a colleague on a
+bandwidth-limited link (the cruise's at-sea VSAT case) can fetch just the new
+tail with an HTTP range request — `curl -C - -o drifters.csv <url>` resumes from
+the local byte count — instead of re-downloading the whole growing file. The map
+build is indifferent to the order: `read_drifters` re-sorts by
+`(platform_id, time_utc)` on the way in, so this is purely the download
+product's concern.
+
+The guarantee is best-effort, not absolute. A fix that arrives late with an old
+timestamp inserts mid-file and shifts the byte prefix; likewise a from-scratch
+rebuild that restated an old value would. A range client must therefore detect a
+changed prefix — the simplest checks being *did the file shrink* (`HEAD` →
+`Content-Length` below the local size) or *did the `ETag` lineage break* — and
+fall back to a full download when it sees one. The alternative that removes even
+that caveat (a persistent, strictly append-only event log, dedup-on-read) is a
+larger producer change; the time-sort is the low-effort step that makes the
+common case — new fixes only — cheap to sync today.
+
 `platforms.csv` is one row per platform, not per fix — the place per-platform
 metadata lives once instead of being repeated down every row of a per-fix
 table:

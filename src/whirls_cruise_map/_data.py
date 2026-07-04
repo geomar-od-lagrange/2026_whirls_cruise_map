@@ -108,10 +108,24 @@ def write_raw_text(data_dir: Path, name: str, text: str, source: str) -> dict:
 
 
 def write_drifters(data_dir: Path, tracks: pd.DataFrame) -> dict:
-    """Cleaned drifter fixes. ``tracks`` is the valid-fix frame from
-    :func:`._clean.tracks` (columns ``D_number, date_UTC, Latitude, Longitude,
-    U_speed_mps, U_Dir_deg, batteryState``); ``batch`` is not repeated per fix —
-    it lives once in ``platforms.csv``."""
+    """Cleaned drifter fixes, ordered by ``(time_utc, platform_id)``.
+
+    ``tracks`` is the valid-fix frame from :func:`._clean.tracks` (columns
+    ``D_number, date_UTC, Latitude, Longitude, U_speed_mps, U_Dir_deg,
+    batteryState``); ``batch`` is not repeated per fix — it lives once in
+    ``platforms.csv``.
+
+    Rows are ordered **chronologically, then by id to break ties**, not grouped
+    by platform. This is a download-transport choice, not a semantic one: with
+    the newest fixes always at end-of-file, a rebuild only *appends* there, so a
+    bandwidth-limited client can pull just the new tail with an HTTP range
+    request (``curl -C -``) instead of re-fetching the whole file. The map build
+    is indifferent to it — :func:`read_drifters` re-sorts by
+    ``(platform_id, time_utc)`` on read. The property is best-effort: a fix that
+    arrives late with an old timestamp inserts mid-file and shifts the byte
+    prefix, so a range client must detect a changed prefix and fall back to a
+    full download. ``time_utc`` is fixed-width ISO-8601 ``…Z``, so a lexical
+    sort of the string equals a chronological one."""
     out = pd.DataFrame(
         {
             "platform_id": tracks["D_number"].astype(str),
@@ -124,6 +138,7 @@ def write_drifters(data_dir: Path, tracks: pd.DataFrame) -> dict:
             "battery_state": tracks["batteryState"],
         }
     )
+    out = out.sort_values(["time_utc", "platform_id"], kind="stable", ignore_index=True)
     return _write_csv(data_dir, "drifters.csv", out, "cleaned", _DRIFTER_URL)
 
 
