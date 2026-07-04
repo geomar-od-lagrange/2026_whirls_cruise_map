@@ -84,9 +84,15 @@ hindcast together. All overlays start hidden. (Gliders ride the True-track,
 Forecast and Hindcast overlays too; a glider with a single fix has no track, only
 its marker.)
 
-This control — not the Leaflet layer control — governs all instrument visibility
-(markers and the trajectory/forecast/hindcast overlays); the layer control
-retains the speed, flow, and ship overlays.
+This control — not a Leaflet layer control — governs all instrument visibility
+(markers and the trajectory/forecast/hindcast overlays). The field layers and the
+vessels live in two separate titled Leaflet layer controls stacked below it:
+**Currents** and **Ships** (the two vessels). In Currents the two shadings (speed,
+ζ/f vorticity) are **mutually-exclusive radios** — plus a *None* radio to turn
+shading off — since both fill the one `shading` pane; the flow trails and
+near-inertial animation, which coexist with either shading, are **checkboxes**.
+The three controls share one `.map-control` style so they read as one set, and
+each is built only when it has something to show (no dead, empty box).
 
 ### Why a custom control, not the Leaflet layer control
 

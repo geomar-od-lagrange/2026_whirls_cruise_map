@@ -352,7 +352,7 @@ function buildBatchControl(map, markerGroups, overlays) {
 
   const control = L.control({ position: "topright" });
   control.onAdd = () => {
-    const div = L.DomUtil.create("div", "batch-control");
+    const div = L.DomUtil.create("div", "map-control batch-control");
     L.DomEvent.disableClickPropagation(div);
     L.DomEvent.disableScrollPropagation(div);
     const title = L.DomUtil.create("h4", "", div);
@@ -403,6 +403,23 @@ function buildBatchControl(map, markerGroups, overlays) {
     sync();
     return div;
   };
+  return control;
+}
+
+// A Leaflet layer control that matches the Instruments box: the shared
+// `map-control` class gives it the same styling, and a prepended <h4> gives it a
+// title (Leaflet's layer control has neither natively). This is what lets the
+// Currents and Ships controls read as titled boxes alongside the custom
+// "Instruments" control. `baseLayers` (radios, mutually exclusive) and `overlays`
+// (checkboxes) follow L.control.layers; either may be null/empty (the Ships
+// control starts bare and gets its vessels via addOverlay on their first fix).
+function titledLayerControl(map, baseLayers, overlays, title) {
+  const control = L.control.layers(baseLayers, overlays, { collapsed: false }).addTo(map);
+  const container = control.getContainer();
+  container.classList.add("map-control");
+  const heading = L.DomUtil.create("h4", "");
+  heading.textContent = title;
+  container.insertBefore(heading, container.firstChild);
   return control;
 }
 
@@ -1284,7 +1301,7 @@ async function main() {
     layers: [osmLayer()],
   });
 
-  const overlays = {};
+  const currentOverlays = {};
 
   // Layer stack, bottom -> top: speed shading -> near-inertial animation ->
   // flow -> ship track+dots -> drifters -> ship marker. The ship track sits
@@ -1334,32 +1351,35 @@ async function main() {
   const vorticityMeta = await fetchJSON(DATA.vorticityMeta, { optional: true });
   const inertialField = await fetchJSON(DATA.inertialField, { optional: true });
 
-  // Speed shading: a Mercator-warped PNG in the bottom data pane. The PNG is at
-  // the native CMEMS grid resolution (one pixel per cell); `crisp` disables the
-  // browser's default bilinear upscaling so the cells render as sharp pixels
-  // instead of a smooth blur.
+  // The two shadings (speed, ζ/f) both fill the same `shading` pane, so only one
+  // makes sense at a time — they are mutually exclusive **base layers** (radio
+  // buttons) in the Currents control, not overlays. Fully opaque: the raster is
+  // the ocean's true colour, not a wash over the basemap (land stays transparent
+  // via the PNG's own alpha mask, so the coastline still shows through).
+  const currentShading = {};
+
+  // Speed shading: a Mercator-warped PNG in the bottom data pane, shown by
+  // default. The PNG is at the native CMEMS grid resolution (one pixel per cell);
+  // `crisp` disables the browser's default bilinear upscaling so the cells render
+  // as sharp pixels instead of a smooth blur.
   if (meta && meta.bounds) {
     const speedLayer = L.imageOverlay(DATA.speed, meta.bounds, {
       pane: "shading",
-      opacity: 0.85,
       className: "crisp-raster",
     });
-    speedLayer.addTo(map);
-    overlays["Current speed"] = speedLayer;
+    speedLayer.addTo(map); // the default-selected shading radio
+    currentShading["Current speed"] = speedLayer;
   }
   renderCurrentsInfo(meta);
 
-  // Vorticity ζ/f: a second Mercator-warped raster in the same shading pane,
-  // derived from the same field. Default OFF (never addTo(map)d) so speed stays
-  // the shown shading. The two are independent checkboxes, not a mutual toggle —
-  // enabling both stacks ζ/f (opacity 0.85) over speed in the shared pane.
+  // Vorticity ζ/f: the alternative shading in the same pane, off by default (its
+  // radio unselected until picked, which swaps it in for the speed raster).
   if (vorticityMeta && vorticityMeta.bounds) {
     const vorticityLayer = L.imageOverlay(DATA.vorticity, vorticityMeta.bounds, {
       pane: "shading",
-      opacity: 0.85,
       className: "crisp-raster",
     });
-    overlays["Vorticity ζ/f"] = vorticityLayer;
+    currentShading["Vorticity ζ/f"] = vorticityLayer;
   }
   renderVorticityInfo(vorticityMeta);
 
@@ -1377,7 +1397,7 @@ async function main() {
       lineWidth: 1.2,
     });
     flowLayer.addTo(map);
-    overlays["Current flow"] = flowLayer;
+    currentOverlays["Current flow"] = flowLayer;
 
     // leaflet-velocity paints faded trails in screen space and does not
     // reproject the existing frame on pan/zoom, so old trails ghost in place.
@@ -1397,7 +1417,7 @@ async function main() {
   // it self-gates on map.hasLayer so it costs nothing while the layer is off.
   if (inertialField) {
     const { layer: inertialLayer, grid: inertialGrid } = buildInertialField(inertialField);
-    overlays["Near-inertial animation"] = inertialLayer;
+    currentOverlays["Near-inertial animation"] = inertialLayer;
     startInertialClock(map, inertialGrid, inertialLayer);
   }
 
@@ -1449,9 +1469,24 @@ async function main() {
   // Awaiting-first-fix sidebar.
   renderAwaiting(await fetchJSON(DATA.awaiting, { optional: true }));
 
-  // No base-layer selector — OpenStreetMap is the sole basemap; the control lists
-  // only the overlays (and the ship, added on its first fix).
-  const layersControl = L.control.layers(null, overlays, { collapsed: false }).addTo(map);
+  // Map layers are split into two titled controls that sit below the custom
+  // "Instruments" control, so the three read as one set: **Currents** and
+  // **Ships** (the vessels). OpenStreetMap is the sole basemap — there is no
+  // basemap radio.
+  //
+  // In Currents the two shadings are mutually-exclusive **base layers** (radios)
+  // plus a "None" radio to turn shading off; the flow trails and near-inertial
+  // animation, which can coexist with either shading, are **overlays**
+  // (checkboxes). The control is built only when it has something to show (CMEMS
+  // up), and Ships is created lazily on the first vessel fix (below), so neither
+  // ever shows a dead-empty box.
+  if (Object.keys(currentShading).length || Object.keys(currentOverlays).length) {
+    if (Object.keys(currentShading).length) currentShading["None"] = L.layerGroup();
+    titledLayerControl(map, currentShading, currentOverlays, "Currents");
+  }
+  let shipsControl = null;
+  const ensureShipsControl = () =>
+    (shipsControl ??= titledLayerControl(map, null, {}, "Ships"));
 
   // R/V Marion Dufresne live track (client-side; Flotte Océanographique Française
   // API). Last, and deliberately not awaited: it is the one third-party fetch, so
@@ -1471,7 +1506,7 @@ async function main() {
       renderShipInfo(VESSELS.md, null);
     } else if (!shipShown) {
       ship.group.addTo(map);
-      layersControl.addOverlay(ship.group, VESSELS.md.name);
+      ensureShipsControl().addOverlay(ship.group, VESSELS.md.name);
       shipShown = true;
     }
   }
@@ -1500,7 +1535,7 @@ async function main() {
     agulhas.append(fixes);
     if (!agulhasShown) {
       agulhas.group.addTo(map);
-      layersControl.addOverlay(agulhas.group, VESSELS.agulhas.name);
+      ensureShipsControl().addOverlay(agulhas.group, VESSELS.agulhas.name);
       agulhasShown = true;
     }
   }

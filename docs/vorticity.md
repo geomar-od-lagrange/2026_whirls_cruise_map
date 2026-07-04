@@ -68,8 +68,14 @@ choices follow from ζ/f being **signed** rather than a magnitude:
   shear front (where |ζ/f| can exceed 1) from washing out the mesoscale scale.
 
 The client (`app.js`) registers it as an `L.imageOverlay` in the same `shading`
-pane as the speed raster, **off by default** (so speed stays the shown shading),
-toggled from the layer control. Its legend is a local twin of the speed legend
+pane as the speed raster. Because both shadings fill that one pane, only one makes
+sense at a time, so in the **Currents** control they are **mutually-exclusive base
+layers** (radio buttons: *Current speed* / *Vorticity ζ/f* / *None*), not
+independent checkboxes — picking ζ/f swaps it in for the speed raster; speed is
+selected by default. Both rasters are drawn **fully opaque** (the overlay carries
+no `opacity`, so the ocean shows its true colour rather than a wash over the
+basemap; land stays transparent via the PNG's own alpha mask, so the coastline
+still shows through). Its legend is a local twin of the speed legend
 (`renderVorticityInfo`), symmetric where the speed one is zero-based.
 
 ### Land and coastal edge

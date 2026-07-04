@@ -9,6 +9,6 @@
 - click any instrument's track, one of its fix dots, or its latest-position marker (drifters and gliders alike) to highlight it — brightening it and desaturating the rest (click the empty map to clear)
 - toggle for a per-instrument current-advection forecast (solid line to +6 h, dots at 1/3/6 h)
 - toggle for a per-instrument current-advection hindcast (solid line back to −6 h, dots at 1/3/6 h)
-- an "Instruments" control to show/hide each drifter batch and each glider platform independently
+- three stacked top-right controls: **Instruments** (show/hide each drifter batch and glider platform independently, plus the track/forecast/hindcast overlays), **Currents** (a shading radio — speed / ζ/f vorticity / none — plus flow-trail and near-inertial checkboxes), and **Ships** (the two vessels)
 - overlay of today's cmems surface currents (analysis / forecast t=0)
 - toggle for a normalized relative-vorticity (ζ/f) overlay from the same field — cyclonic (+) / anticyclonic (−) eddies as opposite-signed lobes (off by default)

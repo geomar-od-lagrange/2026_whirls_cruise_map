@@ -182,20 +182,48 @@ body {
   image-rendering: pixelated; /* Chrome/Safari/Edge */
 }
 
-/* Drifter batch filter control (top-right on the map). */
-.batch-control {
+/* The three top-right map controls — Instruments (custom .batch-control), Currents
+   and Ships (Leaflet overlay controls) — share one box style via .map-control, so
+   they read as one titled set. app.js adds .map-control to every control container
+   and an <h4> title to each; because style.css loads after leaflet.css, these win
+   over Leaflet's own .leaflet-control-layers(-expanded) defaults at equal
+   specificity, so no per-control override is needed. */
+.map-control {
   background: var(--panel);
-  padding: 8px 10px;
+  color: var(--ink);
+  border: none;
   border-radius: 4px;
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.4);
+  padding: 8px 10px;
   font-size: 0.8rem;
-  color: var(--ink);
 }
 
-.batch-control h4 {
+.map-control h4 {
   margin: 0 0 6px;
   font-size: 0.8rem;
   font-weight: 600;
+}
+
+/* Leaflet's overlay rows -> the batch rows' inline layout (checkbox + swatchless
+   label). Only Leaflet controls carry .leaflet-control-layers, so the batch rows
+   (styled by .batch-row) are untouched. */
+.map-control.leaflet-control-layers label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.6;
+  margin: 0;
+}
+.map-control.leaflet-control-layers label > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* The rule between base-layer radios (shadings) and overlay checkboxes, matched
+   to the Instruments control's .batch-divider. */
+.map-control .leaflet-control-layers-separator {
+  border-top: 1px solid #d8e0e8;
+  margin: 6px 0;
 }
 
 .batch-row {
