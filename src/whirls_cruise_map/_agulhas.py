@@ -4,8 +4,9 @@ The South African Agulhas II is the cruise's second vessel. Unlike the Marion
 Dufresne — served live to the browser from the CORS-open Flotte Océanographique
 Française API (see docs/ship.md) — the Agulhas is published as a CSV on IPSL's
 THREDDS fileServer, which sends no ``Access-Control-Allow-Origin`` header. A
-browser therefore cannot read it cross-origin, so it is fetched here at build
-time and baked into ``site/data/agulhas.json`` for the client to load
+browser therefore cannot read it cross-origin, so it is fetched server-side at
+ingest time — published cleaned to ``data/ship_agulhas_ii.csv`` and, by the
+derive stage, baked into the map's ``agulhas.json`` for the client to load
 same-origin.
 
 The CSV is itself an hourly scrape of myshiptracking.com (its ``source_url`` /
@@ -50,38 +51,44 @@ def _float_or_none(raw: str | None) -> float | None:
         return None
 
 
-def fetch_positions() -> list[dict]:
-    """Time-sorted Agulhas fixes; ``[]`` on any failure.
+def fetch_raw() -> str | None:
+    """The Agulhas positions CSV text as fetched; ``None`` on any failure.
+
+    Kept separate from :func:`parse` so ingest can publish the untouched source
+    (``data/raw/agulhas_ii.csv``) before parsing it.
+    """
+    try:
+        with urllib.request.urlopen(CSV_URL, timeout=30) as resp:
+            return resp.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def parse(text: str) -> list[dict]:
+    """Parse the positions CSV text into time-sorted Agulhas fixes.
 
     Each fix is a dict shaped like the live MD API's array elements so the client
     ship renderer consumes both without conversion:
     ``{date, lat, lon, speed_kn, course_deg, status, area}`` — ``date`` an
     ISO-8601 UTC ``…Z`` string, ``speed_kn``/``course_deg`` ``float | None``.
+    Per-row garbage is skipped via :func:`_parse_time` / :func:`_float_or_none`.
     """
-    # One try/except around the whole fetch+parse so the contract holds: a dead
-    # host, a decode error, or a malformed CSV all yield [] rather than raising.
-    # (Per-row garbage is already skipped below via _parse_time/_float_or_none.)
-    try:
-        with urllib.request.urlopen(CSV_URL, timeout=30) as resp:
-            text = resp.read().decode("utf-8", "replace")
-        fixes = []
-        for row in csv.DictReader(text.splitlines()):
-            t = _parse_time(row.get("reported_at", ""))
-            lat, lon = _float_or_none(row.get("lat")), _float_or_none(row.get("lon"))
-            if t is None or lat is None or lon is None:
-                continue
-            fixes.append(
-                {
-                    "date": t.isoformat().replace("+00:00", "Z"),
-                    "lat": lat,
-                    "lon": lon,
-                    "speed_kn": _float_or_none(row.get("speed_kn")),
-                    "course_deg": _float_or_none(row.get("course_deg")),
-                    "status": (row.get("status") or "").strip() or None,
-                    "area": (row.get("area") or "").strip() or None,
-                }
-            )
-    except Exception:
-        return []
+    fixes = []
+    for row in csv.DictReader(text.splitlines()):
+        t = _parse_time(row.get("reported_at", ""))
+        lat, lon = _float_or_none(row.get("lat")), _float_or_none(row.get("lon"))
+        if t is None or lat is None or lon is None:
+            continue
+        fixes.append(
+            {
+                "date": t.isoformat().replace("+00:00", "Z"),
+                "lat": lat,
+                "lon": lon,
+                "speed_kn": _float_or_none(row.get("speed_kn")),
+                "course_deg": _float_or_none(row.get("course_deg")),
+                "status": (row.get("status") or "").strip() or None,
+                "area": (row.get("area") or "").strip() or None,
+            }
+        )
     fixes.sort(key=lambda f: f["date"])
     return fixes

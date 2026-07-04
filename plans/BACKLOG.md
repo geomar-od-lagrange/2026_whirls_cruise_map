@@ -4,6 +4,9 @@ Unscheduled ideas, not yet promoted to a plan.
 
 - **Track DB parquet cache** — persist the derived `(D_number, date_UTC)` table
   and ingest only new snapshots, if full re-read from the share gets slow.
+  *Largely subsumed by [018](done/018-ingest-derive-data-seam.md)*: the ingest→derive
+  seam persists the cleaned tracks (as CSV, not parquet), which is the
+  persistence this wanted; parquet stays a deferred efficiency companion there.
 - **Track thinning** — simplify/decimate dense trajectories (the ship's 10-min
   grid, ≤5 min drifter snapshots over weeks) for rendering performance, now that
   every fix draws a dot.
@@ -13,7 +16,10 @@ Unscheduled ideas, not yet promoted to a plan.
   D-612 with 4 each, per the 2026-07-03 inertial survey). The build currently
   ingests them raw into tracks, markers, and the derived popup speeds. A
   despike in `_clean.py` — e.g. flag a fix whose implied speed exceeds a
-  threshold on **both** adjacent segments — would clean tracks and popups.
+  threshold on **both** adjacent segments — would clean tracks and popups. Under
+  [018](done/018-ingest-derive-data-seam.md) this becomes a *visible* ingest step,
+  reflected in the published `drifters.csv` (a `despiked` flag or documented
+  drop) rather than an invisible in-memory filter.
 - **Awaiting-first-fix view** — surface staged-but-not-yet-transmitting drifters.
 - **Currents bbox auto-fit** — track the drifter cloud instead of a fixed box.
 - **Time scrubber** — animate positions/tracks over time.

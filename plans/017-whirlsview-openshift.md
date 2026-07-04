@@ -167,13 +167,15 @@ backend, and `/` still needs its own Route. More moving parts, no upside here.
   deliberate image builds and data is pure cron output (exactly the prep
   image/PVC split). Fed by the two CronJobs above.
 - **`/data` (cleaned datasets)** — `ubi9/nginx-124` with `autoindex on` over a
-  PVC directory of aggregated/cleaned drifter+glider exports (CSV/Parquet/GeoJSON
-  + a small generated `manifest.json`). These are a **product of the same
-  pipeline** (`_clean.tracks` etc. already derive the tables), so the natural
-  move is to have the **fast/slow builder also emit exports** into this dir
-  rather than stand up a separate producer. Could even be the same nginx pod as
-  `/map` serving a second docroot subtree; keep it a separate Service only if the
-  access pattern or retention differs.
+  PVC directory of aggregated/cleaned drifter+glider exports (CSV + a small
+  generated `manifest.json`). **[018](done/018-ingest-derive-data-seam.md) revises the
+  producer story**: `/data` is not merely "the builder *also* emits exports" — it
+  is the pipeline's **durable seam**, the cleaned tracks that the **ingest** stage
+  writes and the **derive** stage reads back to build the map. So the exports are
+  the substrate, not a side-emission; see 018 for the CSV schema, the
+  ingest/derive split, and the cleaning-auditability rationale. Could even be the
+  same nginx pod as `/map` serving a second docroot subtree; keep it a separate
+  Service only if the access pattern or retention differs.
 
 ### Shared storage — CronJobs write, nginx reads
 
@@ -198,18 +200,23 @@ The `/archetypes` viewer keeps its own separate HPC-pushed PVC; don't co-mingle.
 
 ## Code changes this needs in *this* repo
 
-Small, and in keeping with the greenfield/reshape ethos in `AGENTS.md`:
+Small, and in keeping with the greenfield/reshape ethos in `AGENTS.md`. Items
+1–4 are the producer refactor; **[018](done/018-ingest-derive-data-seam.md) owns
+their design** (the ingest/derive split, `_data.py` seam I/O, the `/data` CSV
+schema, `docs/data.md`) — this list is the summary, 018 is the spec:
 
-1. **Configurable output dir** — `build.py`'s `SITE_DATA` is hardcoded to
-   `site/data`; make it an env/arg (`--out` / `WHIRLS_SITE_DATA`) so a CronJob
-   writes to the PVC mount.
-2. **Fast/slow selector** — factor `main()` into independently-runnable steps
-   with a tier switch (`--tier fast|slow`, or `--layers …`). Keep each step
-   best-effort as today.
-3. **Atomic per-file writes** — `_write_json` / the PNG writes go through
-   `*.tmp` + `os.replace`.
-4. **Dataset-export step** — a build step that writes the aggregated/cleaned
-   drifter+glider tables + a `manifest.json` into the `/data` docroot subtree.
+1. **Configurable output dirs** — `build.py`'s `SITE_DATA` is hardcoded to
+   `site/data`; make the map root *and* the new `/data` root env/args (`--out` /
+   `WHIRLS_SITE_DATA`, `WHIRLS_DATA`) so a CronJob writes to the PVC mounts.
+2. **Stage + tier selector** — factor `main()` into `ingest` / `derive` with a
+   tier switch (`--stage ingest`, `--stage derive --tier fast|slow`). Keep each
+   step best-effort as today. Note 018 re-cuts this tier table into
+   ingest / derive-fast (egress-free) / derive-slow (CMEMS).
+3. **Atomic per-file writes** — `_write_json` / the PNG / CSV writes go through
+   `*.tmp` + `os.replace`; under 018 this also guards the seam derive reads.
+4. **Dataset-export = ingest** — the cleaned drifter+glider+ship track CSVs +
+   `manifest.json` in `/data` are not a separate export step but the **ingest
+   stage's** output, which derive then consumes (018).
 5. **`deploy/` dir** (mirrors the prep repo's `deploy/<app>/` convention):
    `deploy/map/` (viewer Dockerfile off `ubi9/nginx-124`, nginx conf, manifest),
    `deploy/builder/` (Dockerfile baking the `pixi.lock` env + `src/` so the
@@ -258,6 +265,12 @@ Today the map ships via GitLab Pages ([docs/deploy.md](../docs/deploy.md)).
 a replacement. OpenShift adds a reliable sub-hourly cron and co-location with the
 archetypes viewer + datasets under one hostname. Revisit retiring Pages once
 whirlsview is proven; no decision forced now.
+
+**Pages adopts the split now.** Rather than staying at `/`, the Pages deploy
+takes the same browser-facing layout as this gateway — `/map/`, a sibling
+`/data/`, and `/`→`/map/` — per [018](done/018-ingest-derive-data-seam.md). Because the
+client is all-relative, that is a pure layout move, and it **de-risks this
+gateway**: the identical path shape runs on Pages before the cluster exists.
 
 ## Decisions locked (2026-07-04)
 

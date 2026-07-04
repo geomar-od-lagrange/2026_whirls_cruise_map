@@ -14,7 +14,7 @@ That fork is the central design fact here, so it comes first.
 |---|---|---|
 | Source | Flotte Océanographique Française localisation API (JSON) | IPSL WHIRLS THREDDS `agulhas_positions.csv` |
 | CORS | open (`Access-Control-Allow-Origin: *`) | **none** — no `Access-Control-Allow-Origin` header |
-| Fetched | **live in `app.js`**, polled every 5 min | **baked** into `site/data/agulhas.json` by the build |
+| Fetched | **live in `app.js`**, polled every 5 min | **baked** into `site/map/data/agulhas.json` by derive (also published cleaned at `/data/ship_agulhas_ii.csv` by ingest, see [data.md](data.md)) |
 | Cadence | ~10-min fixes, near-real-time | hourly scrape of myshiptracking.com |
 | Motion | **derived** client-side (API reports none) | **reported** (speed/course in the CSV) |
 | Extra fields | met (sea/air temp, pressure, wind) | status (moving/stopped), area |
@@ -26,8 +26,9 @@ the Marion Dufresne can be a **live** layer that stays current between rebuilds.
 The THREDDS fileServer sends `Access-Control-Allow-Methods`/`-Headers` but **not**
 `-Allow-Origin`, so the browser cannot read the Agulhas CSV directly. It is
 therefore fetched **server-side by the Python build** (which has no CORS
-constraint) and written to `site/data/agulhas.json`, which the client then loads
-same-origin like every other build artifact.
+constraint), published cleaned at `/data/ship_agulhas_ii.csv` by ingest, and
+read back and written to `site/map/data/agulhas.json` by derive, which the
+client then loads same-origin like every other map artifact.
 
 Baking costs little freshness here: the CSV is itself an **hourly scrape** of
 myshiptracking.com (its `source_url` / `scraped_at_utc` columns), not a realtime
@@ -118,8 +119,8 @@ deferred.
 
 ### Why client-side and live
 
-Every other layer on this map is a build artifact written into `site/data/` by
-the Python build. The Marion Dufresne is the deliberate exception — it is fetched
+Every other layer on this map is a build artifact written into `site/map/data/`
+by derive. The Marion Dufresne is the deliberate exception — it is fetched
 **live in `app.js`**, not baked at build time.
 
 The reason is freshness under the intended hosting. The site is a static bundle
@@ -147,9 +148,10 @@ advancing — it never throws and never blanks the map.
 
 ### Also fetched at build time, for deployment detection
 
-Separately from the live client layer, the **build** pulls a one-shot snapshot of
-the Marion Dufresne track (`_ship.fetch_track`) to detect where each drifter
-detached from the vessel and truncate its trajectory there (see
+Separately from the live client layer, the **build**'s ingest stage pulls a
+one-shot snapshot of the Marion Dufresne track (`_ship.fetch_raw` + `_ship.parse`;
+the raw JSON is also archived to `data/raw/marion_dufresne.json`) to detect where
+each drifter detached from the vessel and truncate its trajectory there (see
 [trajectories.md](trajectories.md)). This is a historical computation — the
 detachment already happened — so a build-time snapshot is right, and it is
 best-effort: a failed fetch just skips truncation (full tracks). Drifters detach
@@ -181,10 +183,12 @@ scraped_at_utc,reported_at,lat,lon,speed_kn,course_deg,status,area,source_url
 - There is **no met data** — the underway readout the Marion Dufresne panel shows
   has no Agulhas equivalent.
 
-`_agulhas.fetch_positions()` fetches and parses the CSV server-side in the build
-(best-effort, like the gliders: any failure yields `[]` and the map simply omits
-the vessel), and `build.py` writes the result to `site/data/agulhas.json`. That
-artifact is a **plain JSON array of fix objects** deliberately shaped like the
+`_agulhas.fetch_raw()` / `_agulhas.parse()` fetch and parse the CSV server-side
+in ingest (best-effort, like the gliders: any failure yields no fixes and the
+map simply omits the vessel), which writes the cleaned result to
+`/data/ship_agulhas_ii.csv` (see [data.md](data.md)); derive then reads that
+table back and writes `site/map/data/agulhas.json`. That artifact is a **plain
+JSON array of fix objects** deliberately shaped like the
 live FOF API's array (`{date, lat, lon, …}`), so the client's ship renderer
 consumes both with no conversion. An empty result still writes `[]`, keeping the
 client's optional fetch uniform.

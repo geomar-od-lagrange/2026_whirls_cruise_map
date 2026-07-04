@@ -1,0 +1,4 @@
+# GitLab Pages redirects (Netlify-style).
+# The site serves the map at /map/ and the dataset downloads at /data/; the root
+# is just an entry point, so send it to the map. See plans/018-*.md.
+/    /map/    302

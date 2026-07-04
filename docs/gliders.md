@@ -27,11 +27,11 @@ one `*_track.csv` per platform, served from `fileServer`:
 - XSPAR — `…/catalog/WHIRLS/OBSERVATIONS/GLIDERS/XSPAR/catalog.xml`
 - Seagliders — `…/catalog/WHIRLS/OBSERVATIONS/GLIDERS/SEAGLIDERS/catalog.xml`
 
-`_gliders.fetch_gliders()` **auto-discovers** every CSV: it reads each catalog,
+`_gliders.fetch_sources()` **auto-discovers** every CSV: it reads each catalog,
 takes every `<dataset>` whose `urlPath` ends `.csv`, and downloads it from
-`…/thredds/fileServer/<urlPath>`. A new platform (another seaglider, a second
-XSPAR) therefore appears with **no code change** — it is picked up from the
-catalog on the next build.
+`…/thredds/fileServer/<urlPath>` (`parse_source` then parses each into a track).
+A new platform (another seaglider, a second XSPAR) therefore appears with **no
+code change** — it is picked up from the catalog on the next build.
 
 ### CSV quirks — parsed by header name and detected time format
 

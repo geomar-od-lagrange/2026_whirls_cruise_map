@@ -7,7 +7,9 @@ __pycache__/
 .ruff_cache/
 .ipynb_checkpoints/
 
-# generated site artifacts (rebuilt from the share each run)
+# generated artifacts (rebuilt from live sources each run):
+# the map's derived layers (derive stage) and the dataset downloads (ingest stage)
+site/map/data/
 site/data/
 
 # intermediate downloads

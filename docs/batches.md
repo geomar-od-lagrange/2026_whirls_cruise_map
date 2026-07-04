@@ -16,10 +16,10 @@ drifters move to deployment batches as they go overboard.
 The *assignment* of drifters to deployment batches lives in
 `src/whirls_cruise_map/deployments.json` — a `batch → [D_number, …]` roster
 curated per deployment. `_clean.load_deployments()` inverts it to a
-`D_number → batch` map and `load_raw` stamps every fix accordingly; any drifter
-absent from the roster stays `pre_deploy`. Assignment is per drifter (the whole
-track), so a deployment batch also covers the drifter's transit leg from port —
-the batch is an identity of the drifter set, not a per-fix state.
+`D_number → batch` map and `_clean.clean` stamps every fix accordingly; any
+drifter absent from the roster stays `pre_deploy`. Assignment is per drifter
+(the whole track), so a deployment batch also covers the drifter's transit leg
+from port — the batch is an identity of the drifter set, not a per-fix state.
 
 A drifter joins a deployment batch once it is confirmed in the water and
 drifting freely — not merely because it has a recent fix. Adding a deployment is

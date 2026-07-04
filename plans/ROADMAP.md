@@ -109,3 +109,15 @@ move to `done/` and gain a `docs/` counterpart.
     nginx fronts one Route (`/`→`/map/`), with auth kept only on `/archetypes` and
     `/map`+`/data` public; TLS/DNS owned by the OC admins. Stays a two-repo split
     by lineage (map here, viewer in prep). **Exploration only — not yet acted on.**
+19. [Ingest → derive: the `/data` seam](done/018-ingest-derive-data-seam.md) — the
+    pipeline-internals counterpart to 18. Split `build.py` into **ingest** (fetch
+    + clean all instrument/ship tracks into human-inspectable **CSVs** under
+    `/data/`) and **derive** (read those tables back to build the map GeoJSON and
+    the CMEMS overlays). `/data` becomes the durable **seam** — download product
+    *and* build input at once — which re-cuts 18's fast/slow tiers into
+    ingest / derive-fast (egress-free) / derive-slow (CMEMS). Subsumes the
+    backlog "Track DB parquet cache"; gives "GPS despike at ingestion" a visible
+    home. **Done** ([docs/data.md](../docs/data.md), [docs/deploy.md](../docs/deploy.md)):
+    the map now serves at `/map/` (root redirects there) with cleaned + raw
+    dataset CSVs published at `/data/`. OpenShift consumption (CronJobs, `/data`
+    backend) stays with 18.

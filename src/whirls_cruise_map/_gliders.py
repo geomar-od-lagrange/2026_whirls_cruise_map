@@ -137,13 +137,25 @@ def _parse_csv(text: str) -> list[tuple[datetime, float, float]]:
     return fixes
 
 
-def fetch_gliders() -> list[Platform]:
-    """Every glider platform with at least one fix; ``[]`` on total failure.
+class Source(NamedTuple):
+    """One glider platform's track CSV as fetched: ``id`` (from the filename),
+    ``type`` (``"xspar"`` / ``"seaglider"``), and the raw CSV ``text``. Kept
+    separate from :class:`Platform` so ingest can publish the untouched source
+    (``data/raw/gliders/<id>.csv``) before parsing it."""
 
-    Each catalog and each CSV is fetched independently so one dead platform
-    can't suppress the rest.
+    id: str
+    type: str
+    text: str
+
+
+def fetch_sources() -> list[Source]:
+    """Every discovered platform track CSV, downloaded but not parsed; ``[]`` on
+    total failure.
+
+    Each catalog and each CSV is fetched independently so one dead platform can't
+    suppress the rest.
     """
-    platforms = []
+    sources = []
     for gtype, catalog_url in _GROUPS:
         try:
             datasets = _csv_datasets(_get(catalog_url))
@@ -151,9 +163,15 @@ def fetch_gliders() -> list[Platform]:
             continue
         for pid, csv_url in datasets:
             try:
-                fixes = _parse_csv(_get(csv_url))
+                text = _get(csv_url)
             except Exception:
                 continue
-            if fixes:
-                platforms.append(Platform(pid, gtype, fixes))
-    return platforms
+            sources.append(Source(pid, gtype, text))
+    return sources
+
+
+def parse_source(src: Source) -> Platform | None:
+    """Parse one :class:`Source` into a :class:`Platform`; ``None`` if it has no
+    usable fix."""
+    fixes = _parse_csv(src.text)
+    return Platform(src.id, src.type, fixes) if fixes else None

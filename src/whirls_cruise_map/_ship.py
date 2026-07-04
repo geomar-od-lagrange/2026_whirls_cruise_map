@@ -31,19 +31,35 @@ def _parse_time(s: str) -> datetime | None:
         return None
 
 
-def fetch_track() -> list[tuple[datetime, float, float]]:
-    """Time-sorted ``(time, lat, lon)`` vessel fixes; ``[]`` on any failure."""
+def fetch_raw() -> str | None:
+    """The FOF positions API response text over the track window; ``None`` on any
+    failure.
+
+    Kept separate from :func:`parse` so ingest can publish the untouched source
+    (``data/raw/marion_dufresne.json``) before parsing it.
+    """
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     url = f"{POSITIONS_URL}?startDate={TRACK_START}&endDate={now}"
     try:
         with urllib.request.urlopen(url, timeout=30) as resp:
-            raw = json.load(resp)
+            return resp.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def parse(text: str) -> list[tuple[datetime, float, float]]:
+    """Parse the positions API response into time-sorted ``(time, lat, lon)``
+    vessel fixes; ``[]`` on a decode error or an unexpected shape."""
+    try:
+        raw = json.loads(text)
     except Exception:
         return []
     if not isinstance(raw, list):
         return []
     fixes = []
     for p in raw:
+        if not isinstance(p, dict):
+            continue  # a well-formed JSON list of non-objects must not raise
         t = _parse_time(p.get("date", ""))
         lat, lon = p.get("lat"), p.get("lon")
         if t is not None and isinstance(lat, (int, float)) and isinstance(
