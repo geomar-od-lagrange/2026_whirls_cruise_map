@@ -99,3 +99,13 @@ move to `done/` and gain a `docs/` counterpart.
     speed shading, so cyclonic (+) / anticyclonic (−) eddies read as opposite-signed
     lobes. Signed field → diverging map + symmetric legend; off by default. **Done**
     ([docs/vorticity.md](../docs/vorticity.md)).
+18. [whirlsview.geomar.de on OpenShift](017-whirlsview-openshift.md) — host the
+    archetypes viewer (`/archetypes`), this repo's map (`/map`), and cleaned
+    drifter/glider dataset downloads (`/data`) under one hostname on the same
+    cluster as `2026_whirls_cruise_prep`, borrowing its `deploy/viewer/` pattern.
+    Net-new vs. that pattern: in-cluster **CronJob** rebuilds on a **fast**
+    (positions/tracks/gliders/Agulhas, ~10 min, no creds) and **slow** (CMEMS
+    overlays, ~6 h, needs Copernicus login) tier; a small unauthenticated gateway
+    nginx fronts one Route (`/`→`/map/`), with auth kept only on `/archetypes` and
+    `/map`+`/data` public; TLS/DNS owned by the OC admins. Stays a two-repo split
+    by lineage (map here, viewer in prep). **Exploration only — not yet acted on.**
