@@ -22,6 +22,8 @@ const DATA = {
   currents: "./data/currents.json",
   meta: "./data/currents_meta.json",
   speed: "./data/speed.png",
+  vorticity: "./data/vorticity.png",
+  vorticityMeta: "./data/vorticity_meta.json",
   inertialField: "./data/inertial_field.json",
   build: "./data/build.json",
   gliders: "./data/gliders.geojson",
@@ -947,6 +949,25 @@ function renderCurrentsInfo(meta) {
     `<span>${meta.vmax.toFixed(2)}</span></div>`;
 }
 
+// Legend for the ζ/f overlay. A local twin of renderCurrentsInfo: the field is
+// signed, so the scale is symmetric (vmin…0…vmax) over a diverging bar, not the
+// 0→vmax speed ramp. vmin is negative; the sign convention (cyclonic +,
+// anticyclonic −) is stated in the panel's static hint.
+function renderVorticityInfo(meta) {
+  const legendEl = document.getElementById("vorticity-legend");
+  if (!legendEl) return;
+  if (!meta) {
+    legendEl.innerHTML = "";
+    return;
+  }
+  const gradient = meta.colorbar.join(", ");
+  legendEl.innerHTML =
+    `<div class="legend-bar" style="background:linear-gradient(to right, ${gradient})"></div>` +
+    `<div class="legend-scale"><span>${meta.vmin.toFixed(2)}</span>` +
+    `<span>${meta.units}</span>` +
+    `<span>+${meta.vmax.toFixed(2)}</span></div>`;
+}
+
 // Renderer for the combined forecast+hindcast sidebar panel. Both advect through
 // the same time-dependent hourly field and share every caveat (spelled out in the
 // panel's static note), so one status line covers them. valid_time (the t=0 the
@@ -1306,9 +1327,11 @@ async function main() {
     map.fitBounds(bounds, { padding: [40, 40], maxZoom: 9 });
   }
 
-  // Surface currents, from one CMEMS field: speed shading + flow trails.
+  // Surface currents, from one CMEMS field: speed shading + flow trails, plus the
+  // ζ/f vorticity diagnostic derived from the same field.
   const meta = await fetchJSON(DATA.meta, { optional: true });
   const currents = await fetchJSON(DATA.currents, { optional: true });
+  const vorticityMeta = await fetchJSON(DATA.vorticityMeta, { optional: true });
   const inertialField = await fetchJSON(DATA.inertialField, { optional: true });
 
   // Speed shading: a Mercator-warped PNG in the bottom data pane. The PNG is at
@@ -1325,6 +1348,20 @@ async function main() {
     overlays["Current speed"] = speedLayer;
   }
   renderCurrentsInfo(meta);
+
+  // Vorticity ζ/f: a second Mercator-warped raster in the same shading pane,
+  // derived from the same field. Default OFF (never addTo(map)d) so speed stays
+  // the shown shading. The two are independent checkboxes, not a mutual toggle —
+  // enabling both stacks ζ/f (opacity 0.85) over speed in the shared pane.
+  if (vorticityMeta && vorticityMeta.bounds) {
+    const vorticityLayer = L.imageOverlay(DATA.vorticity, vorticityMeta.bounds, {
+      pane: "shading",
+      opacity: 0.85,
+      className: "crisp-raster",
+    });
+    overlays["Vorticity ζ/f"] = vorticityLayer;
+  }
+  renderVorticityInfo(vorticityMeta);
 
   // Flow trails: dark->white ramp keyed to speed, so the bright jet pops over the
   // shading. The magnitude is sqrt-compressed server-side so slow eddies animate,

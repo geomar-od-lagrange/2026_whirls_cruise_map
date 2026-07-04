@@ -94,3 +94,8 @@ move to `done/` and gain a `docs/` counterpart.
     spreads ~3× (deployment medians 0.66 / 0.40; phase right) with no driver
     usable at forecast time, so the un-gained field ships and the gain stays a
     parameter defaulting to 1.0 (`_inertial.GAIN`).
+17. [Normalized-vorticity overlay](done/016-vorticity-overlay.md) — a toggleable
+    ζ/f (Rossby number) raster derived from the same single-time CMEMS field as the
+    speed shading, so cyclonic (+) / anticyclonic (−) eddies read as opposite-signed
+    lobes. Signed field → diverging map + symmetric legend; off by default. **Done**
+    ([docs/vorticity.md](../docs/vorticity.md)).

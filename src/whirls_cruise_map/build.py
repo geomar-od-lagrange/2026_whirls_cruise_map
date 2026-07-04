@@ -9,6 +9,8 @@ and writes the JSON the Leaflet site consumes into ``site/data/``:
 - ``currents.json``       coarse leaflet-velocity u/v grid for the flow trails
 - ``speed.png``           near-native CMEMS surface-speed raster (Mercator-warped)
 - ``currents_meta.json``  bounds, vmax, valid-time and colourbar for the client
+- ``vorticity.png``       near-native ζ/f (Rossby number) raster, diverging map
+- ``vorticity_meta.json`` bounds, symmetric vmin/vmax, valid-time and colourbar
 - ``forecast.geojson``    per-drifter current-advection track to +6 h (1/3/6 h marks)
 - ``hindcast.geojson``    per-drifter current-advection back-track to -6 h (1/3/6 h marks)
 - ``inertial_field.json`` per-cell mean/amp/phase grid for the near-inertial animation
@@ -35,6 +37,7 @@ from . import (
     _gliders,
     _inertial,
     _ship,
+    _vorticity,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -136,6 +139,19 @@ def main() -> None:
             print(
                 f"WARNING: currents render failed, skipping currents artifacts: {exc}"
             )
+
+        # Normalized relative vorticity (ζ/f) from the same single-time field: a
+        # third independent best-effort render (see _vorticity / docs/vorticity.md).
+        try:
+            vpng, vmeta = _vorticity.to_vorticity_png(field)
+            (SITE_DATA / "vorticity.png").write_bytes(vpng)
+            _write_json(SITE_DATA / "vorticity_meta.json", vmeta)
+            print(
+                f"wrote vorticity.png (valid {vmeta['valid_time']}, "
+                f"|ζ/f| clip {vmeta['vmax']:.2f})"
+            )
+        except Exception as exc:
+            print(f"WARNING: vorticity render failed, skipping vorticity artifacts: {exc}")
 
     # Time-dependent advection field: a separate hourly CMEMS window (independent of
     # the single-time overlay field above), so the forecast/hindcast particle is

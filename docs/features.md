@@ -11,3 +11,4 @@
 - toggle for a per-instrument current-advection hindcast (solid line back to −6 h, dots at 1/3/6 h)
 - an "Instruments" control to show/hide each drifter batch and each glider platform independently
 - overlay of today's cmems surface currents (analysis / forecast t=0)
+- toggle for a normalized relative-vorticity (ζ/f) overlay from the same field — cyclonic (+) / anticyclonic (−) eddies as opposite-signed lobes (off by default)
