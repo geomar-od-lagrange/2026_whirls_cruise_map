@@ -44,6 +44,7 @@ ship_marion_dufresne.csv   cleaned R/V Marion Dufresne fixes
 ship_agulhas_ii.csv        cleaned R/V S.A. Agulhas II fixes (+ SOG/COG/status/area)
 platforms.csv              one row per platform (batch, deployed_at, coverage)
 manifest.json              file index + per-file provenance + freshness stamp
+index.html                 browsable listing of this directory (human landing)
 raw/drifters_raw.csv       concatenated snapshot CSVs, pre-clean
 raw/gliders/<id>.csv       per-platform track CSV, exactly as fetched
 raw/marion_dufresne.json   FOF positions API response, exactly as fetched

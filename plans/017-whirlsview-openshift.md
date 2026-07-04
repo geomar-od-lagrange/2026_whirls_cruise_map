@@ -166,9 +166,11 @@ backend, and `/` still needs its own Route. More moving parts, no upside here.
   (`index.html`/`app.js`/`style.css`) baked into the image so shell changes are
   deliberate image builds and data is pure cron output (exactly the prep
   image/PVC split). Fed by the two CronJobs above.
-- **`/data` (cleaned datasets)** — `ubi9/nginx-124` with `autoindex on` over a
-  PVC directory of aggregated/cleaned drifter+glider exports (CSV + a small
-  generated `manifest.json`). **[018](done/018-ingest-derive-data-seam.md) revises the
+- **`/data` (cleaned datasets)** — `ubi9/nginx-124` over a PVC directory of
+  aggregated/cleaned drifter+glider exports (CSV + a small generated
+  `manifest.json`). No `autoindex` needed: ingest emits a static `index.html`
+  landing page (so the dir browses identically on GitLab Pages, which has no
+  autoindex, and on nginx, where `index.html` takes precedence). **[018](done/018-ingest-derive-data-seam.md) revises the
   producer story**: `/data` is not merely "the builder *also* emits exports" — it
   is the pipeline's **durable seam**, the cleaned tracks that the **ingest** stage
   writes and the **derive** stage reads back to build the map. So the exports are
@@ -305,7 +307,7 @@ gateway**: the identical path shape runs on Pages before the cluster exists.
 3. **Wire in `/archetypes`** (archetypes Service behind the gateway; it keeps its
    own basic-auth).
 4. **Slow CronJob + CMEMS Secret** — the currents/vorticity/forecast overlays.
-5. **`/data` exports** — dataset-export build step + autoindex backend.
+5. **`/data` exports** — dataset-export build step + static-`index.html` backend.
 6. **Field cache** (forecast option B / ROADMAP #15 Phase 3), if the origin lag
    proves annoying.
 7. **Analysis app** (`/analysis`) when scoped.

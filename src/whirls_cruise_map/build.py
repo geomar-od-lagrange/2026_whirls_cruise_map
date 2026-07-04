@@ -214,8 +214,10 @@ def ingest(data_dir: Path) -> None:
             _platform_records(tracks, awaiting, deploy_starts, gliders, md_track, agulhas),
         )
     )
-    _data.write_manifest(data_dir, entries, _stamp())
-    print(f"ingest: wrote {len(entries)} files to {data_dir}")
+    built_at = _stamp()
+    _data.write_manifest(data_dir, entries, built_at)
+    _data.write_index(data_dir, entries, built_at)
+    print(f"ingest: wrote {len(entries)} files + index.html to {data_dir}")
 
 
 # --------------------------------------------------------------------------- #

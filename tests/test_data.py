@@ -294,3 +294,29 @@ def test_write_manifest_is_valid_json(tmp_path):
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["built_at"] == "2026-07-04T12:00:00Z"
     assert manifest["files"] == entries
+
+
+# --------------------------------------------------------------------------- #
+# 9. browsable /data index (GitLab Pages / nginx don't autoindex)
+# --------------------------------------------------------------------------- #
+def test_write_index_lists_files(tmp_path):
+    entry = _data.write_drifters(tmp_path, _tracks_df())  # a real file for the size
+    entries = [
+        entry,
+        {"name": "raw/agulhas_ii.csv", "kind": "raw", "source": "http://ipsl/agulhas"},
+    ]
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "raw" / "agulhas_ii.csv").write_text("reported_at,lat,lon\n")
+
+    _data.write_index(tmp_path, entries, "2026-07-04T12:00:00Z")
+
+    html = (tmp_path / "index.html").read_text()
+    # File links present, grouped, with the build stamp interpolated…
+    assert '<a href="drifters.csv">drifters.csv</a>' in html
+    assert '<a href="raw/agulhas_ii.csv">raw/agulhas_ii.csv</a>' in html
+    assert "Built 2026-07-04T12:00:00Z" in html
+    # …and the CSS braces survived (regression: must use str.replace, not
+    # str.format, which would choke on the literal `{}` in the stylesheet).
+    assert "__BUILT_AT__" not in html and "{built_at}" not in html
+    assert "color-scheme" in html
+    assert _no_tmp_files(tmp_path)

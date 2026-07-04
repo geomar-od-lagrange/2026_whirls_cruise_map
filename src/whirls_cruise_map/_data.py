@@ -196,6 +196,72 @@ def write_manifest(data_dir: Path, entries: list[dict], built_at: str) -> None:
     atomic_write_text(data_dir / "manifest.json", json.dumps(manifest, indent=2))
 
 
+def _human_size(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB"):
+        if size < 1024:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
+_INDEX_HEAD = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2026 Whirls Cruise — datasets</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 60rem; margin: 2rem auto;
+         padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  p { color: #555; } @media (prefers-color-scheme: dark) { p { color: #aaa; } }
+  a { color: #2563eb; } @media (prefers-color-scheme: dark) { a { color: #7aa7ff; } }
+  table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+  th, td { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid #8883; }
+  th { font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  code, td:first-child a { font-family: ui-monospace, monospace; }
+  .stamp { font-size: .85rem; }
+</style>
+</head>
+<body>
+<h1>2026 Whirls Cruise — datasets</h1>
+<p>Cleaned and raw drifter, glider, and ship tracks, rebuilt from live upstreams.
+See the <a href="../map/">map</a>, or <a href="manifest.json">manifest.json</a> for
+the machine-readable index (per-file columns and provenance).</p>
+<p class="stamp">Built __BUILT_AT__</p>
+<table>
+<thead><tr><th>File</th><th>Kind</th><th class="num">Rows</th><th class="num">Size</th><th>Source</th></tr></thead>
+<tbody>
+"""
+
+_INDEX_TAIL = "</tbody>\n</table>\n</body>\n</html>\n"
+
+
+def write_index(data_dir: Path, entries: list[dict], built_at: str) -> None:
+    """A browsable ``index.html`` landing page listing every ``/data`` file
+    (GitLab Pages and nginx serve it for a bare directory request; neither
+    autoindexes). Built from the same ``entries`` as :func:`write_manifest`,
+    grouped cleaned → metadata → raw."""
+    order = {"cleaned": 0, "metadata": 1, "raw": 2}
+    rows = []
+    for e in sorted(entries, key=lambda e: (order.get(e["kind"], 9), e["name"])):
+        path = data_dir / e["name"]
+        size = _human_size(path.stat().st_size) if path.exists() else "—"
+        nrows = f"{e['rows']:,}" if "rows" in e else "—"
+        source = f'<a href="{e["source"]}">source</a>' if e.get("source") else "—"
+        rows.append(
+            f'<tr><td><a href="{e["name"]}">{e["name"]}</a></td>'
+            f'<td>{e["kind"]}</td><td class="num">{nrows}</td>'
+            f'<td class="num">{size}</td><td>{source}</td></tr>'
+        )
+    # str.replace, not str.format — the embedded CSS is full of literal `{}`.
+    head = _INDEX_HEAD.replace("__BUILT_AT__", built_at)
+    atomic_write_text(data_dir / "index.html", head + "\n".join(rows) + _INDEX_TAIL)
+
+
 # --------------------------------------------------------------------------- #
 # read side (derive) — reconstruct the shapes derive consumers expect
 # --------------------------------------------------------------------------- #
