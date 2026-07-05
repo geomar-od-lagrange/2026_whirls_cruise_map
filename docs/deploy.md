@@ -3,20 +3,23 @@
 The site is a static bundle (`site/`) served by **GitLab Pages** on
 `git.geomar.de`, rebuilt and redeployed by `.gitlab-ci.yml`.
 
-The published tree has two public paths: the Leaflet map at `/map/` and the
-cleaned dataset downloads at `/data/` (see [data.md](data.md) for what's in the
-latter). `/` itself is just an entry point — a GitLab Pages `_redirects` rule
-(`site/_redirects`) sends it to `/map/` with a 302. A root `index.html` with a
-`<meta http-equiv="refresh">` is the belt-and-suspenders fallback: it's what
-lands you on the map if `_redirects` isn't honoured, and it's also what makes
-local `python -m http.server` (which doesn't process `_redirects`) land on
-`/map/` too.
+The published tree has two public paths: the Leaflet map at `map/` and the
+cleaned dataset downloads at `data/` (see [data.md](data.md) for what's in the
+latter). The root is just an entry point — a root `index.html` whose **relative**
+`<meta http-equiv="refresh" content="0; url=./map/">` sends it to the map. The
+redirect is deliberately client-side and relative rather than a GitLab Pages
+`_redirects` rule: a `_redirects` target resolves from the domain root, so a
+`/map/` there breaks the moment the site is served under a namespace subpath
+(`…/<project>/`, the live layout — see "Serving under a subpath"). A relative
+`./map/` resolves against whatever base the page is served under — subpath,
+domain root, or a local `python -m http.server` — so one mechanism covers all
+three.
 
 ## Why the build runs in CI, not just a file copy
 
 Both generated trees are **git-ignored** — the committed `site/` carries only
-`site/map/{index.html,app.js,style.css}`, `site/index.html`, and
-`site/_redirects`, never the derived data. So Pages cannot publish a pre-built
+`site/map/{index.html,app.js,style.css}` and `site/index.html`, never the
+derived data. So Pages cannot publish a pre-built
 folder; it would ship a dataless map and an empty downloads page. The `pages`
 job therefore runs the Python build (`pixi run build`, i.e.
 `python -m whirls_cruise_map.build`) on the runner to regenerate both trees
@@ -100,18 +103,31 @@ drifter share is public and needs no secrets.
 
 ## Serving under a subpath
 
-GitLab Pages serves the project under a path (e.g. `…/2026_whirls_cruise_map/`),
-not a domain root. The map is written to work there: every asset and data
-reference in `site/map/index.html` and `site/map/app.js` is **relative**
-(`./style.css`, `./app.js`, `./data/…`), and the external resources (Leaflet
-CDN, basemap tiles, the vessel API) are absolute HTTPS.
+The site is served at a **namespace subpath**,
+`https://<namespace>.pages.geomar.de/<project>/` (currently
+`https://willi-rath.pages.geomar.de/2026_whirls_cruise_map/`), not a domain root.
+This is deliberate: the project's **"Use unique domain" Pages setting is off**, so
+the URL is the stable, human-legible namespace path rather than a random-hash
+host — and **HTTPS enforcement is off**, so the same content is reachable over
+plain `http://` as well. Both were turned off for the at-sea case: a research
+vessel's network was resetting TLS connections to the random unique-domain host
+by its SNI, and a plain-HTTP fetch (no TLS, no SNI) sails past that filter (see
+the low-bandwidth notes in `plans/`). The trade-off is that everything must work
+under a subpath.
 
-Keep new references in the map relative. This now matters for a second reason
-beyond the subpath: an absolute `/data/…` reference from the map would not 404
-— it would silently resolve to the *download* tree (`site/data/`, the cleaned
-CSVs), a different directory with different contents from the map's own
-`site/map/data/` (GeoJSON/PNG). The map must reach its own data via the
-relative `./data/…`, never the top-level `/data/…`.
+The map is written to: every asset and data reference in `site/map/index.html`
+and `site/map/app.js` is **relative** (`./style.css`, `./app.js`, `./data/…`),
+and the external resources (Leaflet CDN, basemap tiles, the vessel API) are
+absolute HTTPS. The root redirect follows the same rule — the relative `./map/`
+meta-refresh in `site/index.html`, never a domain-absolute `_redirects` target
+(see "Why the build runs in CI" above).
+
+Keep new references in the map relative. This matters for a second reason beyond
+the subpath: an absolute `/data/…` reference from the map would not 404 — it
+would silently resolve to the *download* tree (`site/data/`, the cleaned CSVs), a
+different directory with different contents from the map's own `site/map/data/`
+(GeoJSON/PNG). The map must reach its own data via the relative `./data/…`, never
+the top-level `/data/…`.
 
 ## Code mirror
 

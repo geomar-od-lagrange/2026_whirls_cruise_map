@@ -1,7 +1,9 @@
 # GitLab CI — build the static cruise map and publish it to GitLab Pages.
 #
 # The site serves the map at /map/ and the cleaned dataset downloads at /data/,
-# with / redirecting to /map/ (site/_redirects). The build regenerates both
+# with the root redirecting to the map via a relative meta-refresh in
+# site/index.html (no _redirects: its target is domain-absolute and breaks under
+# the namespace subpath the site is served at). The build regenerates both
 # git-ignored trees from live sources each run — site/data/ (ingest: cleaned +
 # raw CSVs) and site/map/data/ (derive: the map's GeoJSON/PNG) — so the build
 # MUST run in CI; a plain file copy would publish a dataless map.

@@ -1,10 +1,13 @@
 <!doctype html>
 <!--
-  Root entry point. The map lives at /map/ and the dataset downloads at /data/.
-  GitLab Pages redirects / -> /map/ via the sibling `_redirects` file (a clean
-  302); this meta-refresh is the belt-and-suspenders fallback and also makes the
-  local `python -m http.server` dev server (which ignores `_redirects`) land on
-  the map. See plans/018-ingest-derive-data-seam.md.
+  Root entry point. The map lives at ./map/ and the dataset downloads at ./data/.
+  The relative meta-refresh below is the sole redirect to the map. Because it is
+  relative it resolves against whatever base the site is served under, so it works
+  at a namespace subpath (…/<project>/, the live GitLab Pages layout), at a domain
+  root, and under a plain local `python -m http.server`. We deliberately avoid a
+  GitLab Pages `_redirects` rule: its target resolves from the domain root, so a
+  `/map/` there breaks the moment the site is served under a subpath. See
+  docs/deploy.md.
 -->
 <html lang="en">
   <head>
