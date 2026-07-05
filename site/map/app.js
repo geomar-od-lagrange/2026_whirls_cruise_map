@@ -122,6 +122,15 @@ const BATCH_LABELS = {
 // they read as "XSPAR buoy" / "Seagliders" / "Floats" in the same compartment.
 const batchLabel = (batch) =>
   BATCH_LABELS[batch] ?? GLIDER_STYLES[batch]?.label ?? batch;
+
+// Instrument row order: alphabetical by key, except the Floats row is pinned to
+// the bottom of the list rather than sorting into the middle on its "f" key.
+const instrumentOrder = (a, b) => {
+  if (a === b) return 0;
+  if (a === "float") return 1;
+  if (b === "float") return -1;
+  return a < b ? -1 : 1;
+};
 // ---------------------------------------------------------------------------
 
 // `optional: true` means "never throws" — it swallows not just HTTP error
@@ -379,7 +388,7 @@ function buildBatchControl(map, markerGroups, overlays) {
     // rows below.
     if (activeOverlays.length) L.DomUtil.create("hr", "batch-divider", div);
 
-    for (const batch of Object.keys(markerGroups).sort()) {
+    for (const batch of Object.keys(markerGroups).sort(instrumentOrder)) {
       const group = markerGroups[batch];
       const row = L.DomUtil.create("label", "batch-row", div);
       const cb = L.DomUtil.create("input", "", row);
