@@ -107,8 +107,11 @@ move to `done/` and gain a `docs/` counterpart.
     (positions/tracks/gliders/Agulhas, ~10 min, no creds) and **slow** (CMEMS
     overlays, ~6 h, needs Copernicus login) tier; a small unauthenticated gateway
     nginx fronts one Route (`/`→`/map/`), with auth kept only on `/archetypes` and
-    `/map`+`/data` public; TLS/DNS owned by the OC admins. Stays a two-repo split
-    by lineage (map here, viewer in prep). **Exploration only — not yet acted on.**
+    `/map`+`/data` public; TLS/DNS owned by the OC admins. **Revised (2026-07-05):
+    the gateway + OpenShift orchestration now live in a dedicated third repo,
+    `oc_gateway`** (`git.geomar.de/2026-whirlscruise-lagrange/oc_gateway`) — map
+    stays here, archetypes in prep — reversing 017's original "keep the gateway as
+    a `deploy/gateway/` subdir here." **Exploration only — not yet acted on.**
 19. [Ingest → derive: the `/data` seam](done/018-ingest-derive-data-seam.md) — the
     pipeline-internals counterpart to 18. Split `build.py` into **ingest** (fetch
     + clean all instrument/ship tracks into human-inspectable **CSVs** under

@@ -15,6 +15,16 @@ as [`2026_whirls_cruise_prep`](https://github.com/geomar-od-lagrange/2026_whirls
 Nothing here is built yet. This records the shape, the trade-offs, and the
 decisions still owed.
 
+> **Update (2026-07-05): the gateway + OpenShift orchestration moved to a
+> dedicated repo.** Everything below about topology, tiers, auth, and TLS still
+> holds — but its *home* is no longer a `deploy/gateway/` subdir here. The
+> gateway, the single Route, the `/`→`/map/` redirect, cross-app NetworkPolicies,
+> and the OpenShift manifest/CronJob wiring now live in
+> [`oc_gateway`](https://git.geomar.de/2026-whirlscruise-lagrange/oc_gateway.git)
+> (`~/src/git.geomar.de/2026-whirlscruise-lagrange/oc_gateway`), whose
+> `plans/001-oc-gateway-and-phasing.md` owns the cross-repo migration and its
+> phase order. See **Repo structure — revised to three repos** below.
+
 ## What we inherit from the prep repo's `deploy/viewer/`
 
 The prep repo already solved "static SPA on this cluster, partner-gated." Reuse
@@ -219,36 +229,64 @@ schema, `docs/data.md`) — this list is the summary, 018 is the spec:
 4. **Dataset-export = ingest** — the cleaned drifter+glider+ship track CSVs +
    `manifest.json` in `/data` are not a separate export step but the **ingest
    stage's** output, which derive then consumes (018).
-5. **`deploy/` dir** (mirrors the prep repo's `deploy/<app>/` convention):
-   `deploy/map/` (viewer Dockerfile off `ubi9/nginx-124`, nginx conf, manifest),
-   `deploy/builder/` (Dockerfile baking the `pixi.lock` env + `src/` so the
-   CronJob runs `pixi run build --tier …`; egress-allowed NetworkPolicy; CMEMS
-   Secret only on the slow job), and `deploy/gateway/` (gateway conf + the single
-   Route + the `/`→`/map/` redirect). Reuse the CI's proven pixi-in-container
-   approach (`pixi.lock` is committed and reproducible).
+5. **OpenShift manifests → the `oc_gateway` repo, not a `deploy/` dir here**
+   (revised 2026-07-05). The gateway conf + single Route + `/`→`/map/` redirect,
+   and the OC glue that composes the apps (the map viewer image off
+   `ubi9/nginx-124` + nginx conf; the builder Dockerfile baking the `pixi.lock`
+   env + `src/` so the CronJob runs `pixi run build --tier …`; egress-allowed
+   NetworkPolicy; CMEMS Secret only on the slow job) are **OpenShift specifics**
+   and live in [`oc_gateway`](https://git.geomar.de/2026-whirlscruise-lagrange/oc_gateway.git).
+   This repo keeps the map *app* it wraps: the producer refactor above (items
+   1–4) is build code, independent of where it's scheduled, and still lands here.
+   The builder image references this repo's committed, reproducible `pixi.lock` +
+   `src/` (the CI's proven pixi-in-container approach); exactly which per-app
+   manifests sit in `oc_gateway` vs. here is settled in the `oc_gateway` phasing
+   plan, not this one.
 
-## Repo structure — do we split?
+## Repo structure — revised to three repos (2026-07-05)
 
-The three-paths framing largely answers it: **we already have a two-repo split
-by app lineage, and that's the right amount.**
+**Superseded decision.** This section originally concluded "a two-repo split by
+app lineage is the right amount — do not create further repos; the gateway is a
+`deploy/gateway/` subdir here." **That is now reversed:** the gateway plus all
+OpenShift orchestration move to a dedicated **third repo**,
+[`oc_gateway`](https://git.geomar.de/2026-whirlscruise-lagrange/oc_gateway.git)
+(`~/src/git.geomar.de/2026-whirlscruise-lagrange/oc_gateway`). Its
+`plans/001-oc-gateway-and-phasing.md` owns the migration; the topology, tiers,
+and auth/TLS decisions elsewhere in *this* plan still hold — only their home
+changed.
 
-- The **archetypes viewer** stays in the **prep repo** — it's downstream of the
-  parcels/FTLE/LAVD pipeline that lives there, and its data comes from HPC. Don't
-  move it.
-- The **map + dataset exports + the CronJobs that feed them** stay in **this
-  repo** — they share the `whirls_cruise_map` package (`_clean`, `_fetch`,
-  `_currents`, `_inertial`, …). Cross-repo code sharing (submodule / published
-  package) would be pure overhead for a pre-alpha two-person effort.
-- **Do not create further repos** for the builder, the exports, or the gateway —
-  those are `deploy/` subdirs here (again mirroring the prep repo, whose deploy
-  doc explicitly anticipates a sibling `deploy/api/`). The shared cluster wiring
-  (the single Route, the `/`→`/map/` redirect, cross-app NetworkPolicies) is
-  cross-cutting; put it
-  in this repo's `deploy/gateway/` and treat it as the coordination point, since
-  this repo is where the active cron/deploy work lives.
+Why the reversal: the archetypes deployment already exists as a complete,
+self-contained OC setup in the prep repo. Lifting it to a subpath, then folding
+in the map, then refactoring, is a **migration** — and a migration is easiest to
+reason about when the *composition layer* (the one hostname, the gateway, the
+redirect, the cross-app NetworkPolicies) is a repo you can hold separately from
+the two apps it composes. It also keeps each app repo focused on its own app and
+lets the work proceed in independently-shippable phases, which is the cognitive-
+load point of the exercise.
 
-Split further **only if** an app later develops a genuinely independent release
-cadence or a conflicting dependency stack. Nothing here does yet.
+The three repos and what each owns:
+
+- **prep / archetypes repo** (`2026_whirls_cruise_prep`, GitHub) — the
+  archetypes viewer and its app-level image + PVC. Downstream of the parcels/
+  FTLE/LAVD pipeline; its data comes from HPC. Don't move it. Unchanged except
+  its standalone Route is retired — it's reached through the gateway at
+  `/archetypes/`.
+- **this repo** (`2026_whirls_cruise_map`) — the map *app*: the
+  `whirls_cruise_map` package (`_clean`, `_fetch`, `_currents`, `_inertial`, …),
+  the ingest→derive build ([018](done/018-ingest-derive-data-seam.md)), the site
+  shell, and the `/data` seam. The producer refactor (the "Code changes" items
+  1–4 above) stays here because it's build code, independent of where it's
+  scheduled.
+- **oc_gateway repo** (new) — the gateway nginx, the single Route + `/`→`/map/`
+  redirect, cross-app NetworkPolicies, and the OpenShift manifests / CronJob
+  wiring that compose the apps into one site. It **deploys** the apps but does
+  not **own** them.
+
+Exactly which per-app deployment manifests live in `oc_gateway` vs. their app
+repo (e.g. the map viewer image + the builder CronJob) is settled in the
+`oc_gateway` phasing plan, not here. Cross-repo code sharing (submodule /
+published package) stays off the table — pure overhead for a pre-alpha
+two-person effort; the gateway composes *deployed Services*, not source.
 
 ## The interactive analysis app (the earlier ask) — future 4th path
 
@@ -258,7 +296,9 @@ not a static SPA — so a **Deployment** (not a CronJob+nginx), with egress + an
 creds, sitting behind the gateway at e.g. `/analysis`. It would reuse this
 repo's `whirls_cruise_map` package and consume the same cleaned datasets from
 `/data`. Runtime choice stays open until we know the interactions we want; don't
-pick a framework now. It lands as another `deploy/analysis/` here when scoped.
+pick a framework now. Its OpenShift Deployment lands in `oc_gateway` alongside
+the other OC specifics when scoped (the service *code* reuses this repo's
+package); see the `poc-interactive-forecast` branch for the current prototype.
 
 ## Relationship to the current GitLab Pages deploy
 
@@ -274,8 +314,13 @@ takes the same browser-facing layout as this gateway — `/map/`, a sibling
 client is all-relative, that is a pure layout move, and it **de-risks this
 gateway**: the identical path shape runs on Pages before the cluster exists.
 
-## Decisions locked (2026-07-04)
+## Decisions locked (2026-07-04, revised 2026-07-05)
 
+- **(2026-07-05) Gateway + OpenShift orchestration live in a separate repo**,
+  [`oc_gateway`](https://git.geomar.de/2026-whirlscruise-lagrange/oc_gateway.git),
+  not a `deploy/gateway/` subdir here — reversing this plan's original
+  "two-repo split / do not create further repos." See **Repo structure —
+  revised to three repos** above.
 - **Gateway**, not three path-Routes.
 - **`/` → 302 `/map/`** (no landing page).
 - **Auth stays only on `/archetypes`** (archetypes viewer, unchanged); **`/map`
@@ -299,6 +344,13 @@ gateway**: the identical path shape runs on Pages before the cluster exists.
 - **Analysis-app runtime** (future `/analysis`) — defer.
 
 ## Suggested sequencing
+
+The authoritative **cross-repo** phase order now lives in the `oc_gateway`
+plan (`plans/001-oc-gateway-and-phasing.md`), which sequences it
+**archetypes-first**: (1) stand up the gateway and move archetypes behind it at
+`/archetypes/`; (2) make the map deployable at `/map/`; (3) refactor the map repo
+(interactive API); (4) consolidate. The list below is the **map-repo-side** view
+of the same work — the pieces this repo contributes — not a competing order.
 
 1. **Map viewer + fast CronJob** — no secrets; gets a live, self-refreshing map
    on the cluster (behind a temp `*.apps` Route first, before the custom host).
