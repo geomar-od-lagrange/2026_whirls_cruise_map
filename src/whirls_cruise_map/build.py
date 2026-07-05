@@ -181,8 +181,11 @@ def ingest(data_dir: Path) -> None:
         f"deployment detected for {len(deploy_starts)} drifters"
     )
 
-    # Gliders (XSPAR + seagliders), from WHIRLS THREDDS. Each source CSV is
-    # published raw before parsing; a total failure leaves no gliders.csv.
+    # Glider-group platforms (XSPAR + seagliders + floats), from WHIRLS THREDDS,
+    # all folded into gliders.csv. Each source CSV is published raw before
+    # parsing. Gliders and floats are fetched in separate best-effort blocks (one
+    # failing can't suppress the other), then written together; a total failure
+    # of both leaves no gliders.csv.
     gliders = []
     try:
         for src in _gliders.fetch_sources():
@@ -190,11 +193,27 @@ def ingest(data_dir: Path) -> None:
             p = _gliders.parse_source(src)
             if p is not None:
                 gliders.append(p)
-        if gliders:
-            entries.append(_data.write_gliders(data_dir, gliders))
         print(f"gliders: {len(gliders)} platforms")
     except Exception as exc:
         print(f"WARNING: glider ingest failed: {exc}")
+
+    # Floats: the per-institution position CSVs under the FLOATS catalog (the
+    # aggregate floats_track.csv is skipped — same fixes, but it lags). Each
+    # source is published raw before parsing; identity comes from its filename
+    # column (see _gliders). Best-effort, so a float failure can't suppress the
+    # gliders written above.
+    try:
+        floats = []
+        for src in _gliders.fetch_float_sources():
+            entries.append(_data.write_raw_text(data_dir, f"gliders/{src.id}.csv", src.text, _gliders.THREDDS))
+            floats.extend(_gliders.parse_float_source(src))
+        gliders.extend(floats)
+        print(f"floats: {len(floats)} platforms")
+    except Exception as exc:
+        print(f"WARNING: float ingest failed: {exc}")
+
+    if gliders:
+        entries.append(_data.write_gliders(data_dir, gliders))
 
     # R/V S.A. Agulhas II, from IPSL THREDDS CSV (no-CORS; baked here).
     agulhas = []

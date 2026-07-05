@@ -9,7 +9,7 @@ back instead of re-fetching). See ``docs/data.md`` and
 Layout under the data dir::
 
     drifters.csv              cleaned drifter fixes
-    gliders.csv               cleaned glider fixes (XSPAR + seagliders)
+    gliders.csv               cleaned glider-group fixes (XSPAR + seagliders + floats)
     ship_marion_dufresne.csv  cleaned R/V Marion Dufresne fixes
     ship_agulhas_ii.csv       cleaned R/V S.A. Agulhas II fixes (+ SOG/COG/status/area)
     platforms.csv             one row per platform (batch, deployed_at, coverage)
@@ -143,8 +143,8 @@ def write_drifters(data_dir: Path, tracks: pd.DataFrame) -> dict:
 
 
 def write_gliders(data_dir: Path, platforms: list[Platform]) -> dict:
-    """Cleaned glider fixes, one long table over all platforms (``platform_type``
-    is ``xspar`` / ``seaglider``)."""
+    """Cleaned glider-group fixes, one long table over all platforms
+    (``platform_type`` is ``xspar`` / ``seaglider`` / ``float``)."""
     rows = [
         (p.id, p.type, iso_utc(t), lat, lon)
         for p in platforms

@@ -121,3 +121,14 @@ move to `done/` and gain a `docs/` counterpart.
     the map now serves at `/map/` (root redirects there) with cleaned + raw
     dataset CSVs published at `/data/`. OpenShift consumption (CronJobs, `/data`
     backend) stays with 18.
+20. [WHIRLS floats](done/019-whirls-floats.md) — the profiling **floats** the
+    operational map gained as a new *FLOAT* type (UGOT `65a0`, SOTON `6594`),
+    rendered here alongside the gliders. They live under the same THREDDS
+    `GLIDERS` tree; we ingest the per-institution
+    `mr_float_<inst>_positions.csv` files (fresher than the folder's aggregate
+    `floats_track.csv`, which is skipped) and split each by its `filename`-column
+    id (`_gliders.fetch_float_sources` / `parse_float_source`), since float
+    identity isn't in the file name. Floats then ride the whole glider-group
+    pipeline unchanged as `platform_type` `float` (purple **Floats** instrument
+    row). **Done** ([docs/gliders.md](../docs/gliders.md),
+    [docs/data.md](../docs/data.md)).

@@ -145,8 +145,8 @@ def gliders_geojson(platforms: list) -> dict:
 
     Per platform: a ``Point`` at its most-recent fix and, when it has >=2 fixes,
     a ``LineString`` track. Coordinates are [Longitude, Latitude]. Properties
-    carry ``id`` and ``type`` (``"xspar"`` / ``"seaglider"``, keying the client's
-    colour and label); the Point adds the latest :func:`_glider_fix_record`, the
+    carry ``id`` and ``type`` (``"xspar"`` / ``"seaglider"`` / ``"float"``, keying
+    the client's colour and label); the Point adds the latest :func:`_glider_fix_record`, the
     LineString a per-vertex ``fixes`` list aligned with ``coordinates`` (so the
     client draws a popup-bearing dot per fix, as it does for drifter tracks).
 

@@ -1,15 +1,20 @@
-"""Fetch the WHIRLS glider platforms — the XSPAR spar buoy and the seagliders —
-from the IPSL WHIRLS THREDDS server (the same source the operational-centre map
-draws; see docs/gliders.md).
+"""Fetch the WHIRLS glider-group platforms — the XSPAR spar buoy, the seagliders,
+and the profiling floats — from the IPSL WHIRLS THREDDS server (the same source
+the operational-centre map draws; see docs/gliders.md).
 
-Each platform *type* is a THREDDS folder with a DatasetScan ``catalog.xml`` and
-one ``*_track.csv`` per platform under ``fileServer``. We discover every CSV in
-each catalog (so new platforms appear with no code change), download and parse
-it, and return time-sorted position tracks.
+For gliders, each platform *type* is a THREDDS folder with a DatasetScan
+``catalog.xml`` and one ``*_track.csv`` per platform under ``fileServer``. We
+discover every CSV in each catalog (so new platforms appear with no code change),
+download and parse it, and return time-sorted position tracks.
+
+The **floats** sit under the same tree but ship a single aggregate CSV with the
+platform identity in a column, not one file per platform, so they get their own
+fetch/split (:func:`fetch_float_source` / :func:`parse_float_source`) — see the
+floats section below. All three types converge on the same :class:`Platform`.
 
 Best-effort throughout: any failure — a dead catalog, a bad CSV, an unparseable
 row — is swallowed so the build still produces every other artifact. A total
-failure returns ``[]`` and the map simply shows no gliders.
+failure returns ``[]`` / ``None`` and the map simply shows no gliders/floats.
 """
 from __future__ import annotations
 
@@ -35,9 +40,9 @@ _GROUPS = [
 
 
 class Platform(NamedTuple):
-    """One glider platform: ``id`` (from the CSV filename), ``type``
-    (``"xspar"`` / ``"seaglider"``), and time-sorted ``(time, lat, lon)`` fixes
-    (tz-aware UTC)."""
+    """One glider-group platform: ``id`` (a glider's CSV filename, or a float's
+    mapped label), ``type`` (``"xspar"`` / ``"seaglider"`` / ``"float"``), and
+    time-sorted ``(time, lat, lon)`` fixes (tz-aware UTC)."""
 
     id: str
     type: str
@@ -138,10 +143,11 @@ def _parse_csv(text: str) -> list[tuple[datetime, float, float]]:
 
 
 class Source(NamedTuple):
-    """One glider platform's track CSV as fetched: ``id`` (from the filename),
-    ``type`` (``"xspar"`` / ``"seaglider"``), and the raw CSV ``text``. Kept
+    """A glider-group source CSV as fetched: ``id`` (the filename), ``type``
+    (``"xspar"`` / ``"seaglider"`` / ``"float"``), and the raw CSV ``text``. Kept
     separate from :class:`Platform` so ingest can publish the untouched source
-    (``data/raw/gliders/<id>.csv``) before parsing it."""
+    (``data/raw/gliders/<id>.csv``) before parsing it. One glider source parses to
+    one platform; the ``float`` source is the aggregate that splits into many."""
 
     id: str
     type: str
@@ -175,3 +181,100 @@ def parse_source(src: Source) -> Platform | None:
     usable fix."""
     fixes = _parse_csv(src.text)
     return Platform(src.id, src.type, fixes) if fixes else None
+
+
+# --------------------------------------------------------------------------- #
+# floats — the same GLIDERS tree, read per-institution (skip the aggregate)
+# --------------------------------------------------------------------------- #
+# The WHIRLS floats sit under the same THREDDS ``GLIDERS`` tree as the
+# seagliders/XSPAR. Their ``FLOATS`` folder holds an aggregate ``floats_track.csv``
+# (every float's fixes interleaved) *beside* one
+# ``mr_float_<institution>_positions.csv`` per float. We read the per-institution
+# files — the same fixes, but fresher: the aggregate lags them — and skip the
+# aggregate so a float isn't counted twice. Discovered from the catalog like the
+# gliders, so a new institution's float file appears with no code change.
+#
+# Float identity still lives in a ``filename`` column (``65a0_015_01_technical.txt``)
+# rather than the file name, so parsing groups by that column's leading id (each
+# per-institution file is normally one float, but grouping stays correct if one
+# ever carries more, and reuses the operational map's identity rule).
+FLOATS_CATALOG = (
+    f"{THREDDS}/catalog/WHIRLS/OBSERVATIONS/GLIDERS/FLOATS/catalog.xml"
+)
+_FLOATS_AGGREGATE = "floats_track.csv"
+
+# The operational map's own id -> label mapping (``65a0`` = U. Gothenburg float,
+# ``6594`` = Southampton float). An unmapped id falls back to itself, so a third
+# float appears — labelled by its raw id — with no code change.
+_FLOAT_LABELS = {"65a0": "UGOT", "6594": "SOTON"}
+
+
+def fetch_float_sources() -> list[Source]:
+    """Every per-institution float position CSV under the FLOATS catalog,
+    downloaded but not parsed; ``[]`` on failure. The aggregate
+    ``floats_track.csv`` is skipped (same fixes interleaved, and it lags the
+    per-institution files). Each ``id`` is the source filename, so ingest
+    publishes it raw beside the glider CSVs (``data/raw/gliders/<id>.csv``). Each
+    catalog and each CSV is fetched independently so one dead file can't suppress
+    the rest."""
+    try:
+        datasets = _csv_datasets(_get(FLOATS_CATALOG))
+    except Exception:
+        return []
+    sources = []
+    for _pid, csv_url in datasets:
+        name = csv_url.rsplit("/", 1)[-1]
+        if name == _FLOATS_AGGREGATE:
+            continue
+        try:
+            text = _get(csv_url)
+        except Exception:
+            continue
+        sources.append(Source(name.removesuffix(".csv"), "float", text))
+    return sources
+
+
+def parse_float_source(src: Source) -> list[Platform]:
+    """Parse one per-institution float CSV into its float(s).
+
+    A float's identity is the leading ``_``-token of the ``filename`` column
+    (``65a0_015_01_technical.txt`` -> ``65a0``), which :data:`_FLOAT_LABELS` maps
+    to a human id. We group by that rather than assume one-float-per-file: it
+    reuses the operational map's identity rule and stays correct if a file ever
+    carries more than one float. Each float's fixes come back time-sorted in the
+    glider :class:`Platform` shape, so floats ride the same downstream
+    (``write_gliders``, ``gliders_geojson``, the forecast) unchanged. Platforms
+    are returned sorted by id for a stable ``gliders.csv``."""
+    lines = src.text.splitlines()
+    if not lines:
+        return []
+    reader = csv.reader(lines)
+    header = [h.strip().lower() for h in next(reader)]
+    try:
+        ti, lai, loi, fi = (
+            header.index("time"),
+            header.index("latitude"),
+            header.index("longitude"),
+            header.index("filename"),
+        )
+    except ValueError:
+        return []
+    by_id: dict[str, list[tuple[datetime, float, float]]] = {}
+    for row in reader:
+        if len(row) <= max(ti, lai, loi, fi):
+            continue
+        raw_id = row[fi].split("_", 1)[0].strip().lower()
+        if not raw_id:
+            continue
+        t = _parse_time(row[ti])
+        try:
+            lat, lon = float(row[lai]), float(row[loi])
+        except ValueError:
+            continue
+        if t is not None:
+            by_id.setdefault(raw_id, []).append((t, lat, lon))
+    platforms = []
+    for raw_id in sorted(by_id):
+        fixes = sorted(by_id[raw_id], key=lambda f: f[0])
+        platforms.append(Platform(_FLOAT_LABELS.get(raw_id, raw_id), "float", fixes))
+    return platforms

@@ -39,14 +39,15 @@ legible, auditable tables instead of a one-off in-memory step.
 
 ```
 drifters.csv               cleaned drifter fixes
-gliders.csv                cleaned glider fixes (XSPAR + seagliders)
+gliders.csv                cleaned glider-group fixes (XSPAR + seagliders + floats)
 ship_marion_dufresne.csv   cleaned R/V Marion Dufresne fixes
 ship_agulhas_ii.csv        cleaned R/V S.A. Agulhas II fixes (+ SOG/COG/status/area)
 platforms.csv              one row per platform (batch, deployed_at, coverage)
 manifest.json              file index + per-file provenance + freshness stamp
 index.html                 browsable listing of this directory (human landing)
 raw/drifters_raw.csv       concatenated snapshot CSVs, pre-clean
-raw/gliders/<id>.csv       per-platform track CSV, exactly as fetched
+raw/gliders/<id>.csv       glider-group source CSV, exactly as fetched (one per
+                           glider; one mr_float_<inst>_positions.csv per float)
 raw/marion_dufresne.json   FOF positions API response, exactly as fetched
 raw/agulhas_ii.csv         IPSL THREDDS CSV, exactly as fetched
 ```
@@ -57,8 +58,8 @@ plus native extras for the sources that report more:
 
 | Column | Meaning |
 |---|---|
-| `platform_id` | drifter `D-number`, glider filename id, or `marion_dufresne` / `agulhas_ii` |
-| `platform_type` | `drifter`, `xspar`, `seaglider`, or `ship` |
+| `platform_id` | drifter `D-number`, glider filename id, float label (`UGOT` / `SOTON`), or `marion_dufresne` / `agulhas_ii` |
+| `platform_type` | `drifter`, `xspar`, `seaglider`, `float`, or `ship` |
 | `time_utc` | ISO-8601 UTC, `…Z`, second precision |
 | `lat`, `lon` | decimal degrees |
 
@@ -134,6 +135,15 @@ section points at the modules rather than duplicating their docstrings.
   XSPAR emits offset-aware ISO — so `_parse_time` detects the format of each
   cell rather than keying on platform type; all three converge on the same UTC
   `time_utc` convention as every other source.
+- **Floats** (`_gliders.py`, `fetch_float_sources` / `parse_float_source`). The
+  floats live under the same THREDDS `GLIDERS` tree. We ingest the
+  per-institution `mr_float_<institution>_positions.csv` files and **skip** the
+  folder's aggregate `floats_track.csv` (the same fixes interleaved, but it lags
+  the per-institution files). The platform identity is in a `filename` column
+  rather than the file name, so each file's rows are grouped by the `filename`'s
+  leading id (`65a0 → UGOT`, `6594 → SOTON`; unmapped ids keep their raw id),
+  landing in `gliders.csv` as `platform_type` `float`. See
+  [gliders.md](gliders.md).
 - **Agulhas II** (`_agulhas.py`). `reported_at` carries no timezone; it is
   assumed UTC because the file's own `scraped_at_utc` column is UTC and the
   whole app is UTC. `speed_kn` is blank (empty, not zero) when the vessel is

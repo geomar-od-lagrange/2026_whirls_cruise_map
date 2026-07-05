@@ -117,9 +117,9 @@ const BATCH_LABELS = {
   deployment_2: "Drifter batch 2",
   deployment_3: "Drifter batch 3",
 };
-// Instrument rows share this control: drifter batches use BATCH_LABELS; glider
-// types (xspar/seaglider) fall back to their GLIDER_STYLES label so they read as
-// "XSPAR buoy" / "Seagliders" in the same compartment.
+// Instrument rows share this control: drifter batches use BATCH_LABELS; glider-
+// group types (xspar/seaglider/float) fall back to their GLIDER_STYLES label so
+// they read as "XSPAR buoy" / "Seagliders" / "Floats" in the same compartment.
 const batchLabel = (batch) =>
   BATCH_LABELS[batch] ?? GLIDER_STYLES[batch]?.label ?? batch;
 // ---------------------------------------------------------------------------
@@ -813,15 +813,18 @@ function startInertialClock(map, grid, layer) {
 // ---------------------------------------------------------------------------
 
 // --- gliders ----------------------------------------------------------------
-// The WHIRLS glider platforms (see docs/gliders.md): the XSPAR spar buoy and the
-// seagliders, built server-side into gliders.geojson (a latest Point + a track
-// LineString per platform). Coloured by `type` — the operational map's own
-// amber (XSPAR) / blue (seaglider) — and drawn with a diamond marker so they
-// read apart from the drifters' circles. Not batch-driven (gliders aren't
-// deployment batches), so they ride the layer control, not the batch filter.
+// The WHIRLS glider-group platforms (see docs/gliders.md): the XSPAR spar buoy,
+// the seagliders, and the profiling floats, built server-side into
+// gliders.geojson (a latest Point + a track LineString per platform). Coloured
+// by `type` — the operational map's own amber (XSPAR) / blue (seaglider) /
+// purple (float) — and drawn with a diamond marker so they read apart from the
+// drifters' circles. Not batch-driven, so they ride the layer control, not the
+// batch filter. Rows are keyed by `type`, so the two floats collapse into one
+// "Floats" instrument row (like the two seagliders), each still selectable by id.
 const GLIDER_STYLES = {
   xspar: { color: "#f59e0b", label: "XSPAR buoy" },
   seaglider: { color: "#38bdf8", label: "Seagliders" },
+  float: { color: "#a855f7", label: "Floats" },
 };
 const gliderStyle = (type) =>
   GLIDER_STYLES[type] ?? { color: "#38bdf8", label: type ?? "Glider" };
@@ -1433,11 +1436,12 @@ async function main() {
   const hindcastGroups = hindcast ? buildAdvectionGroups(hindcast, HINDCAST_COLOR) : {};
   renderDriftInfo(forecast, hindcast);
 
-  // Glider platforms (XSPAR buoy + seagliders) are instruments in the same
-  // control as the drifter batches: their latest markers join the instrument
-  // rows, their tracks the "True track" overlay. Optional so a missing file can't
-  // blank the map. (Gliders have no forecast/hindcast, so those overlays get no
-  // glider group.)
+  // Glider-group platforms (XSPAR buoy + seagliders + floats) are instruments in
+  // the same control as the drifter batches: their latest markers join the
+  // instrument rows, their tracks the "True track" overlay, and their
+  // current-advection lines the Forecast/Hindcast overlays (keyed by `type`, from
+  // forecast.geojson's per-instrument heads). Optional so a missing file can't
+  // blank the map.
   const gliders = await fetchJSON(DATA.gliders, { optional: true });
   const gliderMarkerGroups = gliders ? buildGliderMarkerGroups(gliders) : {};
   const gliderTrackGroups = gliders ? buildGliderTrackGroups(gliders) : {};
