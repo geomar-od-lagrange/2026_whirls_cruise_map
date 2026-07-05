@@ -39,6 +39,11 @@ pages:
   artifacts:
     paths:
       - public
+    # 10-min crons produce a lot of these; keep only a few hours of history for
+    # post-mortem inspection. The latest successful run is retained regardless
+    # (project setting "Keep artifacts from most recent successful pipelines"),
+    # so the live deployment's artifact is never expired by this.
+    expire_in: 6 hours
   rules:
     # Publish only from the default branch. Push, scheduled, and manual ("web")
     # pipelines all run on the default branch and so match; merge-request
