@@ -53,8 +53,9 @@ Our map is one flat `data/` dir, so the viewer image is nearly trivial.
 The prep viewer **never fetches** — its data is produced on NESH (HPC) and
 pushed manually by a loader pod, which is exactly why its pod runs
 deny-all-egress. Our map instead rebuilds `site/data/` by pulling **live
-internet sources** (the Nextcloud drifter share, THREDDS gliders/Agulhas, CMEMS
-currents). So the equivalent of "the CI build" becomes an **in-cluster
+internet sources** (the Nextcloud drifter share, the IPSL observations portal for
+gliders/Agulhas, CMEMS currents). So the equivalent of "the CI build" becomes an
+**in-cluster
 CronJob** — and that CronJob, unlike the serve pod, needs egress and (for CMEMS)
 credentials.
 
@@ -73,8 +74,8 @@ two CronJobs on two cadences is the point of the exercise.
 | Artifact | Source | Needs CMEMS creds? | Turnover | Tier |
 |---|---|---|---|---|
 | `latest.geojson`, `tracks.geojson`, `awaiting.json` | Nextcloud drifter share (public) | no | ~5–10 min | **fast** |
-| `gliders.geojson` | WHIRLS THREDDS | no | ~5–10 min | **fast** |
-| `agulhas.json` | IPSL THREDDS CSV (baked; no-CORS) | no | ~5–10 min | **fast** |
+| `gliders.geojson` | WHIRLS observations portal | no | ~5–10 min | **fast** |
+| `agulhas.json` | IPSL observations-portal CSV (baked) | no | ~5–10 min | **fast** |
 | `build.json` (freshness stamp) | — | no | per run | **fast** |
 | `currents.json`, `speed.png`(+meta), `vorticity.png`(+meta) | CMEMS single-time field | **yes** | ~6-hourly | **slow** |
 | `inertial_field.json` | CMEMS hourly window | **yes** | ~6-hourly | **slow** |

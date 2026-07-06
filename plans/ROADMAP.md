@@ -31,8 +31,9 @@ move to `done/` and gain a `docs/` counterpart.
    and track, fetched client-side from the Flotte Océanographique Française
    localisation API (the IPSL WHIRLS "platform positions" source), polled every
    5 min. **Done** ([docs/ship.md](../docs/ship.md)). The **R/V S.A. Agulhas II**
-   is added from its own source — a non-CORS IPSL THREDDS CSV, so baked at build
-   time rather than fetched live — sharing the same ship renderer
+   is added from its own source — an IPSL observations-portal CSV, baked at build
+   time (an hourly scrape, so baking loses no freshness and adds resilience)
+   rather than fetched live — sharing the same ship renderer
    ([015](done/015-agulhas-ship-track.md), [docs/ship.md](../docs/ship.md)).
 8. [Intermediate positions](done/008-intermediate-positions.md) — a dot at every
    fix along each drifter and ship track, each carrying the latest-position
@@ -68,7 +69,7 @@ move to `done/` and gain a `docs/` counterpart.
     trimmed the forecast/hindcast sidebar explainers to bare facts (no line-style
     legend, no trust guidance). **Done.**
 14. [Glider instruments](done/011-gliders.md) — the **XSPAR** spar buoy and the
-    **seagliders**, auto-discovered from the WHIRLS THREDDS catalogs and rendered
+    **seagliders**, auto-discovered from the WHIRLS observations portal and rendered
     alongside the drifters: latest diamond markers + tracks, folded into the
     batch control (renamed **Instruments**; batches relabelled "Drifter batch N",
     "Drifter pre"), with true tracks in the shared orange and per-instrument
@@ -126,8 +127,8 @@ move to `done/` and gain a `docs/` counterpart.
     backend) stays with 18.
 20. [WHIRLS floats](done/019-whirls-floats.md) — the profiling **floats** the
     operational map gained as a new *FLOAT* type (UGOT `65a0`, SOTON `6594`),
-    rendered here alongside the gliders. They live under the same THREDDS
-    `GLIDERS` tree; we ingest the per-institution
+    rendered here alongside the gliders. They live under the same `GLIDERS` tree
+    on the observations portal; we ingest the per-institution
     `mr_float_<inst>_positions.csv` files (fresher than the folder's aggregate
     `floats_track.csv`, which is skipped) and split each by its `filename`-column
     id (`_gliders.fetch_float_sources` / `parse_float_source`), since float
@@ -135,3 +136,13 @@ move to `done/` and gain a `docs/` counterpart.
     pipeline unchanged as `platform_type` `float` (purple **Floats** instrument
     row). **Done** ([docs/gliders.md](../docs/gliders.md),
     [docs/data.md](../docs/data.md)).
+21. [Observations-portal CSV source](done/020-observations-portal-csv-source.md)
+    — moved all IPSL CSV ingest (Agulhas ship + XSPAR/seagliders/floats) off the
+    heavy, intermittently failing THREDDS server onto the operational centre's
+    own **observations portal** (`observations.ipsl.fr/aeris/whirls`), a lighter,
+    CORS-open Apache static host serving the identical files. Discovery changed
+    from THREDDS `catalog.xml` to autoindex-HTML link scanning; fetchers now send
+    an `Accept` header (the portal 403s without it). The switch also picked up the
+    **SeaExplorer** glider (`seaexplorer.csv`, a mixed-delimiter/BOM/day-first
+    dialect the parser now absorbs). Build-time bake kept for resilience. **Done**
+    ([docs/gliders.md](../docs/gliders.md), [docs/ship.md](../docs/ship.md)).

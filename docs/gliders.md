@@ -10,28 +10,37 @@ every other instrument) a current-advection forecast/hindcast. They are
 **Why one doc, not `xspar.md` + `floats.md` + a gliders doc.** Neither the XSPAR
 (a surface spar buoy) nor the floats (autonomous profilers) are underwater
 gliders, but IPSL's WHIRLS operational centre groups all three under *Gliders* —
-the THREDDS tree nests them at `OBSERVATIONS/GLIDERS/{XSPAR,SEAGLIDERS,FLOATS}`.
+IPSL's data tree nests them at `OBSERVATIONS/GLIDERS/{XSPAR,SEAGLIDERS,FLOATS}`.
 Following that terminology keeps this map aligned with the source it draws from,
 so they are documented together; the code likewise treats each as one `type`
 among others converging on the same `Platform` shape, so a shared doc matches the
 shared mechanism. Where the distinction matters — the marker colour, and (for
 floats) a different source shape — it is called out per type below.
 
-## Source: the WHIRLS THREDDS server
+## Source: the WHIRLS observations portal
 
-The gliders come from the IPSL WHIRLS THREDDS server
-(`https://thredds-x.ipsl.fr/thredds`) — the same data the WHIRLS operational-centre
-map draws. Each platform *type* is a folder with a DatasetScan `catalog.xml` and
-one `*_track.csv` per platform, served from `fileServer`:
+The gliders come from the IPSL WHIRLS observations portal
+(`https://observations.ipsl.fr/aeris/whirls/data/observations`) — the same data
+the WHIRLS operational-centre map draws. Each platform *type* is a folder — a
+plain Apache directory listing — holding one `*_track.csv` per platform:
 
-- XSPAR — `…/catalog/WHIRLS/OBSERVATIONS/GLIDERS/XSPAR/catalog.xml`
-- Seagliders — `…/catalog/WHIRLS/OBSERVATIONS/GLIDERS/SEAGLIDERS/catalog.xml`
+- XSPAR — `…/GLIDERS/XSPAR/`
+- Seagliders — `…/GLIDERS/SEAGLIDERS/`
 
-`_gliders.fetch_sources()` **auto-discovers** every CSV: it reads each catalog,
-takes every `<dataset>` whose `urlPath` ends `.csv`, and downloads it from
-`…/thredds/fileServer/<urlPath>` (`parse_source` then parses each into a track).
-A new platform (another seaglider, a second XSPAR) therefore appears with **no
-code change** — it is picked up from the catalog on the next build.
+`_gliders.fetch_sources()` **auto-discovers** every CSV: it fetches each folder's
+autoindex, takes every `.csv` link in it, and downloads each (`parse_source` then
+parses it into a track). A new platform (another seaglider, a second XSPAR)
+therefore appears with **no code change** — it is picked up from the listing on
+the next build.
+
+IPSL also serves the identical files from its THREDDS server (`thredds-x.ipsl.fr`,
+discovered via a DatasetScan `catalog.xml`); the portal is preferred because it
+is a lighter static host — less overhead, fewer intermittent failures, and
+CORS-open — at the cost of discovering CSVs from autoindex HTML rather than a
+machine-readable catalog. The portal's Apache rejects requests with no `Accept`
+header (`403`), which `urllib` omits by default, so the fetcher sends
+`Accept: */*`. A sibling `WAVEGLIDERS/` folder exists but is empty and would need
+a client marker type, so it is not wired in yet.
 
 ### Floats: per-institution files, and identity in a column
 
@@ -42,7 +51,7 @@ single **aggregate `floats_track.csv`** that interleaves *every* float's fixes
 **per-institution files and skip the aggregate**: they carry the same fixes but
 are **fresher** — the aggregate lags them (fewer, older fixes were observed on
 it) — and skipping it avoids counting a float twice. `fetch_float_sources()`
-discovers them from the FLOATS `catalog.xml` (like the gliders) and drops
+discovers them from the FLOATS folder listing (like the gliders) and drops
 `floats_track.csv` by name, so a new institution's float file appears with **no
 code change**.
 
@@ -58,39 +67,51 @@ carries more than one float. Each float becomes one `Platform(type="float")`, so
 from here on floats are indistinguishable from gliders to the rest of the
 pipeline.
 
-### CSV quirks — parsed by header name and detected time format
+### CSV quirks — parsed by header name, sniffed delimiter, detected time format
 
-The feeds are inconsistent in two ways the parser absorbs.
+The feeds are inconsistent in three ways the parser absorbs.
 
 **Column order varies**, including *which* of latitude/longitude comes first
-(both XSPAR and the seagliders currently emit `longitude` before `latitude`), so
-the parser maps columns by their **header name** (lower-cased), never by order.
-It needs `time`, `latitude`, and `longitude`; a feed missing any is skipped.
+(XSPAR and the seagliders currently emit `longitude` before `latitude`), so the
+parser maps columns by their **header name** (lower-cased), never by order. It
+needs `time`, `latitude`, and `longitude`; a feed missing any is skipped.
 
-**Time encoding varies per value, not per platform type** — the two seagliders
-even disagree with each other — so `_parse_time` detects the format of each cell
-rather than keying on the type. It handles three encodings:
+**Delimiter varies, even within one file.** Most feeds are plain comma
+throughout, but the SeaExplorer glider (`seaexplorer.csv`) exports a
+UTF-8-BOM-prefixed, **`;`-separated header** over **`,`-separated data rows**. So
+`_read_rows` strips a leading BOM and sniffs the delimiter of the header line and
+of the data lines **independently** (`;` if a line has more semicolons than
+commas, else `,`), then maps columns by name across the two. A fully-`;` file
+would also read correctly; the current mix does too.
 
-- Unix epoch seconds, e.g. `1783078052.0` (one seaglider emits this);
-- ISO `YYYY-MM-DD HH:MM:SS` with no offset, read as UTC (another seaglider);
-- ISO with an explicit offset, e.g. `2026-07-02 00:00:00+00:00` (XSPAR).
+**Time encoding varies per value, not per platform type** — the seagliders even
+disagree with each other — so `_parse_time` detects the format of each cell
+rather than keying on the type. It handles four encodings:
 
-A bare number is read as epoch; anything else is handed to `datetime.fromisoformat`
-(naive → UTC, offset-aware → normalised to UTC). Line endings (LF or a stray
-CR-only feed) are handled by parsing over `splitlines()`.
+- Unix epoch seconds, e.g. `1783078052.0` (a Seaglider emits this);
+- ISO `YYYY-MM-DD HH:MM:SS` with no offset, read as UTC (a Seaglider);
+- ISO with an explicit offset, e.g. `2026-07-02 00:00:00+00:00` (XSPAR);
+- day-first `DD/MM/YYYY HH:MM:SS`, read as UTC (the SeaExplorer glider).
+
+A bare number is read as epoch; an ISO string goes to `datetime.fromisoformat`;
+the day-first form falls through to an explicit `%d/%m/%Y %H:%M:%S` parse (naive
+→ UTC, offset-aware → normalised to UTC). Line endings (LF or a stray CR-only
+feed) are handled by parsing over `splitlines()`.
 
 ## Why build-time, not client-live
 
-Unlike the ship — which the client polls live from a CORS-open API because it
-moves continuously (see [ship.md](ship.md)) — the gliders are ingested in the
-**build**, like the drifters. Two reasons: THREDDS `fileServer` CORS is not
-guaranteed for a browser fetch, and gliders surface only every few hours, so a
-rebuilt static artifact is both simpler and reliable. It adds one best-effort step
-to the build and nothing to the network path the client depends on.
+Unlike the Marion Dufresne — which the client polls live because it moves
+continuously (see [ship.md](ship.md)) — the gliders are ingested in the
+**build**, like the drifters. The portal is CORS-open, so a browser *could* fetch
+these directly, but gliders surface only every few hours, so a rebuilt static
+artifact is both simpler and more resilient: it keeps showing the last-good
+tracks when the source is briefly unreachable (the portal 404s a file mid-rewrite
+now and then), and adds nothing to the network path the client depends on.
 
-Best-effort throughout: each catalog and each CSV is fetched independently, so one
-dead platform can't suppress the rest, and a total failure yields no
-`gliders.geojson` — the map simply omits the gliders, every other layer intact.
+Best-effort throughout: each folder listing and each CSV is fetched
+independently, so one dead platform can't suppress the rest, and a total failure
+yields no `gliders.geojson` — the map simply omits the gliders, every other layer
+intact.
 
 ## Artifact: `gliders.geojson`
 

@@ -11,8 +11,8 @@ The build (`whirls_cruise_map.build`) runs in two stages across this directory
 as a seam:
 
 - **ingest** fetches every live source (the drifter share, the two ships'
-  position feeds, the glider THREDDS catalogs), cleans and unifies them, and
-  writes the tables described below.
+  position feeds, the glider-group folders on the IPSL observations portal),
+  cleans and unifies them, and writes the tables described below.
 - **derive** reads those same tables back — never re-fetching from the live
   upstreams — and builds the map's GeoJSON/PNG artifacts (`site/map/data/`, a
   separate tree; see [deploy.md](deploy.md)).
@@ -28,8 +28,9 @@ design intent behind the split.
 ### Value over the raw share
 
 The drifter snapshot CSVs are already public on a Nextcloud share, and the
-glider/ship feeds are already public on IPSL's THREDDS server. `/data` doesn't
-gate access to any of that — it re-publishes the same bytes under `raw/` (see
+glider/ship feeds are already public on IPSL's observations portal. `/data`
+doesn't gate access to any of that — it re-publishes the same bytes under `raw/`
+(see
 below). Its value-add is entirely in what sits next to the raw files: the
 **cleaning, unification, and annotation** — de-duplication, sentinel drops,
 one shared UTC time convention, batch/deployment metadata — turned into
@@ -49,7 +50,7 @@ raw/drifters_raw.csv       concatenated snapshot CSVs, pre-clean
 raw/gliders/<id>.csv       glider-group source CSV, exactly as fetched (one per
                            glider; one mr_float_<inst>_positions.csv per float)
 raw/marion_dufresne.json   FOF positions API response, exactly as fetched
-raw/agulhas_ii.csv         IPSL THREDDS CSV, exactly as fetched
+raw/agulhas_ii.csv         IPSL observations-portal CSV, exactly as fetched
 ```
 
 Every cleaned per-fix table (`drifters.csv`, `gliders.csv`,
@@ -131,12 +132,13 @@ section points at the modules rather than duplicating their docstrings.
 - **Gliders** (`_gliders.py`). Column order (and even which of
   latitude/longitude comes first) varies by feed, so `_parse_csv` maps by
   header name. Time encoding varies **per value**, not per platform type — one
-  seaglider emits Unix epoch seconds, another emits naive ISO read as UTC, and
-  XSPAR emits offset-aware ISO — so `_parse_time` detects the format of each
-  cell rather than keying on platform type; all three converge on the same UTC
-  `time_utc` convention as every other source.
+  seaglider emits Unix epoch seconds, another emits naive ISO read as UTC, XSPAR
+  emits offset-aware ISO, and the SeaExplorer emits day-first `DD/MM/YYYY` — so
+  `_parse_time` detects the format of each cell rather than keying on platform
+  type; all converge on the same UTC `time_utc` convention as every other source.
 - **Floats** (`_gliders.py`, `fetch_float_sources` / `parse_float_source`). The
-  floats live under the same THREDDS `GLIDERS` tree. We ingest the
+  floats live under the same `GLIDERS` tree on the observations portal. We ingest
+  the
   per-institution `mr_float_<institution>_positions.csv` files and **skip** the
   folder's aggregate `floats_track.csv` (the same fixes interleaved, but it lags
   the per-institution files). The platform identity is in a `filename` column

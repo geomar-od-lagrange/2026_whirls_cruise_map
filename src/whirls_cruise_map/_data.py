@@ -17,7 +17,7 @@ Layout under the data dir::
     raw/drifters_raw.csv      concatenated snapshot CSVs, pre-clean
     raw/gliders/<id>.csv      per-platform track CSVs as fetched
     raw/marion_dufresne.json  FOF positions API response as fetched
-    raw/agulhas_ii.csv        IPSL THREDDS CSV as fetched
+    raw/agulhas_ii.csv        IPSL observations-portal CSV as fetched
 
 Every cleaned per-fix table shares the core columns ``platform_id,
 platform_type, time_utc, lat, lon`` (``time_utc`` ISO-8601 UTC ``…Z``), plus
@@ -40,7 +40,7 @@ from ._gliders import Platform
 # can check the cleaning against). Imported lazily where a module owns the URL.
 from ._agulhas import CSV_URL as _AGULHAS_URL
 from ._fetch import SHARE_URL as _DRIFTER_URL
-from ._gliders import THREDDS as _GLIDER_URL
+from ._gliders import BASE as _GLIDER_URL
 from ._ship import POSITIONS_URL as _MD_URL
 
 _CORE = ["platform_id", "platform_type", "time_utc", "lat", "lon"]

@@ -33,9 +33,10 @@ fresh from upstream, then serves the result:
 This is deliberate: the data is time-sensitive cruise data, so baking a snapshot
 into git would freeze it. Rebuilding per deploy keeps every layer as current as
 its last run. (The one exception is the **Marion Dufresne** ship track, fetched
-live in the browser rather than baked, because its source API is CORS-open; the
-**Agulhas II** track is baked like the rest, because its THREDDS source is not —
-see [ship.md](ship.md).)
+live in the browser rather than baked, because it is a near-real-time feed of a
+continuously moving vessel; the **Agulhas II** track is baked like the rest —
+its source is CORS-open too, but it is an hourly scrape, so baking loses no
+freshness and adds resilience — see [ship.md](ship.md).)
 
 ### Two build stages, one CLI
 

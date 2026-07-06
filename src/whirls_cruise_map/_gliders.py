@@ -1,18 +1,21 @@
 """Fetch the WHIRLS glider-group platforms — the XSPAR spar buoy, the seagliders,
-and the profiling floats — from the IPSL WHIRLS THREDDS server (the same source
-the operational-centre map draws; see docs/gliders.md).
+and the profiling floats — from the IPSL WHIRLS observations portal (the same
+source the operational-centre map draws; see docs/gliders.md).
 
-For gliders, each platform *type* is a THREDDS folder with a DatasetScan
-``catalog.xml`` and one ``*_track.csv`` per platform under ``fileServer``. We
-discover every CSV in each catalog (so new platforms appear with no code change),
-download and parse it, and return time-sorted position tracks.
+Each platform *type* is a folder on the portal — a plain Apache directory
+listing — holding one ``*_track.csv`` (or ``*.csv``) per platform. We discover
+every CSV by scanning the folder's autoindex for ``.csv`` links (so new
+platforms appear with no code change), download and parse each, and return
+time-sorted position tracks. (IPSL also serves the same files from a THREDDS
+``catalog.xml`` DatasetScan; the portal is preferred as a lighter, more reliable,
+CORS-open static host — see docs/gliders.md.)
 
 The **floats** sit under the same tree but ship a single aggregate CSV with the
 platform identity in a column, not one file per platform, so they get their own
 fetch/split (:func:`fetch_float_source` / :func:`parse_float_source`) — see the
 floats section below. All three types converge on the same :class:`Platform`.
 
-Best-effort throughout: any failure — a dead catalog, a bad CSV, an unparseable
+Best-effort throughout: any failure — a dead folder, a bad CSV, an unparseable
 row — is swallowed so the build still produces every other artifact. A total
 failure returns ``[]`` / ``None`` and the map simply shows no gliders/floats.
 """
@@ -21,21 +24,20 @@ from __future__ import annotations
 import csv
 import re
 import urllib.request
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import NamedTuple
 
-THREDDS = "https://thredds-x.ipsl.fr/thredds"
+# WHIRLS observations portal — the operational centre's own data host.
+BASE = "https://observations.ipsl.fr/aeris/whirls/data/observations"
 
-# (type, catalog URL). `type` keys the client colour/label; the operational map
+# (type, folder URL). `type` keys the client colour/label; the operational map
 # groups both under "Gliders", but XSPAR is a surface spar buoy and the
-# seagliders are underwater, so we keep them apart.
+# seagliders are underwater, so we keep them apart. A new WAVEGLIDERS/ folder
+# exists on the portal but is empty and would need a client type, so it is not
+# wired here yet (plan 020 follow-up).
 _GROUPS = [
-    ("xspar", f"{THREDDS}/catalog/WHIRLS/OBSERVATIONS/GLIDERS/XSPAR/catalog.xml"),
-    (
-        "seaglider",
-        f"{THREDDS}/catalog/WHIRLS/OBSERVATIONS/GLIDERS/SEAGLIDERS/catalog.xml",
-    ),
+    ("xspar", f"{BASE}/GLIDERS/XSPAR/"),
+    ("seaglider", f"{BASE}/GLIDERS/SEAGLIDERS/"),
 ]
 
 
@@ -49,47 +51,52 @@ class Platform(NamedTuple):
     fixes: list[tuple[datetime, float, float]]
 
 
+# The portal's Apache rejects requests without an ``Accept`` header (403), which
+# urllib omits by default; a descriptive ``User-Agent`` is courtesy, not required.
+_HEADERS = {"User-Agent": "whirls-cruise-map ingest", "Accept": "*/*"}
+
+
 def _get(url: str) -> str:
-    with urllib.request.urlopen(url, timeout=30) as resp:
+    req = urllib.request.Request(url, headers=_HEADERS)
+    with urllib.request.urlopen(req, timeout=30) as resp:
         return resp.read().decode("utf-8", "replace")
 
 
-def _csv_datasets(catalog_xml: str) -> list[tuple[str, str]]:
-    """``(id, csv_url)`` for every ``*_track.csv`` in a THREDDS catalog. ``id``
-    is the filename without ``_track.csv``; the URL is the dataset's ``urlPath``
-    under ``fileServer``."""
-    root = ET.fromstring(catalog_xml)
+def _csv_datasets(index_html: str, dir_url: str) -> list[tuple[str, str]]:
+    """``(id, csv_url)`` for every ``.csv`` linked from a folder's Apache
+    autoindex. ``id`` is the filename without a trailing ``_track.csv`` or
+    ``.csv`` (so ``sg283_track.csv`` -> ``sg283``, ``seaexplorer.csv`` ->
+    ``seaexplorer``); the URL resolves the relative href against ``dir_url``.
+
+    The autoindex also links its parent and sort columns (``href="/…"``,
+    ``?C=N;O=D``); requiring a ``.csv`` suffix and no ``/`` in the href keeps
+    only the data files."""
     out = []
-    # THREDDS namespaces the elements; match on the local tag/attribute name so
-    # we don't hard-code the InvCatalog namespace URI.
-    for el in root.iter():
-        if not el.tag.endswith("}dataset") and el.tag != "dataset":
+    for name in re.findall(r'href="([^"]+\.csv)"', index_html, flags=re.IGNORECASE):
+        if "/" in name:
             continue
-        url_path = el.get("urlPath")
-        if not url_path or not url_path.endswith(".csv"):
-            continue
-        name = url_path.rsplit("/", 1)[-1]
-        pid = re.sub(r"_track\.csv$", "", name, flags=re.IGNORECASE)
-        out.append((pid, f"{THREDDS}/fileServer/{url_path}"))
+        pid = re.sub(r"(_track)?\.csv$", "", name, flags=re.IGNORECASE)
+        out.append((pid, dir_url + name))
     return out
 
 
 def _parse_time(raw: str) -> datetime | None:
     """Parse a fix time to tz-aware UTC; ``None`` if unparseable.
 
-    The WHIRLS feeds mix three time encodings, and the format no longer tracks
-    the platform *type* — even the two seagliders differ — so we detect it per
+    The WHIRLS feeds mix four time encodings, and the format no longer tracks
+    the platform *type* — even the seagliders differ — so we detect it per
     value instead of keying on the type:
 
-    - Unix epoch seconds, e.g. ``1783078052.0`` (one seaglider emits this);
-    - ISO ``YYYY-MM-DD HH:MM:SS`` with no offset, read as UTC (another seaglider);
-    - ISO with an explicit offset, e.g. ``2026-07-02 00:00:00+00:00`` (XSPAR).
+    - Unix epoch seconds, e.g. ``1783078052.0`` (a Seaglider emits this);
+    - ISO ``YYYY-MM-DD HH:MM:SS`` with no offset, read as UTC (a Seaglider);
+    - ISO with an explicit offset, e.g. ``2026-07-02 00:00:00+00:00`` (XSPAR);
+    - day-first ``DD/MM/YYYY HH:MM:SS`` (the SeaExplorer glider), read as UTC.
     """
     raw = raw.strip()
     if not raw:
         return None
     # A bare number is Unix epoch seconds; an ISO string fails float() and falls
-    # through to the parser below.
+    # through to the parsers below.
     try:
         epoch = float(raw)
     except ValueError:
@@ -102,9 +109,42 @@ def _parse_time(raw: str) -> datetime | None:
     try:
         dt = datetime.fromisoformat(raw)
     except ValueError:
-        return None
+        # SeaExplorer exports day-first ``DD/MM/YYYY HH:MM:SS`` (no offset, UTC).
+        try:
+            dt = datetime.strptime(raw, "%d/%m/%Y %H:%M:%S")
+        except ValueError:
+            return None
     # Naive timestamps are UTC; offset-aware ones are normalised to UTC.
     return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _delimiter(line: str) -> str:
+    """``;`` if a line has more semicolons than commas, else ``,``."""
+    return ";" if line.count(";") > line.count(",") else ","
+
+
+def _read_rows(text: str):
+    """``(lower-cased header, data-row iterator)`` from CSV ``text``; ``([], iter(()))``
+    if empty.
+
+    Feeds vary in dialect: the SeaExplorer glider exports a BOM-prefixed,
+    ``;``-separated *header* over ``,``-separated *data* rows, while everything
+    else is plain comma throughout. We strip a leading BOM and sniff the
+    delimiter of the header and of the data independently (each from its own
+    line), so a mixed file still maps columns by name and splits its rows
+    correctly. ``csv`` over ``splitlines()`` handles LF and any stray CR-only
+    endings alike.
+    """
+    lines = text.lstrip("\ufeff").splitlines()
+    if not lines:
+        return [], iter(())
+    header = [
+        h.strip().lower()
+        for h in next(csv.reader([lines[0]], delimiter=_delimiter(lines[0])))
+    ]
+    data = lines[1:]
+    reader = csv.reader(data, delimiter=_delimiter(data[0]) if data else ",")
+    return header, reader
 
 
 def _parse_csv(text: str) -> list[tuple[datetime, float, float]]:
@@ -112,13 +152,8 @@ def _parse_csv(text: str) -> list[tuple[datetime, float, float]]:
 
     Column order differs between (and within) platform types — some feeds put
     ``longitude`` before ``latitude`` — so we map by header *name*, not position.
-    ``csv`` over ``splitlines()`` handles LF and any stray CR-only endings alike.
     """
-    lines = text.splitlines()
-    if not lines:
-        return []
-    reader = csv.reader(lines)
-    header = [h.strip().lower() for h in next(reader)]
+    header, reader = _read_rows(text)
     try:
         ti, lai, loi = (
             header.index("time"),
@@ -158,13 +193,13 @@ def fetch_sources() -> list[Source]:
     """Every discovered platform track CSV, downloaded but not parsed; ``[]`` on
     total failure.
 
-    Each catalog and each CSV is fetched independently so one dead platform can't
-    suppress the rest.
+    Each folder listing and each CSV is fetched independently so one dead
+    platform can't suppress the rest.
     """
     sources = []
-    for gtype, catalog_url in _GROUPS:
+    for gtype, dir_url in _GROUPS:
         try:
-            datasets = _csv_datasets(_get(catalog_url))
+            datasets = _csv_datasets(_get(dir_url), dir_url)
         except Exception:
             continue
         for pid, csv_url in datasets:
@@ -186,21 +221,19 @@ def parse_source(src: Source) -> Platform | None:
 # --------------------------------------------------------------------------- #
 # floats — the same GLIDERS tree, read per-institution (skip the aggregate)
 # --------------------------------------------------------------------------- #
-# The WHIRLS floats sit under the same THREDDS ``GLIDERS`` tree as the
-# seagliders/XSPAR. Their ``FLOATS`` folder holds an aggregate ``floats_track.csv``
-# (every float's fixes interleaved) *beside* one
-# ``mr_float_<institution>_positions.csv`` per float. We read the per-institution
-# files — the same fixes, but fresher: the aggregate lags them — and skip the
-# aggregate so a float isn't counted twice. Discovered from the catalog like the
-# gliders, so a new institution's float file appears with no code change.
+# The WHIRLS floats sit under the same ``GLIDERS`` tree as the seagliders/XSPAR.
+# Their ``FLOATS`` folder holds an aggregate ``floats_track.csv`` (every float's
+# fixes interleaved) *beside* one ``mr_float_<institution>_positions.csv`` per
+# float. We read the per-institution files — the same fixes, but fresher: the
+# aggregate lags them — and skip the aggregate so a float isn't counted twice.
+# Discovered from the folder listing like the gliders, so a new institution's
+# float file appears with no code change.
 #
 # Float identity still lives in a ``filename`` column (``65a0_015_01_technical.txt``)
 # rather than the file name, so parsing groups by that column's leading id (each
 # per-institution file is normally one float, but grouping stays correct if one
 # ever carries more, and reuses the operational map's identity rule).
-FLOATS_CATALOG = (
-    f"{THREDDS}/catalog/WHIRLS/OBSERVATIONS/GLIDERS/FLOATS/catalog.xml"
-)
+FLOATS_DIR = f"{BASE}/GLIDERS/FLOATS/"
 _FLOATS_AGGREGATE = "floats_track.csv"
 
 # The operational map's own id -> label mapping (``65a0`` = U. Gothenburg float,
@@ -210,15 +243,15 @@ _FLOAT_LABELS = {"65a0": "UGOT", "6594": "SOTON"}
 
 
 def fetch_float_sources() -> list[Source]:
-    """Every per-institution float position CSV under the FLOATS catalog,
+    """Every per-institution float position CSV under the FLOATS folder,
     downloaded but not parsed; ``[]`` on failure. The aggregate
     ``floats_track.csv`` is skipped (same fixes interleaved, and it lags the
     per-institution files). Each ``id`` is the source filename, so ingest
     publishes it raw beside the glider CSVs (``data/raw/gliders/<id>.csv``). Each
-    catalog and each CSV is fetched independently so one dead file can't suppress
+    listing and each CSV is fetched independently so one dead file can't suppress
     the rest."""
     try:
-        datasets = _csv_datasets(_get(FLOATS_CATALOG))
+        datasets = _csv_datasets(_get(FLOATS_DIR), FLOATS_DIR)
     except Exception:
         return []
     sources = []
@@ -245,11 +278,7 @@ def parse_float_source(src: Source) -> list[Platform]:
     glider :class:`Platform` shape, so floats ride the same downstream
     (``write_gliders``, ``gliders_geojson``, the forecast) unchanged. Platforms
     are returned sorted by id for a stable ``gliders.csv``."""
-    lines = src.text.splitlines()
-    if not lines:
-        return []
-    reader = csv.reader(lines)
-    header = [h.strip().lower() for h in next(reader)]
+    header, reader = _read_rows(src.text)
     try:
         ti, lai, loi, fi = (
             header.index("time"),

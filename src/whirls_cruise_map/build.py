@@ -181,15 +181,15 @@ def ingest(data_dir: Path) -> None:
         f"deployment detected for {len(deploy_starts)} drifters"
     )
 
-    # Glider-group platforms (XSPAR + seagliders + floats), from WHIRLS THREDDS,
-    # all folded into gliders.csv. Each source CSV is published raw before
-    # parsing. Gliders and floats are fetched in separate best-effort blocks (one
-    # failing can't suppress the other), then written together; a total failure
-    # of both leaves no gliders.csv.
+    # Glider-group platforms (XSPAR + seagliders + floats), from the WHIRLS
+    # observations portal, all folded into gliders.csv. Each source CSV is
+    # published raw before parsing. Gliders and floats are fetched in separate
+    # best-effort blocks (one failing can't suppress the other), then written
+    # together; a total failure of both leaves no gliders.csv.
     gliders = []
     try:
         for src in _gliders.fetch_sources():
-            entries.append(_data.write_raw_text(data_dir, f"gliders/{src.id}.csv", src.text, _gliders.THREDDS))
+            entries.append(_data.write_raw_text(data_dir, f"gliders/{src.id}.csv", src.text, _gliders.BASE))
             p = _gliders.parse_source(src)
             if p is not None:
                 gliders.append(p)
@@ -197,7 +197,7 @@ def ingest(data_dir: Path) -> None:
     except Exception as exc:
         print(f"WARNING: glider ingest failed: {exc}")
 
-    # Floats: the per-institution position CSVs under the FLOATS catalog (the
+    # Floats: the per-institution position CSVs under the FLOATS folder (the
     # aggregate floats_track.csv is skipped — same fixes, but it lags). Each
     # source is published raw before parsing; identity comes from its filename
     # column (see _gliders). Best-effort, so a float failure can't suppress the
@@ -205,7 +205,7 @@ def ingest(data_dir: Path) -> None:
     try:
         floats = []
         for src in _gliders.fetch_float_sources():
-            entries.append(_data.write_raw_text(data_dir, f"gliders/{src.id}.csv", src.text, _gliders.THREDDS))
+            entries.append(_data.write_raw_text(data_dir, f"gliders/{src.id}.csv", src.text, _gliders.BASE))
             floats.extend(_gliders.parse_float_source(src))
         gliders.extend(floats)
         print(f"floats: {len(floats)} platforms")
@@ -215,7 +215,8 @@ def ingest(data_dir: Path) -> None:
     if gliders:
         entries.append(_data.write_gliders(data_dir, gliders))
 
-    # R/V S.A. Agulhas II, from IPSL THREDDS CSV (no-CORS; baked here).
+    # R/V S.A. Agulhas II, from the IPSL observations-portal CSV (baked here for
+    # resilience, though the portal is CORS-open; see _agulhas).
     agulhas = []
     try:
         a_raw = _agulhas.fetch_raw()

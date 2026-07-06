@@ -1,13 +1,14 @@
-"""Fetch the R/V S.A. Agulhas II track from the IPSL WHIRLS THREDDS server.
+"""Fetch the R/V S.A. Agulhas II track from the IPSL WHIRLS observations portal.
 
 The South African Agulhas II is the cruise's second vessel. Unlike the Marion
-Dufresne — served live to the browser from the CORS-open Flotte Océanographique
-Française API (see docs/ship.md) — the Agulhas is published as a CSV on IPSL's
-THREDDS fileServer, which sends no ``Access-Control-Allow-Origin`` header. A
-browser therefore cannot read it cross-origin, so it is fetched server-side at
-ingest time — published cleaned to ``data/ship_agulhas_ii.csv`` and, by the
-derive stage, baked into the map's ``agulhas.json`` for the client to load
-same-origin.
+Dufresne — served live to the browser from the Flotte Océanographique Française
+API (see docs/ship.md) — the Agulhas is published as a CSV on the WHIRLS
+observations portal. It is fetched server-side at ingest time — published
+cleaned to ``data/ship_agulhas_ii.csv`` and, by the derive stage, baked into the
+map's ``agulhas.json`` for the client to load same-origin. The portal is in fact
+CORS-open, so the client *could* read it cross-origin, but baking keeps the map
+working from the last-good copy when the source is briefly unavailable and
+avoids re-fetching upstream on every page load.
 
 The CSV is itself an hourly scrape of myshiptracking.com (its ``source_url`` /
 ``scraped_at_utc`` columns), so — unlike the MD API — it carries **reported**
@@ -25,9 +26,13 @@ import urllib.request
 from datetime import datetime, timezone
 
 CSV_URL = (
-    "https://thredds-x.ipsl.fr/thredds/fileServer/WHIRLS/OBSERVATIONS/SHIPS/"
+    "https://observations.ipsl.fr/aeris/whirls/data/observations/SHIPS/"
     "agulhas_positions.csv"
 )
+
+# The portal's Apache 403s requests without an ``Accept`` header (urllib omits it
+# by default); a descriptive ``User-Agent`` is courtesy, not required.
+_HEADERS = {"User-Agent": "whirls-cruise-map ingest", "Accept": "*/*"}
 
 
 def _parse_time(raw: str) -> datetime | None:
@@ -58,7 +63,8 @@ def fetch_raw() -> str | None:
     (``data/raw/agulhas_ii.csv``) before parsing it.
     """
     try:
-        with urllib.request.urlopen(CSV_URL, timeout=30) as resp:
+        req = urllib.request.Request(CSV_URL, headers=_HEADERS)
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.read().decode("utf-8", "replace")
     except Exception:
         return None

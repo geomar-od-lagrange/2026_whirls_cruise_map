@@ -12,27 +12,33 @@ That fork is the central design fact here, so it comes first.
 
 | | Marion Dufresne | S.A. Agulhas II |
 |---|---|---|
-| Source | Flotte Océanographique Française localisation API (JSON) | IPSL WHIRLS THREDDS `agulhas_positions.csv` |
-| CORS | open (`Access-Control-Allow-Origin: *`) | **none** — no `Access-Control-Allow-Origin` header |
+| Source | Flotte Océanographique Française localisation API (JSON) | IPSL WHIRLS observations-portal `agulhas_positions.csv` |
+| CORS | open (`Access-Control-Allow-Origin: *`) | open (`Access-Control-Allow-Origin: *`) |
 | Fetched | **live in `app.js`**, polled every 5 min | **baked** into `site/map/data/agulhas.json` by derive (also published cleaned at `/data/ship_agulhas_ii.csv` by ingest, see [data.md](data.md)) |
 | Cadence | ~10-min fixes, near-real-time | hourly scrape of myshiptracking.com |
 | Motion | **derived** client-side (API reports none) | **reported** (speed/course in the CSV) |
 | Extra fields | met (sea/air temp, pressure, wind) | status (moving/stopped), area |
 
-The CORS column decides the fetch path. A browser may only read a cross-origin
-response the server marks readable with `Access-Control-Allow-Origin`. The FOF API
-sends it (the IPSL operational map fetches it client-side for the same reason), so
-the Marion Dufresne can be a **live** layer that stays current between rebuilds.
-The THREDDS fileServer sends `Access-Control-Allow-Methods`/`-Headers` but **not**
-`-Allow-Origin`, so the browser cannot read the Agulhas CSV directly. It is
-therefore fetched **server-side by the Python build** (which has no CORS
-constraint), published cleaned at `/data/ship_agulhas_ii.csv` by ingest, and
-read back and written to `site/map/data/agulhas.json` by derive, which the
-client then loads same-origin like every other map artifact.
+Both sources are CORS-open, so the fetch path is a deliberate choice, not a
+constraint. The Marion Dufresne is a **live** layer because it is a
+near-real-time feed of a continuously moving vessel — polling keeps it current
+between rebuilds, exactly as the IPSL operational map does.
 
-Baking costs little freshness here: the CSV is itself an **hourly scrape** of
-myshiptracking.com (its `source_url` / `scraped_at_utc` columns), not a realtime
-feed, so it is only as fresh as its own scraper regardless of how we fetch it.
+The Agulhas is **baked** instead, for two reasons that outweigh a live fetch.
+First, freshness costs nothing: its CSV is an **hourly scrape** of
+myshiptracking.com (its `source_url` / `scraped_at_utc` columns), only as current
+as its own scraper however we fetch it. Second, baking adds resilience — the map
+keeps showing the last-good track when the portal is briefly unreachable, and the
+client depends on no third-party host at page load. So it is fetched
+**server-side by the Python build**, published cleaned at
+`/data/ship_agulhas_ii.csv` by ingest, and read back and written to
+`site/map/data/agulhas.json` by derive, which the client loads same-origin like
+every other map artifact.
+
+(IPSL also serves this CSV from its THREDDS server, but that host is heavier and
+its `fileServer` sends no `Access-Control-Allow-Origin`; the observations portal
+is lighter, more reliable, and CORS-open. The bake is kept regardless, for the
+freshness/resilience reasons above.)
 
 ## Marion Dufresne — the live layer
 
@@ -161,11 +167,11 @@ from the Marion Dufresne, not the Agulhas, so this is Marion-Dufresne-only.
 
 ### Data source
 
-IPSL publishes the Agulhas track as a single CSV on the WHIRLS THREDDS server
-(the same host the gliders come from, see [gliders.md](gliders.md)):
+IPSL publishes the Agulhas track as a single CSV on the WHIRLS observations
+portal (the same host the gliders come from, see [gliders.md](gliders.md)):
 
 ```
-https://thredds-x.ipsl.fr/thredds/fileServer/WHIRLS/OBSERVATIONS/SHIPS/agulhas_positions.csv
+https://observations.ipsl.fr/aeris/whirls/data/observations/SHIPS/agulhas_positions.csv
 ```
 
 ```
