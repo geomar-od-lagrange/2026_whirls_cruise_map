@@ -20,9 +20,8 @@ decisions still owed.
 > holds — but its *home* is no longer a `deploy/gateway/` subdir here. The
 > gateway, the single Route, the `/`→`/map/` redirect, cross-app NetworkPolicies,
 > and the OpenShift manifest/CronJob wiring now live in
-> [`oc_gateway`](https://git.geomar.de/2026-whirlscruise-lagrange/oc_gateway.git)
-> (`~/src/git.geomar.de/2026-whirlscruise-lagrange/oc_gateway`), whose
-> `plans/001-oc-gateway-and-phasing.md` owns the cross-repo migration and its
+> [`oc_gateway`](https://git.geomar.de/2026-whirlscruise-lagrange/oc_gateway.git),
+> whose `plans/001-oc-gateway-and-phasing.md` owns the cross-repo migration and its
 > phase order. See **Repo structure — revised to three repos** below.
 
 ## What we inherit from the prep repo's `deploy/viewer/`
@@ -250,8 +249,7 @@ schema, `docs/data.md`) — this list is the summary, 018 is the spec:
 app lineage is the right amount — do not create further repos; the gateway is a
 `deploy/gateway/` subdir here." **That is now reversed:** the gateway plus all
 OpenShift orchestration move to a dedicated **third repo**,
-[`oc_gateway`](https://git.geomar.de/2026-whirlscruise-lagrange/oc_gateway.git)
-(`~/src/git.geomar.de/2026-whirlscruise-lagrange/oc_gateway`). Its
+[`oc_gateway`](https://git.geomar.de/2026-whirlscruise-lagrange/oc_gateway.git). Its
 `plans/001-oc-gateway-and-phasing.md` owns the migration; the topology, tiers,
 and auth/TLS decisions elsewhere in *this* plan still hold — only their home
 changed.

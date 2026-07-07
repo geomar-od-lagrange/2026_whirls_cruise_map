@@ -106,7 +106,8 @@ drifter share is public and needs no secrets.
 
 The site is served at a **namespace subpath**,
 `https://<namespace>.pages.geomar.de/<project>/` (currently
-`https://willi-rath.pages.geomar.de/2026_whirls_cruise_map/`), not a domain root.
+`https://2026-whirlscruise-lagrange.pages.geomar.de/2026_whirls_cruise_map/`), not a
+domain root.
 This is deliberate: the project's **"Use unique domain" Pages setting is off**, so
 the URL is the stable, human-legible namespace path rather than a random-hash
 host — and **HTTPS enforcement is off**, so the same content is reachable over
