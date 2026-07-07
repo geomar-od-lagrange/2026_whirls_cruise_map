@@ -8,8 +8,8 @@ fall back to Pages / an nginx pod with no backend, and only the forecast callbac
 needs this live service. The client resolves the API base at load
 (``site/map/app.js``): same-origin by default (which is what the plan-017 gateway
 gives, serving ``/map`` and ``/api`` under one host), auto-targeting :8001 in the
-two-port dev flow, and overridable (``?api=…``) for the cross-origin case (static
-on Pages, API elsewhere).
+two-port dev flow. There is no client-controlled override — the deployed map only
+ever talks to its own origin.
 
 The endpoint is a **pure batch advector**: the client (in "Deploy" mode) clicks a
 multi-segment path, resamples it into equally-spaced drifter drops, computes each
