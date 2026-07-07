@@ -680,15 +680,24 @@ function drawShipTrack(vertices, deployLayer) {
 // The committed drop discs: a white-ringed green disc per drop, tooltip = deploy
 // order + water-entry ETA. `drops` is [{ latlng, start }]. Rendered in the
 // deployDrops pane, so they sit above the tracks but below the +Δt mark dots
-// regardless of draw order.
-function drawDrops(drops, deployLayer) {
+// regardless of draw order. Each disc is clickable: it highlights the whole deployment's
+// drop set (every disc, enlarged + dark-ringed — see selectDropSet). Its click is
+// swallowed (bubblingMouseEvents:false) so it highlights rather than reaching the map
+// (which would clear selections or add a path vertex).
+function drawDrops(drops, deployLayer, deploymentId) {
+  const set = (deployDropSets[deploymentId] ??= []);
+  const selected = String(deploymentId) === selectedDropSet;
   drops.forEach((d, i) => {
-    L.circleMarker(d.latlng, {
-      pane: "deployDrops", radius: 4, color: "#fff", weight: 1,
+    const disc = L.circleMarker(d.latlng, {
+      pane: "deployDrops", radius: DEPLOY_DROP_RADIUS, color: "#fff", weight: 1,
       fillColor: DEPLOY_COLOR, fillOpacity: 1,
-    })
-      .bindTooltip(`#${i + 1} · ${d.start}`, { direction: "top" })
-      .addTo(deployLayer);
+      bubblingMouseEvents: false,
+    });
+    disc.bindTooltip(`#${i + 1} · ${d.start}`, { direction: "top" });
+    disc.on("click", () => selectDropSet(deploymentId));
+    set.push(disc);
+    restyleDropDisc(disc, selected);
+    disc.addTo(deployLayer);
   });
 }
 
@@ -746,6 +755,17 @@ function buildDeployTool(deployLayer) {
     resetPath();
     if (!path.length) return;
     placeDeployment(path, deployLayer, setStatus, startTime, state);
+  };
+
+  // Abort an in-progress path (right-click / Escape): discard the clicked vertices and
+  // wipe the preview without committing. Stays armed, so the next click starts fresh.
+  // Returns whether a path was actually in progress, so the caller only swallows the
+  // event (browser context menu) when it consumed one.
+  const handleAbort = () => {
+    if (!state.on || !state.vertices.length) return false;
+    resetPath();
+    setStatus("cancelled — click a path · double-click to finish");
+    return true;
   };
 
   const control = L.control({ position: "topright" });
@@ -815,18 +835,19 @@ function buildDeployTool(deployLayer) {
     clear.textContent = "Clear";
     clear.addEventListener("click", () => {
       deployLayer.clearLayers();
-      resetDeployDots(); // drop the highlight registry along with the dots it points at
+      resetDeployHighlights(); // drop the highlight registries along with the layers they point at
       resetPath();
       setStatus("");
     });
 
-    L.DomUtil.create("p", "ft-hint", div).textContent = "click a path · double-click to finish";
+    L.DomUtil.create("p", "ft-hint", div).textContent =
+      "click a path · double-click to finish · right-click / Esc to cancel";
     buildDeployLegend(div);
     statusEl = L.DomUtil.create("p", "ft-status", div);
 
     return div;
   };
-  return { control, state, handleClick, handleDblClick, handleMove };
+  return { control, state, handleClick, handleDblClick, handleMove, handleAbort };
 }
 
 // Resample the finished path into equally-spaced drops, stagger each drop's
@@ -835,6 +856,7 @@ function buildDeployTool(deployLayer) {
 // per-drop advection lines + synced-t0 dots. `startTime` (the displayed field's
 // valid time) is the run start, so drop #1 enters at the field's instant.
 async function placeDeployment(vertices, deployLayer, setStatus, startTime, opts) {
+  const deploymentId = ++deployCounter; // namespaces this placement's dot columns + drop rows
   const { drops, totalKm } = resamplePolyline(vertices, opts.spacing);
   const seeds = drops.map((d) => ({
     lon: Number(d.latlng.lng.toFixed(5)),
@@ -847,7 +869,7 @@ async function placeDeployment(vertices, deployLayer, setStatus, startTime, opts
   const transitH = totalKm / (opts.shipKn * KN_TO_KMH);
   const geom = `${drops.length} drops · ${totalKm.toFixed(1)} km · ~${transitH.toFixed(1)} h transit`;
   if (!opts.forecast) {
-    drawDrops(dropRecords, deployLayer);
+    drawDrops(dropRecords, deployLayer, deploymentId);
     setStatus(`${geom} · drift off`);
     return;
   }
@@ -861,17 +883,18 @@ async function placeDeployment(vertices, deployLayer, setStatus, startTime, opts
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      drawDrops(dropRecords, deployLayer);
+      drawDrops(dropRecords, deployLayer, deploymentId);
       setStatus(`${geom} · ${data.detail || data.error || `error ${resp.status}`}`);
       return;
     }
     const horizonH = data.properties?.horizon_h ?? opts.horizonH;
+    const markStepH = data.properties?.mark_step_h ?? DEPLOY_MARK_STEP_H;
     const runStart = data.properties?.run_start ?? startTime;
-    drawDeployForecastLines(data.features ?? [], deployLayer, horizonH, runStart, ++deployCounter);
-    updateDeployLegend(horizonH); // ticks match the horizon these dots were coloured over
+    drawDeployForecastLines(data.features ?? [], deployLayer, markStepH, runStart, deploymentId);
+    updateDeployLegend(horizonH, markStepH); // ticks + bands match the grid these dots used
     // Drops and mark dots live in stacked panes (deployDrops < deployDots), so the
     // draw order here doesn't matter — the discs sit below the delayed dots either way.
-    drawDrops(dropRecords, deployLayer);
+    drawDrops(dropRecords, deployLayer, deploymentId);
     const p = data.properties ?? {};
     // A plan whose run start predates (or postdates) the loaded field window gets
     // every seed skipped — say so, rather than a bare "0/N drift" that reads as a bug.
@@ -882,71 +905,84 @@ async function placeDeployment(vertices, deployLayer, setStatus, startTime, opts
       setStatus(`${geom} · ${p.forecasts}/${p.n_seeds} drift`);
     }
   } catch (err) {
-    drawDrops(dropRecords, deployLayer);
+    drawDrops(dropRecords, deployLayer, deploymentId);
     setStatus(`${geom} · request failed — is \`pixi run serve-api\` running?`);
   }
 }
 
 // Synced-snapshot dot colours. Every drop is dotted at the *same* wall-clock times
-// (run start + 3/6/…/horizon h), so a dot's colour — keyed to its absolute time
-// since the run start — makes one colour the whole array at one t0: read a pattern
-// off the map by picking a colour. The ramp is **turbo** (Mikhailov's high-contrast
-// rainbow): it sweeps hue monotonically dark-blue → cyan → green → yellow → red with
-// strong local contrast everywhere, so adjacent marks (3, 6, 9, 12 h …) stay far
-// apart in colour. A divergent ramp (RdYlBu) washed its mid-horizon marks out to a
-// near-white neutral, making neighbouring t0's there indistinguishable; turbo has no
-// such flat band. properties.horizon_h sets the ramp top; the constant is the
-// fallback and matches the server's _DEFAULT_HORIZON_H.
+// (run start + k·mark_step h), so a dot's colour — keyed to its absolute time since
+// the run start — makes one colour the whole array at one t0: read a pattern off the
+// map by picking a colour. The palette is matplotlib's **tab20c**: a categorical map
+// of five hue families (blue, orange, green, purple, grey), each in four shades from
+// dark to light. It's indexed by mark ordinal (k = hours / mark_step), so consecutive
+// marks step through it — every fourth mark opens a new hue family, the three between
+// are lightness steps of that hue. Adjacent marks stay easy to tell apart, and the
+// family boundary gives a coarse "which quarter of the run" read. Used discrete, not
+// interpolated: blending across a qualitative palette's entries muddies it. The index
+// wraps past 20 marks (rare at the default 3 h / 48 h = 16). mark_step falls back to
+// the server's _DEFAULT_MARK_STEP_H, the horizon to _DEFAULT_HORIZON_H.
 const DEPLOY_HORIZON_H = 48;
-const DEPLOY_RAMP = [
-  "#30123b", "#4146ac", "#4675ed", "#3aa2fc", "#1bcfd4",
-  "#24eca6", "#61fc6c", "#a4fc3b", "#d1e834", "#f3c63a",
-  "#fe9b2d", "#e34a08", "#7a0403",
+const DEPLOY_MARK_STEP_H = 3;
+const DEPLOY_TAB20C = [
+  "#3182bd", "#6baed6", "#9ecae1", "#c6dbef", // blues
+  "#e6550d", "#fd8d3c", "#fdae6b", "#fdd0a2", // oranges
+  "#31a354", "#74c476", "#a1d99b", "#c7e9c0", // greens
+  "#756bb1", "#9e9ac8", "#bcbddc", "#dadaeb", // purples
+  "#636363", "#969696", "#bdbdbd", "#d9d9d9", // greys
 ];
 
-// sRGB-interpolate DEPLOY_RAMP at absolute mark hour `hours` over [0, horizonH].
-function deployMarkColor(hours, horizonH) {
-  const span = horizonH > 0 ? horizonH : DEPLOY_HORIZON_H;
-  const t = Math.min(Math.max(hours / span, 0), 1);
-  const x = t * (DEPLOY_RAMP.length - 1);
-  const i = Math.min(Math.floor(x), DEPLOY_RAMP.length - 2);
-  const f = x - i;
-  const rgb = (c) => [1, 3, 5].map((k) => parseInt(c.slice(k, k + 2), 16));
-  const [r0, g0, b0] = rgb(DEPLOY_RAMP[i]);
-  const [r1, g1, b1] = rgb(DEPLOY_RAMP[i + 1]);
-  const mix = (a, b) => Math.round(a + (b - a) * f).toString(16).padStart(2, "0");
-  return `#${mix(r0, r1)}${mix(g0, g1)}${mix(b0, b1)}`;
+// The tab20c swatch for the mark at absolute run-relative `hours`: its ordinal
+// k = round(hours / mark_step) (marks sit on run_start + k·step, so this is exact),
+// mapped 1-based into the palette and wrapped, so the first mark takes the first
+// swatch.
+function deployMarkColor(hours, markStepH) {
+  const step = markStepH > 0 ? markStepH : DEPLOY_MARK_STEP_H;
+  const k = Math.max(0, Math.round(hours / step) - 1);
+  return DEPLOY_TAB20C[k % DEPLOY_TAB20C.length];
 }
 
-// Shared synced-snapshot dot legend: a caption, the turbo gradient bar from the
-// run start to the forecast horizon (same ramp deployMarkColor uses), and three ticks
-// (run · mid · horizon) marking the span's midpoint and end. Appended to the Deploy
-// control, so a dot's colour reads as its t0 — the array's shape at one instant since
-// the run began — and the caption points at the click-to-highlight interaction.
-// The mid/horizon tick <span>s, relabelled per placement (updateDeployLegend) so the
-// legend's hour ticks track the horizon the dots were actually coloured over — the
-// "Forecast (h)" knob / the server-echoed horizon_h — not a fixed 48 h. deployMarkColor
-// spans [0, horizonH]; these ticks label that span's midpoint and end.
+// Shared synced-snapshot dot legend: a caption, the tab20c band bar from the run
+// start to the forecast horizon (the same swatch sequence deployMarkColor steps
+// through), and three ticks (run · mid · horizon) marking the span's midpoint and end.
+// Appended to the Deploy control, so a dot's colour reads as its t0 — the array's
+// shape at one instant since the run began — and the caption points at the
+// click-to-highlight interaction. Repainted per placement (updateDeployLegend) so both
+// the hour ticks and the number of colour bands track the horizon + mark step the dots
+// were actually coloured over — the "Forecast (h)" knob / the server-echoed horizon_h
+// and mark_step_h — not a fixed 48 h / 3 h.
 let deployLegendMidTick = null;
 let deployLegendEndTick = null;
+let deployLegendBar = null;
 
-function updateDeployLegend(horizonH) {
+function updateDeployLegend(horizonH, markStepH) {
   const h = horizonH > 0 ? horizonH : DEPLOY_HORIZON_H;
+  const step = markStepH > 0 ? markStepH : DEPLOY_MARK_STEP_H;
   if (deployLegendMidTick) deployLegendMidTick.textContent = `+${+(h / 2).toFixed(1)} h`;
   if (deployLegendEndTick) deployLegendEndTick.textContent = `+${+h.toFixed(1)} h`;
+  if (deployLegendBar) {
+    // One hard-edged band per mark over the horizon (left = run, right = horizon), so
+    // the bar shows the discrete swatch sequence, not a smooth gradient.
+    const n = Math.max(1, Math.round(h / step));
+    const bands = [];
+    for (let k = 0; k < n; k++) {
+      const c = deployMarkColor((k + 1) * step, step);
+      bands.push(`${c} ${((k / n) * 100).toFixed(2)}% ${(((k + 1) / n) * 100).toFixed(2)}%`);
+    }
+    deployLegendBar.style.background = `linear-gradient(to right, ${bands.join(", ")})`;
+  }
 }
 
 function buildDeployLegend(div) {
   const legend = L.DomUtil.create("div", "pt-legend", div);
   L.DomUtil.create("span", "pt-legend-cap", legend).textContent =
     "dot = array at run +Δt · click one → its whole Δt";
-  const bar = L.DomUtil.create("div", "pt-legend-bar", legend);
-  bar.style.background = `linear-gradient(to right, ${DEPLOY_RAMP.join(", ")})`;
+  deployLegendBar = L.DomUtil.create("div", "pt-legend-bar", legend);
   const ticks = L.DomUtil.create("div", "pt-legend-ticks", legend);
   L.DomUtil.create("span", "", ticks).textContent = "run";
   deployLegendMidTick = L.DomUtil.create("span", "", ticks);
   deployLegendEndTick = L.DomUtil.create("span", "", ticks);
-  updateDeployLegend(DEPLOY_HORIZON_H); // default until the first placement
+  updateDeployLegend(DEPLOY_HORIZON_H, DEPLOY_MARK_STEP_H); // default until first placement
 }
 
 // --- deploy-dot highlight ----------------------------------------------------
@@ -955,9 +991,9 @@ function buildDeployLegend(div) {
 // that same mark hour of that same deployment (enlarged + dark-ringed), so the array
 // at one t0 is read by click, not just by colour. Each placed deployment gets its own
 // id (deployCounter), so a +3 h click lifts only that run's +3 h dots and leaves
-// another deployment's alone. Cleared by re-clicking the group, or by Clear
-// (resetDeployDots). A dot's own click is swallowed (bubblingMouseEvents:false) so it
-// highlights rather than adding a path vertex / clearing a track selection.
+// another deployment's alone. Cleared by re-clicking the group, a background click, or
+// Clear (resetDeployHighlights). A dot's own click is swallowed (bubblingMouseEvents:
+// false) so it highlights rather than adding a path vertex / clearing a track selection.
 let deployCounter = 0;
 const deployDotGroups = {}; // `${deploymentId}|${hours}` -> [{ marker, base }]
 let selectedDeployDot = null; // the selected group key, or null
@@ -998,9 +1034,69 @@ function selectDeployDot(key) {
   applyDeployDotSelection();
 }
 
-function resetDeployDots() {
+// --- deploy drop-set + track highlight ---------------------------------------
+// Two more read-by-click axes beside the dot columns (which lift all dots at one Δt):
+//   • DROP SET — clicking any drop disc lifts EVERY drop disc of that deployment
+//     (enlarged + dark-ringed), so the whole array of water-entry points reads at once.
+//   • TRACK — clicking a forecast line, on bare track between the markers, lifts that
+//     ONE drifter's trajectory (thickened + recoloured magenta).
+// The drop set keys off the deployment id; the track off deployment id + drop index.
+// All three axes (dot column, drop set, track) are independent — a disc / line / dot
+// click is swallowed so it toggles its own axis without disturbing the others. Cleared
+// by re-clicking, a background click, or Clear (resetDeployHighlights).
+const DEPLOY_DROP_RADIUS = 4;
+const deployDropSets = {}; // deploymentId -> [disc markers]
+const deployTracks = {};   // `${deploymentId}#${index}` -> line
+let selectedDropSet = null; // deploymentId (string) or null
+let selectedTrack = null;   // track key or null
+
+function restyleDropDisc(disc, selected) {
+  disc.setStyle({ color: selected ? "#111827" : "#fff", weight: selected ? 2 : 1 });
+  disc.setRadius(selected ? DEPLOY_DROP_RADIUS + 3 : DEPLOY_DROP_RADIUS);
+  if (selected) disc.bringToFront();
+}
+
+function applyDropSetSelection() {
+  for (const id of Object.keys(deployDropSets))
+    for (const disc of deployDropSets[id]) restyleDropDisc(disc, id === selectedDropSet);
+}
+
+// Toggle: clicking a disc of the selected deployment clears it; another replaces it.
+function selectDropSet(deploymentId) {
+  const id = String(deploymentId);
+  selectedDropSet = id === selectedDropSet ? null : id;
+  applyDropSetSelection();
+}
+
+function restyleTrack(line, selected) {
+  line.setStyle({
+    color: selected ? "#d81b8c" : DEPLOY_COLOR, // magenta pops off the green track set
+    weight: selected ? 4 : 2,
+    opacity: selected ? 1 : 0.9,
+  });
+  if (selected) line.bringToFront();
+}
+
+function applyTrackSelection() {
+  for (const key of Object.keys(deployTracks))
+    restyleTrack(deployTracks[key], key === selectedTrack);
+}
+
+// Toggle: clicking the selected track clears it; another track replaces it.
+function selectDeployTrack(key) {
+  selectedTrack = key === selectedTrack ? null : key;
+  applyTrackSelection();
+}
+
+// Clear every deploy highlight — dot columns, drop sets, and tracks — and forget their
+// registries. Called by the Deploy tool's Clear button along with the layers.
+function resetDeployHighlights() {
   for (const key of Object.keys(deployDotGroups)) delete deployDotGroups[key];
+  for (const id of Object.keys(deployDropSets)) delete deployDropSets[id];
+  for (const key of Object.keys(deployTracks)) delete deployTracks[key];
   selectedDeployDot = null;
+  selectedDropSet = null;
+  selectedTrack = null;
 }
 
 // A mark's absolute wall-clock time (ISO-8601, whole seconds — the drop discs' ETA
@@ -1014,29 +1110,42 @@ function markIso(runStartISO, hours) {
 }
 
 // Draw one deployment's per-drop drift: a green line per forecast feature (in the
-// deployTracks pane), plus its synced-t0 dots (in the deployDots pane above the
-// tracks and drop discs) — coloured by absolute mark hour (deployMarkColor) and
-// clickable to highlight every same-hour dot of this deployment (`deploymentId`). A
+// deployTracks pane, click-highlightable as a single trajectory via a fat transparent
+// hit-line), plus its synced-t0 dots (in the deployDots pane above the tracks and drop
+// discs) — coloured by absolute mark hour (deployMarkColor) and clickable to highlight
+// every same-hour dot of this deployment (`deploymentId`). A
 // thin white ring keeps the colour legible over the currents overlay. Each dot's
 // tooltip pairs the run-relative hours with the mark's absolute ISO time (from
 // `runStart`). GeoJSON coords are [lon,lat]; Leaflet wants [lat,lng]. (The ship
 // track + drops are drawn client-side by the caller; the API returns only forecast
 // features.) A closing restack keeps later marks painted above earlier ones.
-function drawDeployForecastLines(features, deployLayer, horizonH, runStart, deploymentId) {
+function drawDeployForecastLines(features, deployLayer, markStepH, runStart, deploymentId) {
   const ll = ([lon, lat]) => [lat, lon];
   for (const f of features) {
     if (f.properties?.role !== "forecast") continue;
     const coords = f.geometry?.coordinates ?? [];
     if (coords.length < 2) continue;
-    L.polyline(coords.map(ll), {
-      pane: "deployTracks",
-      color: DEPLOY_COLOR,
-      weight: 2,
-      opacity: 0.9,
+    const latlngs = coords.map(ll);
+    const trackKey = `${deploymentId}#${f.properties.index}`;
+    // The visible drift line (non-interactive), plus a fat transparent hit-line over the
+    // same path so its thin stroke is easy to click on bare track. A track click lifts
+    // this one trajectory (selectDeployTrack); the hit-line's click is swallowed so it
+    // doesn't reach the map. Both sit in the lowest pane, so a click where a disc/dot
+    // overlaps hits that marker instead of the track.
+    const line = L.polyline(latlngs, {
+      pane: "deployTracks", color: DEPLOY_COLOR, weight: 2, opacity: 0.9,
       interactive: false,
     }).addTo(deployLayer);
+    L.polyline(latlngs, {
+      pane: "deployTracks", color: "#000", weight: 12, opacity: 0,
+      bubblingMouseEvents: false,
+    })
+      .on("click", () => selectDeployTrack(trackKey))
+      .addTo(deployLayer);
+    deployTracks[trackKey] = line;
+    restyleTrack(line, trackKey === selectedTrack);
     for (const m of f.properties?.marks ?? []) {
-      const base = { radius: 4, fillColor: deployMarkColor(m.hours, horizonH) };
+      const base = { radius: 4, fillColor: deployMarkColor(m.hours, markStepH) };
       const key = `${deploymentId}|${m.hours}`;
       const dot = L.circleMarker([m.lat, m.lon], {
         pane: "deployDots",
@@ -1892,9 +2001,31 @@ async function main() {
       selectedDeployDot = null;
       applyDeployDotSelection();
     }
+    if (selectedDropSet != null) {
+      selectedDropSet = null;
+      applyDropSetSelection();
+    }
+    if (selectedTrack != null) {
+      selectedTrack = null;
+      applyTrackSelection();
+    }
   });
   map.on("dblclick", (e) => {
     if (deployTool.state.on) deployTool.handleDblClick(e.latlng, displayedFieldTime);
+  });
+
+  // Right-click aborts an in-progress deploy path (and suppresses the browser context
+  // menu while the tool is armed, so a cancelling right-click doesn't also pop it).
+  map.on("contextmenu", (e) => {
+    if (!deployTool.state.on) return; // tool off: leave the normal browser menu alone
+    L.DomEvent.preventDefault(e.originalEvent);
+    deployTool.handleAbort();
+  });
+
+  // Escape aborts an in-progress deploy path too — same as a right-click, from the
+  // keyboard. (Bound on the document since the map container isn't reliably focused.)
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") deployTool.handleAbort();
   });
 
   // Live placement preview: while Deploy mode is armed and a path is being drawn,

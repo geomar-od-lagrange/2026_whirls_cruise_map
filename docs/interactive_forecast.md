@@ -204,6 +204,9 @@ cursor). While armed:
   (ship route + drift lines) lowest, `deployDrops` (drop discs) above, and
   `deployDots` (the `+Δt` mark dots) on top — so a drop disc never hides a delayed
   dot and the dots never slip under a line, regardless of draw order.
+- **right-click** (or **Escape**) aborts an in-progress path: the clicked vertices and
+  preview are discarded without committing, and the tool stays armed for a fresh start.
+  While armed, a right-click's browser context menu is suppressed.
 
 Knobs: **Drop spacing (km)**, **Ship speed (kn)**, **Forecast (h)** (default 48), and
 a **Forecast drift** checkbox (draw the drops + ship track only, no fetch, when off).
@@ -215,13 +218,26 @@ drawn in a distinct **green** so they don't read as the instrument forecast (vio
 
 Leaflet fires two `click`s before a `dblclick`, so the finishing double-click's
 near-duplicate tail vertex is dropped, and `doubleClickZoom` is disabled while armed
-so the finish doesn't also zoom. The drop dots are colour-ramped by their synced `t0`
-on a **high-contrast turbo** ramp (dark-blue → cyan → green → yellow → red, strong
-local contrast throughout), so adjacent marks (3/6/9/12 h …) stay easy to tell apart
-— a divergent RdYlBu ramp washed its mid-horizon marks out to a near-white neutral.
-A matching legend's ticks track the run's horizon, so a pattern at one instant is read
-by eye by picking a colour. Each dot's tooltip pairs the run-relative hours with the
-mark's absolute ISO time (`+6 h · 2026-…Z`).
+so the finish doesn't also zoom. The drop dots are coloured by their synced `t0` from
+matplotlib's **tab20c** palette — a categorical map of five hue families (blue,
+orange, green, purple, grey), each in four dark→light shades — indexed by mark ordinal
+(`k = hours / mark_step`). Consecutive marks step through it, so every fourth mark
+opens a new hue family and the three between are lightness steps of that hue: adjacent
+marks stay easy to tell apart and the family boundary gives a coarse "which quarter of
+the run" read. The palette is used discrete, not interpolated (blending a qualitative
+map muddies it). A matching legend shows the swatch bands over the run's horizon, so a
+pattern at one instant is read by eye by picking a colour. Each dot's tooltip pairs the
+run-relative hours with the mark's absolute ISO time (`+6 h · 2026-…Z`).
+
+Three independent read-by-click axes lift a slice of the array (enlarged / thickened,
+dark-outlined; toggle off by re-clicking, or clear all with a background click):
+
+- **click a `+Δt` dot** → every dot at that same mark hour of that deployment — the
+  array's *shape at one instant* (a column).
+- **click a drop disc** → every drop disc of that deployment — the whole set of
+  water-entry points.
+- **click a forecast line** (on bare track, between the markers) → that one drifter's
+  trajectory (a row).
 
 ## Validation: cross-checked against OceanParcels v4
 
