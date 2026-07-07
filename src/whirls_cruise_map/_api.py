@@ -263,8 +263,18 @@ def _batch_forecast(seeds: list[Seed], horizon_h: float, mark_step_h: float) -> 
 # --- app ---------------------------------------------------------------------
 
 app = FastAPI(title="WHIRLS interactive forecast (PoC)")
+# The only real deployment is same-origin (the plan-017 gateway serves /map and /api
+# under one host), so it exercises no CORS at all. The sole cross-origin caller is the
+# two-port dev flow — the static map on :8000 fetching this API on :8001 (see
+# ``resolveApi`` in app.js) — so scope CORS to those localhost dev origins and to the
+# lone POST + Content-Type the client actually sends, not the wildcard a public
+# endpoint shouldn't advertise.
+_DEV_ORIGINS = ["http://localhost:8000", "http://127.0.0.1:8000"]
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+    CORSMiddleware,
+    allow_origins=_DEV_ORIGINS,
+    allow_methods=["POST"],
+    allow_headers=["Content-Type"],
 )
 
 
