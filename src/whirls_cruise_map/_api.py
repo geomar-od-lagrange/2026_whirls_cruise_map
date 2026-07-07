@@ -55,7 +55,7 @@ import numpy as np
 import xarray as xr
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import _currents, _forecast
 
@@ -171,11 +171,23 @@ class Seed(BaseModel):
 class ForecastRequest(BaseModel):
     """A whole deployment's worth of seeds plus the two run-level cadence knobs.
     The run start is the earliest seed's ``start`` (drop #1's entry); every seed is
-    integrated to ``run_start + horizon_h`` and dotted at ``mark_step_h`` steps."""
+    integrated to ``run_start + horizon_h`` and dotted at ``mark_step_h`` steps.
 
-    seeds: list[Seed]
-    horizon_h: float = _DEFAULT_HORIZON_H
-    mark_step_h: float = _DEFAULT_MARK_STEP_H
+    The endpoint is public and unauthenticated, so every field is bounded to keep a
+    single ~100-byte request from exhausting the pod. ``horizon_h``/``mark_step_h``
+    cap the per-seed dot schedule ``_seed_marks`` eagerly materialises (``horizon_h //
+    mark_step_h`` <= ~960 marks; unbounded, a large ``horizon_h`` + tiny ``mark_step_h``
+    allocates a multi-GB tuple → OOM). ``seeds`` caps the RK4 advection work, which is
+    GIL-bound and serialises on the single sync worker. ``allow_inf_nan`` rejects
+    ``inf``/``nan``, and ``extra="forbid"`` rejects unknown fields (422, not silently
+    ignored)."""
+
+    model_config = {"extra": "forbid"}
+    seeds: list[Seed] = Field(max_length=500)
+    horizon_h: float = Field(default=_DEFAULT_HORIZON_H, gt=0, le=240, allow_inf_nan=False)
+    mark_step_h: float = Field(
+        default=_DEFAULT_MARK_STEP_H, ge=0.25, le=48, allow_inf_nan=False
+    )
 
 
 # --- forecast ----------------------------------------------------------------

@@ -10,7 +10,9 @@ its remaining dots (the bug a position-based ``zip`` relabel had).
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import xarray as xr
+from pydantic import ValidationError
 from pytest import approx
 
 from whirls_cruise_map import _api, _forecast
@@ -82,6 +84,44 @@ def test_synced_marks_stay_on_the_absolute_grid_across_a_staggered_array(monkeyp
     assert hb == [float(k) for k in range(6, 49, 3)]
     assert 3.0 not in hb
     assert all(h % 3 == 0 for h in hb)  # exact multiples, i.e. relabelled by value
+
+
+_ONE_SEED = [{"lon": 10.5, "lat": -34.0, "start": "2026-07-03T00:00:00Z"}]
+
+
+def test_forecast_request_accepts_a_normal_deployment():
+    req = _api.ForecastRequest(seeds=_ONE_SEED)
+    assert req.horizon_h == _api._DEFAULT_HORIZON_H
+    assert req.mark_step_h == _api._DEFAULT_MARK_STEP_H
+    assert len(req.seeds) == 1
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        # High-1: a large horizon + tiny step would make _seed_marks materialise a
+        # multi-GB tuple → OOM-kill the pod. Both knobs are now bounded.
+        {"horizon_h": 1e9, "mark_step_h": 3.0},
+        {"horizon_h": 1e12, "mark_step_h": 1e-6},
+        {"mark_step_h": 0.0},          # also the ZeroDivisionError path
+        {"horizon_h": float("inf")},
+        {"horizon_h": float("nan")},
+        # High-2: an uncapped seed list pins the single sync worker (CPU exhaustion).
+        {"seeds": _ONE_SEED * 501},
+        # extra="forbid": unknown fields are rejected, not silently ignored.
+        {"foo": 1},
+    ],
+)
+def test_forecast_request_rejects_resource_exhaustion_payloads(kwargs):
+    kwargs.setdefault("seeds", _ONE_SEED)
+    with pytest.raises(ValidationError):
+        _api.ForecastRequest(**kwargs)
+
+
+def test_forecast_request_bounds_the_derived_mark_count():
+    # The widest allowed request still caps _seed_marks at ~960 marks per seed.
+    req = _api.ForecastRequest(seeds=_ONE_SEED, horizon_h=240, mark_step_h=0.25)
+    assert int(req.horizon_h // req.mark_step_h) == 960
 
 
 def test_out_of_window_seeds_are_skipped_not_errored(monkeypatch):
