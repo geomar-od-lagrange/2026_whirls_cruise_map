@@ -643,20 +643,20 @@ function drawDeployPreview(previewLayer, vertices, cursor, opts) {
   const path = cursor ? [...vertices, cursor] : vertices.slice();
   if (path.length >= 2) {
     L.polyline(path, {
-      pane: "deploy", color: DEPLOY_COLOR, weight: 2, opacity: 0.85,
+      pane: "deployTracks", color: DEPLOY_COLOR, weight: 2, opacity: 0.85,
       dashArray: "5 4", interactive: false,
     }).addTo(previewLayer);
   }
   const { drops, totalKm } = resamplePolyline(path, opts.spacing);
   for (const d of drops) {
     L.circleMarker(d.latlng, {
-      pane: "deploy", radius: 3, color: "#fff", weight: 1,
+      pane: "deployDrops", radius: 3, color: "#fff", weight: 1,
       fillColor: DEPLOY_COLOR, fillOpacity: 0.9, interactive: false,
     }).addTo(previewLayer);
   }
   for (const v of vertices) {
     L.circleMarker(v, {
-      pane: "deploy", radius: 4, color: DEPLOY_COLOR, weight: 2,
+      pane: "deployDrops", radius: 4, color: DEPLOY_COLOR, weight: 2,
       fill: false, interactive: false,
     }).addTo(previewLayer);
   }
@@ -672,17 +672,19 @@ function drawDeployPreview(previewLayer, vertices, cursor, opts) {
 function drawShipTrack(vertices, deployLayer) {
   if (vertices.length < 2) return;
   L.polyline(vertices, {
-    pane: "deploy", color: "#555", weight: 1.5, opacity: 0.7,
+    pane: "deployTracks", color: "#555", weight: 1.5, opacity: 0.7,
     dashArray: "4 3", interactive: false,
   }).addTo(deployLayer);
 }
 
-// The committed drop discs (drawn above the drift lines): a white-ringed green disc
-// per drop, tooltip = deploy order + water-entry ETA. `drops` is [{ latlng, start }].
+// The committed drop discs: a white-ringed green disc per drop, tooltip = deploy
+// order + water-entry ETA. `drops` is [{ latlng, start }]. Rendered in the
+// deployDrops pane, so they sit above the tracks but below the +Δt mark dots
+// regardless of draw order.
 function drawDrops(drops, deployLayer) {
   drops.forEach((d, i) => {
     L.circleMarker(d.latlng, {
-      pane: "deploy", radius: 4, color: "#fff", weight: 1,
+      pane: "deployDrops", radius: 4, color: "#fff", weight: 1,
       fillColor: DEPLOY_COLOR, fillOpacity: 1,
     })
       .bindTooltip(`#${i + 1} · ${d.start}`, { direction: "top" })
@@ -864,10 +866,11 @@ async function placeDeployment(vertices, deployLayer, setStatus, startTime, opts
       return;
     }
     const horizonH = data.properties?.horizon_h ?? opts.horizonH;
-    drawDeployForecastLines(data.features ?? [], deployLayer, horizonH, ++deployCounter);
+    const runStart = data.properties?.run_start ?? startTime;
+    drawDeployForecastLines(data.features ?? [], deployLayer, horizonH, runStart, ++deployCounter);
     updateDeployLegend(horizonH); // ticks match the horizon these dots were coloured over
-    // Redraw the drops on top of the fresh drift lines so their discs + tooltips
-    // stay above the tracks.
+    // Drops and mark dots live in stacked panes (deployDrops < deployDots), so the
+    // draw order here doesn't matter — the discs sit below the delayed dots either way.
     drawDrops(dropRecords, deployLayer);
     const p = data.properties ?? {};
     // A plan whose run start predates (or postdates) the loaded field window gets
@@ -887,15 +890,18 @@ async function placeDeployment(vertices, deployLayer, setStatus, startTime, opts
 // Synced-snapshot dot colours. Every drop is dotted at the *same* wall-clock times
 // (run start + 3/6/…/horizon h), so a dot's colour — keyed to its absolute time
 // since the run start — makes one colour the whole array at one t0: read a pattern
-// off the map by picking a colour. The ramp is **divergent** (ColorBrewer RdYlBu,
-// reversed): cool blues early, a pale neutral at mid-horizon, warm reds late — so the
-// two halves of the run read as opposite hue families around the midpoint, not one
-// gradient. properties.horizon_h sets the ramp top; the constant is the fallback and
-// matches the server's _DEFAULT_HORIZON_H.
+// off the map by picking a colour. The ramp is **turbo** (Mikhailov's high-contrast
+// rainbow): it sweeps hue monotonically dark-blue → cyan → green → yellow → red with
+// strong local contrast everywhere, so adjacent marks (3, 6, 9, 12 h …) stay far
+// apart in colour. A divergent ramp (RdYlBu) washed its mid-horizon marks out to a
+// near-white neutral, making neighbouring t0's there indistinguishable; turbo has no
+// such flat band. properties.horizon_h sets the ramp top; the constant is the
+// fallback and matches the server's _DEFAULT_HORIZON_H.
 const DEPLOY_HORIZON_H = 48;
 const DEPLOY_RAMP = [
-  "#313695", "#4575b4", "#74add1", "#abd9e9", "#ffffbf",
-  "#fdae61", "#f46d43", "#d73027", "#a50026",
+  "#30123b", "#4146ac", "#4675ed", "#3aa2fc", "#1bcfd4",
+  "#24eca6", "#61fc6c", "#a4fc3b", "#d1e834", "#f3c63a",
+  "#fe9b2d", "#e34a08", "#7a0403",
 ];
 
 // sRGB-interpolate DEPLOY_RAMP at absolute mark hour `hours` over [0, horizonH].
@@ -912,9 +918,9 @@ function deployMarkColor(hours, horizonH) {
   return `#${mix(r0, r1)}${mix(g0, g1)}${mix(b0, b1)}`;
 }
 
-// Shared synced-snapshot dot legend: a caption, the divergent gradient bar from the
+// Shared synced-snapshot dot legend: a caption, the turbo gradient bar from the
 // run start to the forecast horizon (same ramp deployMarkColor uses), and three ticks
-// (run · mid · horizon) marking the divergent midpoint. Appended to the Deploy
+// (run · mid · horizon) marking the span's midpoint and end. Appended to the Deploy
 // control, so a dot's colour reads as its t0 — the array's shape at one instant since
 // the run began — and the caption points at the click-to-highlight interaction.
 // The mid/horizon tick <span>s, relabelled per placement (updateDeployLegend) so the
@@ -973,6 +979,19 @@ function applyDeployDotSelection() {
       restyleDeployDot(marker, base, key === selectedDeployDot);
 }
 
+// Restack the +Δt dots within the deployDots pane so later marks paint above earlier
+// ones (DOM order is paint order there): bring every group to front in ascending
+// hour, so a +3 h dot never hides the +48 h dot that overtook it. Sorts across all
+// placed deployments; the selection pass afterwards lifts any highlighted group back
+// on top.
+function restackDeployDots() {
+  const keys = Object.keys(deployDotGroups).sort(
+    (a, b) => Number(a.split("|")[1]) - Number(b.split("|")[1]),
+  );
+  for (const key of keys)
+    for (const { marker } of deployDotGroups[key]) marker.bringToFront();
+}
+
 // Toggle: clicking the selected group clears it; another group replaces it.
 function selectDeployDot(key) {
   selectedDeployDot = key === selectedDeployDot ? null : key;
@@ -984,20 +1003,33 @@ function resetDeployDots() {
   selectedDeployDot = null;
 }
 
-// Draw one deployment's per-drop drift: a green line per forecast feature, plus its
-// synced-t0 dots — coloured by absolute mark hour (deployMarkColor) and clickable to
-// highlight every same-hour dot of this deployment (`deploymentId`). A thin white
-// ring keeps the colour legible over the currents overlay. GeoJSON coords are
-// [lon,lat]; Leaflet wants [lat,lng]. (The ship track + drops are drawn client-side
-// by the caller; the API returns only forecast features.)
-function drawDeployForecastLines(features, deployLayer, horizonH, deploymentId) {
+// A mark's absolute wall-clock time (ISO-8601, whole seconds — the drop discs' ETA
+// format): the run start plus its run-relative `hours`. Returns null when the run
+// start is unknown (no field window echoed), so the caller falls back to the
+// hours-only label.
+function markIso(runStartISO, hours) {
+  if (!runStartISO) return null;
+  const ms = new Date(runStartISO).getTime() + hours * 3600 * 1000;
+  return new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+}
+
+// Draw one deployment's per-drop drift: a green line per forecast feature (in the
+// deployTracks pane), plus its synced-t0 dots (in the deployDots pane above the
+// tracks and drop discs) — coloured by absolute mark hour (deployMarkColor) and
+// clickable to highlight every same-hour dot of this deployment (`deploymentId`). A
+// thin white ring keeps the colour legible over the currents overlay. Each dot's
+// tooltip pairs the run-relative hours with the mark's absolute ISO time (from
+// `runStart`). GeoJSON coords are [lon,lat]; Leaflet wants [lat,lng]. (The ship
+// track + drops are drawn client-side by the caller; the API returns only forecast
+// features.) A closing restack keeps later marks painted above earlier ones.
+function drawDeployForecastLines(features, deployLayer, horizonH, runStart, deploymentId) {
   const ll = ([lon, lat]) => [lat, lon];
   for (const f of features) {
     if (f.properties?.role !== "forecast") continue;
     const coords = f.geometry?.coordinates ?? [];
     if (coords.length < 2) continue;
     L.polyline(coords.map(ll), {
-      pane: "deploy",
+      pane: "deployTracks",
       color: DEPLOY_COLOR,
       weight: 2,
       opacity: 0.9,
@@ -1007,7 +1039,7 @@ function drawDeployForecastLines(features, deployLayer, horizonH, deploymentId) 
       const base = { radius: 4, fillColor: deployMarkColor(m.hours, horizonH) };
       const key = `${deploymentId}|${m.hours}`;
       const dot = L.circleMarker([m.lat, m.lon], {
-        pane: "deploy",
+        pane: "deployDots",
         radius: base.radius,
         color: "#fff",
         weight: 1,
@@ -1015,13 +1047,18 @@ function drawDeployForecastLines(features, deployLayer, horizonH, deploymentId) 
         fillOpacity: 0.95,
         bubblingMouseEvents: false, // its click highlights, doesn't reach the map
       });
-      dot.bindTooltip(`+${m.hours} h`, { direction: "top" });
+      const iso = markIso(runStart, m.hours);
+      dot.bindTooltip(iso ? `+${m.hours} h · ${iso}` : `+${m.hours} h`, { direction: "top" });
       dot.on("click", () => selectDeployDot(key));
       (deployDotGroups[key] ??= []).push({ marker: dot, base });
       restyleDeployDot(dot, base, key === selectedDeployDot);
       dot.addTo(deployLayer);
     }
   }
+  // DOM/paint order within deployDots must run late-marks-on-top; the incremental
+  // per-feature draw above interleaves hours, so restack once the dots are all in.
+  restackDeployDots();
+  applyDeployDotSelection();
 }
 
 // --- near-inertial animation -------------------------------------------------
@@ -1811,9 +1848,15 @@ async function main() {
   map.createPane("shipTrack").style.zIndex = 640;
   map.createPane("drifters").style.zIndex = 650;
   map.createPane("ship").style.zIndex = 660;
-  // PoC interactive-forecast lines/dots, above the instruments so a placed
-  // forecast is never occluded, below the tooltip pane (680) so its marks label.
-  map.createPane("deploy").style.zIndex = 665;
+  // PoC interactive-forecast geometry, above the instruments so a placed forecast
+  // is never occluded, below the tooltip pane (680) so its marks label. Split into
+  // three stacked panes so the layering is by-element, not by draw order: tracks
+  // (ship route + drift lines) lowest, deployment drop discs above them, and the
+  // +Δt mark dots on top — so a drop never hides a delayed dot and a dot never
+  // hides under a line.
+  map.createPane("deployTracks").style.zIndex = 663;
+  map.createPane("deployDrops").style.zIndex = 664;
+  map.createPane("deployDots").style.zIndex = 665;
 
   // Hover tooltips must float above every marker. Leaflet's default tooltipPane is
   // z-index 650 — tied with the drifters pane and *below* the ship pane (660) — so

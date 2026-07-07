@@ -200,7 +200,10 @@ cursor). While armed:
   cos-lat tangent-plane / equal-arc-length math) into drops, computes each drop's
   `start` from the run start plus its ship-speed offset (`seedTime`), draws the ship
   track + drops, and POSTs the seeds; the returned forecast lines and synced dots are
-  drawn over them in a `deploy` pane above the instruments.
+  drawn over them in three stacked panes above the instruments — `deployTracks`
+  (ship route + drift lines) lowest, `deployDrops` (drop discs) above, and
+  `deployDots` (the `+Δt` mark dots) on top — so a drop disc never hides a delayed
+  dot and the dots never slip under a line, regardless of draw order.
 
 Knobs: **Drop spacing (km)**, **Ship speed (kn)**, **Forecast (h)** (default 48), and
 a **Forecast drift** checkbox (draw the drops + ship track only, no fetch, when off).
@@ -213,9 +216,12 @@ drawn in a distinct **green** so they don't read as the instrument forecast (vio
 Leaflet fires two `click`s before a `dblclick`, so the finishing double-click's
 near-duplicate tail vertex is dropped, and `doubleClickZoom` is disabled while armed
 so the finish doesn't also zoom. The drop dots are colour-ramped by their synced `t0`
-on a **divergent** ramp (ColorBrewer RdYlBu, reversed — cool blues early, a pale
-neutral at mid-horizon, warm reds late), with a matching legend whose ticks track the
-run's horizon, so a pattern at one instant is read by eye by picking a colour.
+on a **high-contrast turbo** ramp (dark-blue → cyan → green → yellow → red, strong
+local contrast throughout), so adjacent marks (3/6/9/12 h …) stay easy to tell apart
+— a divergent RdYlBu ramp washed its mid-horizon marks out to a near-white neutral.
+A matching legend's ticks track the run's horizon, so a pattern at one instant is read
+by eye by picking a colour. Each dot's tooltip pairs the run-relative hours with the
+mark's absolute ISO time (`+6 h · 2026-…Z`).
 
 ## Validation: cross-checked against OceanParcels v4
 

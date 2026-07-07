@@ -342,9 +342,9 @@ body {
   margin: 0;
   cursor: pointer;
 }
-/* Synced-snapshot dot legend: a caption, the divergent RdYlBu gradient bar, and its
-   three ticks (run · mid · horizon, the ticks tracking the run's horizon), so a dot's
-   colour maps to its time since the run began (the array's shape at that t0). */
+/* Synced-snapshot dot legend: a caption, the high-contrast turbo gradient bar, and
+   its three ticks (run · mid · horizon, the ticks tracking the run's horizon), so a
+   dot's colour maps to its time since the run began (the array's shape at that t0). */
 .deploy-tool .pt-legend {
   margin: 6px 0 0;
 }
