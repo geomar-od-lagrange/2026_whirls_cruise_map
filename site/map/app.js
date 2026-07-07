@@ -447,6 +447,40 @@ const FORECAST_COLOR = "#8e44ad";
 // drifter's *observed* orange trajectory it sits near.
 const HINDCAST_COLOR = "#d81b8c";
 
+// --- interactive deploy endpoint (PoC) --------------------------------------
+// One dynamic endpoint backs the deploy tool: `POST /api/forecast` takes a
+// sequence of (lon, lat, start) seeds — the equally-spaced drops the client lays
+// along a clicked path, each with its staggered water-entry time — and advects
+// every one through the CMEMS window server-side (one GeoJSON LineString per seed,
+// synced-t0 dots). The map (static, Pages-able) and this API are separate
+// endpoints, so the base is resolved (not hardcoded) by the same rule:
+//   - `?api=<base>` (or window.WHIRLS_FORECAST_API) wins — the cross-origin case
+//     (static on Pages, API elsewhere);
+//   - else, in the two-port dev flow (static on :8000), auto-target the API on
+//     :8001, so `pixi run serve` + `pixi run serve-api` needs no query param;
+//   - else same-origin — what the plan-017 gateway serves (one host, /map and
+//     /api as sibling backends).
+function resolveApi(path) {
+  const override =
+    new URLSearchParams(location.search).get("api") ?? window.WHIRLS_FORECAST_API;
+  if (override) return `${override.replace(/\/+$/, "")}${path}`;
+  if (location.port === "8000")
+    return `${location.protocol}//${location.hostname}:8001${path}`;
+  return path;
+}
+const FORECAST_API = resolveApi("/api/forecast");
+
+// Green — distinct from the orange track, violet forecast, magenta hindcast, and
+// cyan inertial — because these lines are ad-hoc, user-placed, and never persisted.
+const DEPLOY_COLOR = "#16a34a";
+
+// Tangent-plane km per degree of latitude (R·π/180, R = 6371 km) and knots→km/h.
+// The client owns the deployment geometry now: it resamples the clicked path into
+// equally-spaced drops (cos-lat tangent plane) and staggers each drop's water-entry
+// time by the ship-speed knob, so the API just advects the seeds it is handed.
+const KM_PER_DEG = 111.19492664455873;
+const KN_TO_KMH = 1.852;
+
 // Trajectories, grouped by `batch` so each batch's lines+dots toggle with that
 // batch's markers (see buildBatchControl). For each drifter: one line, plus a
 // small dot at every fix. Each dot carries the same hover tooltip as the drifter's
@@ -537,6 +571,457 @@ function buildAdvectionGroups(geojson, color) {
     }
   }
   return groups;
+}
+
+// --- interactive deployment planner (PoC) -----------------------------------
+// One top-right "Deploy" control arms a multi-click placement mode: click a path
+// (2+ vertices; double-click to finish), and the client lays drifter drops at
+// equal spacing along it — the drop spacing (km) and ship speed (kn) are knobs. A
+// live preview (redrawn on mousemove, no fetch) foretells the polyline, the
+// equally-spaced drops it implies, and the transit time. On finish placeDeployment
+// resamples the path, staggers each drop's water-entry time by the ship speed, and
+// POSTs the (lon, lat, start) seeds to /api/forecast; the returned per-drop
+// advection lines + synced-t0 dots are drawn over the drops. These are ad-hoc,
+// user-placed, ephemeral lines in their own green + `deploy` pane — never a build
+// artifact. A single tool replaces the old click-forecast / jet-fence / Z tools:
+// a free polyline is the general case those special-cased (a Z is four clicks).
+
+// Resample a clicked polyline (LatLng vertices) into equally-spaced drops, both
+// ends included, spacing ~= spacingKm (count = round(total / spacing), min 1). Uses
+// the cos-lat tangent plane anchored at the path's mean latitude — the same
+// convention the RK4 field uses — so the arc lengths are geographically honest.
+// Returns { drops: [{ latlng, cumKm }], totalKm }; a single vertex (or a zero-length
+// path) yields one drop at that point.
+function resamplePolyline(vertices, spacingKm) {
+  if (vertices.length < 2) return { drops: [{ latlng: vertices[0], cumKm: 0 }], totalKm: 0 };
+  const meanLat = vertices.reduce((acc, v) => acc + v.lat, 0) / vertices.length;
+  const cos = Math.cos((meanLat * Math.PI) / 180);
+  const segKm = (a, b) =>
+    Math.hypot((b.lng - a.lng) * cos * KM_PER_DEG, (b.lat - a.lat) * KM_PER_DEG);
+  const cum = [0];
+  for (let i = 0; i < vertices.length - 1; i++)
+    cum.push(cum[i] + segKm(vertices[i], vertices[i + 1]));
+  const total = cum[cum.length - 1];
+  if (total === 0) return { drops: [{ latlng: vertices[0], cumKm: 0 }], totalKm: 0 };
+  // Clamp the spacing to a positive floor and cap the count, so a stray 0 / tiny
+  // spacing can't spin an unbounded loop (the knob is guarded too, but defend here).
+  const n = Math.max(1, Math.min(2000, Math.round(total / Math.max(spacingKm, 0.01))));
+  const drops = [];
+  for (let i = 0; i <= n; i++) {
+    const arc = (total * i) / n; // target arc length from the start (endpoints included)
+    let j = 0;
+    while (j < vertices.length - 2 && arc > cum[j + 1]) j++;
+    const seg = cum[j + 1] - cum[j];
+    const t = seg === 0 ? 0 : (arc - cum[j]) / seg;
+    const a = vertices[j], b = vertices[j + 1];
+    drops.push({
+      latlng: L.latLng(a.lat + t * (b.lat - a.lat), a.lng + t * (b.lng - a.lng)),
+      cumKm: arc,
+    });
+  }
+  return { drops, totalKm: total };
+}
+
+// A drop's absolute water-entry time (ISO-8601): the run start plus the ship-track
+// time to reach it at `shipKn` knots (cum_km / (kn·1.852) hours). `runStartISO` is
+// the displayed field's valid time, so drop #1 (cum_km 0) enters at the field's
+// instant; omitted, it falls back to now (which the loaded window covers).
+function seedTime(runStartISO, cumKm, shipKn) {
+  const base = runStartISO ? new Date(runStartISO).getTime() : Date.now();
+  const kmh = shipKn * KN_TO_KMH;
+  const offsetMs = kmh > 0 ? (cumKm / kmh) * 3600 * 1000 : 0; // guard a 0 ship-speed knob
+  return new Date(base + offsetMs).toISOString().replace(/\.\d+Z$/, "Z");
+}
+
+// Redraw the ephemeral placement preview into previewLayer — the polyline the
+// current path + cursor imply, the equally-spaced drops on it, hollow rings at the
+// clicked vertices, and a floating label (drop count · length · transit time). No
+// fetch: pure client geometry (resamplePolyline), the same math placeDeployment
+// commits, so the preview foretells the committed drops.
+function drawDeployPreview(previewLayer, vertices, cursor, opts) {
+  previewLayer.clearLayers();
+  const path = cursor ? [...vertices, cursor] : vertices.slice();
+  if (path.length >= 2) {
+    L.polyline(path, {
+      pane: "deploy", color: DEPLOY_COLOR, weight: 2, opacity: 0.85,
+      dashArray: "5 4", interactive: false,
+    }).addTo(previewLayer);
+  }
+  const { drops, totalKm } = resamplePolyline(path, opts.spacing);
+  for (const d of drops) {
+    L.circleMarker(d.latlng, {
+      pane: "deploy", radius: 3, color: "#fff", weight: 1,
+      fillColor: DEPLOY_COLOR, fillOpacity: 0.9, interactive: false,
+    }).addTo(previewLayer);
+  }
+  for (const v of vertices) {
+    L.circleMarker(v, {
+      pane: "deploy", radius: 4, color: DEPLOY_COLOR, weight: 2,
+      fill: false, interactive: false,
+    }).addTo(previewLayer);
+  }
+  const transitH = totalKm / (opts.shipKn * KN_TO_KMH);
+  L.tooltip({ permanent: true, direction: "top", className: "pt-preview-label", offset: [0, -8] })
+    .setLatLng(cursor ?? path[path.length - 1])
+    .setContent(`${drops.length} drops · ${totalKm.toFixed(1)} km · ~${transitH.toFixed(1)} h`)
+    .addTo(previewLayer);
+}
+
+// The committed ship track: a dashed grey line through the clicked vertices (the
+// route the ship steams), drawn below the drops and forecasts.
+function drawShipTrack(vertices, deployLayer) {
+  if (vertices.length < 2) return;
+  L.polyline(vertices, {
+    pane: "deploy", color: "#555", weight: 1.5, opacity: 0.7,
+    dashArray: "4 3", interactive: false,
+  }).addTo(deployLayer);
+}
+
+// The committed drop discs (drawn above the drift lines): a white-ringed green disc
+// per drop, tooltip = deploy order + water-entry ETA. `drops` is [{ latlng, start }].
+function drawDrops(drops, deployLayer) {
+  drops.forEach((d, i) => {
+    L.circleMarker(d.latlng, {
+      pane: "deploy", radius: 4, color: "#fff", weight: 1,
+      fillColor: DEPLOY_COLOR, fillOpacity: 1,
+    })
+      .bindTooltip(`#${i + 1} · ${d.start}`, { direction: "top" })
+      .addTo(deployLayer);
+  });
+}
+
+// The Deploy tool: a multi-click polyline placement mode. Click adds a vertex;
+// double-click finishes (Leaflet fires two clicks before a dblclick, so the
+// near-duplicate tail vertex is dropped and doubleClickZoom is disabled while
+// armed). The knobs (drop spacing km, ship speed kn, forecast horizon h) bind
+// straight onto `state`. Returns { control, state, handleClick, handleDblClick,
+// handleMove }; main() routes background events through the handlers.
+function buildDeployTool(deployLayer) {
+  const state = {
+    on: false,
+    vertices: [],   // LatLng[] — the clicked path, grows per click
+    spacing: 5,     // km between drops along the path
+    shipKn: 10,     // ship transit speed, knots
+    horizonH: 48,   // forecast horizon from the run start, hours
+    forecast: true, // request per-drop drift (else draw geometry only)
+  };
+  let statusEl = null;
+  let mapRef = null;
+  const setStatus = (msg) => {
+    if (statusEl) statusEl.textContent = msg;
+  };
+
+  // previewLayer holds the ephemeral path/drops preview (cleared + redrawn per
+  // move/click); wiped on reset (disarm / finish / clear).
+  const previewLayer = L.featureGroup();
+  const resetPath = () => {
+    state.vertices = [];
+    previewLayer.clearLayers();
+  };
+
+  // Two clicked vertices are "the same" (a dblclick's duplicate) when within a few
+  // screen pixels — so finishing on a double-click doesn't add a spurious vertex.
+  const isDuplicate = (a, b) =>
+    mapRef &&
+    mapRef.latLngToContainerPoint(a).distanceTo(mapRef.latLngToContainerPoint(b)) < 8;
+
+  const handleClick = (latlng) => {
+    state.vertices.push(latlng);
+    drawDeployPreview(previewLayer, state.vertices, null, state);
+    setStatus(`${state.vertices.length} point(s) — double-click to finish`);
+  };
+
+  const handleMove = (latlng) => {
+    if (!state.on || !state.vertices.length) return;
+    drawDeployPreview(previewLayer, state.vertices, latlng, state);
+  };
+
+  // Double-click finishes: drop the dblclick's duplicate tail vertex, then commit.
+  const handleDblClick = (latlng, startTime) => {
+    const v = state.vertices;
+    if (v.length >= 2 && isDuplicate(v[v.length - 1], v[v.length - 2])) v.pop();
+    const path = v.slice();
+    resetPath();
+    if (!path.length) return;
+    placeDeployment(path, deployLayer, setStatus, startTime, state);
+  };
+
+  const control = L.control({ position: "topright" });
+  control.onAdd = (map) => {
+    mapRef = map;
+    previewLayer.addTo(map);
+
+    const div = L.DomUtil.create("div", "map-control deploy-tool");
+    L.DomEvent.disableClickPropagation(div);
+    L.DomEvent.disableScrollPropagation(div);
+
+    const title = L.DomUtil.create("h4", "", div);
+    title.textContent = "Deploy ";
+    L.DomUtil.create("span", "ft-poc", title).textContent = "PoC";
+
+    const toggle = L.DomUtil.create("button", "ft-btn ft-toggle", div);
+    toggle.type = "button";
+    const paint = () => {
+      toggle.textContent = state.on ? "Click-to-place: ON" : "Click-to-place: OFF";
+      toggle.classList.toggle("on", state.on);
+      map.getContainer().classList.toggle("deploy-cursor", state.on);
+      // Suppress double-click zoom while armed, so a finishing dbl-click doesn't
+      // also zoom the map.
+      if (state.on) map.doubleClickZoom.disable();
+      else map.doubleClickZoom.enable();
+    };
+    toggle.addEventListener("click", () => {
+      state.on = !state.on;
+      if (!state.on) {
+        resetPath();
+        setStatus("");
+      }
+      paint();
+    });
+    paint();
+
+    // Compact number rows binding onto state: one labelled <input type=number> per
+    // knob; a change writes the parsed value straight back.
+    const numRow = (label, key, step) => {
+      const row = L.DomUtil.create("label", "pt-row", div);
+      L.DomUtil.create("span", "pt-label", row).textContent = label;
+      const input = L.DomUtil.create("input", "pt-num", row);
+      input.type = "number";
+      input.step = step;
+      input.min = step; // all three knobs must be positive (spacing 0 would hang)
+      input.value = state[key];
+      input.addEventListener("change", () => {
+        const val = parseFloat(input.value);
+        if (!Number.isNaN(val) && val > 0) state[key] = val;
+      });
+    };
+    numRow("Drop spacing (km)", "spacing", "0.5");
+    numRow("Ship speed (kn)", "shipKn", "0.5");
+    numRow("Forecast (h)", "horizonH", "6");
+
+    const checkRow = L.DomUtil.create("label", "pt-row", div);
+    const check = L.DomUtil.create("input", "pt-check", checkRow);
+    check.type = "checkbox";
+    check.checked = state.forecast;
+    check.addEventListener("change", () => {
+      state.forecast = check.checked;
+    });
+    L.DomUtil.create("span", "pt-label", checkRow).textContent = "Forecast drift";
+
+    const clear = L.DomUtil.create("button", "ft-btn", div);
+    clear.type = "button";
+    clear.textContent = "Clear";
+    clear.addEventListener("click", () => {
+      deployLayer.clearLayers();
+      resetDeployDots(); // drop the highlight registry along with the dots it points at
+      resetPath();
+      setStatus("");
+    });
+
+    L.DomUtil.create("p", "ft-hint", div).textContent = "click a path · double-click to finish";
+    buildDeployLegend(div);
+    statusEl = L.DomUtil.create("p", "ft-status", div);
+
+    return div;
+  };
+  return { control, state, handleClick, handleDblClick, handleMove };
+}
+
+// Resample the finished path into equally-spaced drops, stagger each drop's
+// water-entry time by the ship speed, draw the ship track + drops, and (if the
+// forecast checkbox is on) POST the seeds to /api/forecast and draw the returned
+// per-drop advection lines + synced-t0 dots. `startTime` (the displayed field's
+// valid time) is the run start, so drop #1 enters at the field's instant.
+async function placeDeployment(vertices, deployLayer, setStatus, startTime, opts) {
+  const { drops, totalKm } = resamplePolyline(vertices, opts.spacing);
+  const seeds = drops.map((d) => ({
+    lon: Number(d.latlng.lng.toFixed(5)),
+    lat: Number(d.latlng.lat.toFixed(5)),
+    start: seedTime(startTime, d.cumKm, opts.shipKn),
+  }));
+  const dropRecords = drops.map((d, i) => ({ latlng: d.latlng, start: seeds[i].start }));
+  drawShipTrack(vertices, deployLayer);
+
+  const transitH = totalKm / (opts.shipKn * KN_TO_KMH);
+  const geom = `${drops.length} drops · ${totalKm.toFixed(1)} km · ~${transitH.toFixed(1)} h transit`;
+  if (!opts.forecast) {
+    drawDrops(dropRecords, deployLayer);
+    setStatus(`${geom} · drift off`);
+    return;
+  }
+
+  setStatus(`${geom} · forecasting…`);
+  try {
+    const resp = await fetch(FORECAST_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seeds, horizon_h: opts.horizonH }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      drawDrops(dropRecords, deployLayer);
+      setStatus(`${geom} · ${data.detail || data.error || `error ${resp.status}`}`);
+      return;
+    }
+    const horizonH = data.properties?.horizon_h ?? opts.horizonH;
+    drawDeployForecastLines(data.features ?? [], deployLayer, horizonH, ++deployCounter);
+    updateDeployLegend(horizonH); // ticks match the horizon these dots were coloured over
+    // Redraw the drops on top of the fresh drift lines so their discs + tooltips
+    // stay above the tracks.
+    drawDrops(dropRecords, deployLayer);
+    const p = data.properties ?? {};
+    // A plan whose run start predates (or postdates) the loaded field window gets
+    // every seed skipped — say so, rather than a bare "0/N drift" that reads as a bug.
+    if (p.forecasts === 0 && p.n_seeds > 0) {
+      const w = p.window ? ` (field ${p.window[0]}…${p.window[1]})` : "";
+      setStatus(`${geom} · 0 drift — run start outside the field window${w}`);
+    } else {
+      setStatus(`${geom} · ${p.forecasts}/${p.n_seeds} drift`);
+    }
+  } catch (err) {
+    drawDrops(dropRecords, deployLayer);
+    setStatus(`${geom} · request failed — is \`pixi run serve-api\` running?`);
+  }
+}
+
+// Synced-snapshot dot colours. Every drop is dotted at the *same* wall-clock times
+// (run start + 3/6/…/horizon h), so a dot's colour — keyed to its absolute time
+// since the run start — makes one colour the whole array at one t0: read a pattern
+// off the map by picking a colour. The ramp is **divergent** (ColorBrewer RdYlBu,
+// reversed): cool blues early, a pale neutral at mid-horizon, warm reds late — so the
+// two halves of the run read as opposite hue families around the midpoint, not one
+// gradient. properties.horizon_h sets the ramp top; the constant is the fallback and
+// matches the server's _DEFAULT_HORIZON_H.
+const DEPLOY_HORIZON_H = 48;
+const DEPLOY_RAMP = [
+  "#313695", "#4575b4", "#74add1", "#abd9e9", "#ffffbf",
+  "#fdae61", "#f46d43", "#d73027", "#a50026",
+];
+
+// sRGB-interpolate DEPLOY_RAMP at absolute mark hour `hours` over [0, horizonH].
+function deployMarkColor(hours, horizonH) {
+  const span = horizonH > 0 ? horizonH : DEPLOY_HORIZON_H;
+  const t = Math.min(Math.max(hours / span, 0), 1);
+  const x = t * (DEPLOY_RAMP.length - 1);
+  const i = Math.min(Math.floor(x), DEPLOY_RAMP.length - 2);
+  const f = x - i;
+  const rgb = (c) => [1, 3, 5].map((k) => parseInt(c.slice(k, k + 2), 16));
+  const [r0, g0, b0] = rgb(DEPLOY_RAMP[i]);
+  const [r1, g1, b1] = rgb(DEPLOY_RAMP[i + 1]);
+  const mix = (a, b) => Math.round(a + (b - a) * f).toString(16).padStart(2, "0");
+  return `#${mix(r0, r1)}${mix(g0, g1)}${mix(b0, b1)}`;
+}
+
+// Shared synced-snapshot dot legend: a caption, the divergent gradient bar from the
+// run start to the forecast horizon (same ramp deployMarkColor uses), and three ticks
+// (run · mid · horizon) marking the divergent midpoint. Appended to the Deploy
+// control, so a dot's colour reads as its t0 — the array's shape at one instant since
+// the run began — and the caption points at the click-to-highlight interaction.
+// The mid/horizon tick <span>s, relabelled per placement (updateDeployLegend) so the
+// legend's hour ticks track the horizon the dots were actually coloured over — the
+// "Forecast (h)" knob / the server-echoed horizon_h — not a fixed 48 h. deployMarkColor
+// spans [0, horizonH]; these ticks label that span's midpoint and end.
+let deployLegendMidTick = null;
+let deployLegendEndTick = null;
+
+function updateDeployLegend(horizonH) {
+  const h = horizonH > 0 ? horizonH : DEPLOY_HORIZON_H;
+  if (deployLegendMidTick) deployLegendMidTick.textContent = `+${+(h / 2).toFixed(1)} h`;
+  if (deployLegendEndTick) deployLegendEndTick.textContent = `+${+h.toFixed(1)} h`;
+}
+
+function buildDeployLegend(div) {
+  const legend = L.DomUtil.create("div", "pt-legend", div);
+  L.DomUtil.create("span", "pt-legend-cap", legend).textContent =
+    "dot = array at run +Δt · click one → its whole Δt";
+  const bar = L.DomUtil.create("div", "pt-legend-bar", legend);
+  bar.style.background = `linear-gradient(to right, ${DEPLOY_RAMP.join(", ")})`;
+  const ticks = L.DomUtil.create("div", "pt-legend-ticks", legend);
+  L.DomUtil.create("span", "", ticks).textContent = "run";
+  deployLegendMidTick = L.DomUtil.create("span", "", ticks);
+  deployLegendEndTick = L.DomUtil.create("span", "", ticks);
+  updateDeployLegend(DEPLOY_HORIZON_H); // default until the first placement
+}
+
+// --- deploy-dot highlight ----------------------------------------------------
+// The synced-t0 dots ARE the array's shape at one instant: every "+3 h" dot of a
+// deployment shares one wall-clock time. Clicking one dot highlights EVERY dot at
+// that same mark hour of that same deployment (enlarged + dark-ringed), so the array
+// at one t0 is read by click, not just by colour. Each placed deployment gets its own
+// id (deployCounter), so a +3 h click lifts only that run's +3 h dots and leaves
+// another deployment's alone. Cleared by re-clicking the group, or by Clear
+// (resetDeployDots). A dot's own click is swallowed (bubblingMouseEvents:false) so it
+// highlights rather than adding a path vertex / clearing a track selection.
+let deployCounter = 0;
+const deployDotGroups = {}; // `${deploymentId}|${hours}` -> [{ marker, base }]
+let selectedDeployDot = null; // the selected group key, or null
+
+function restyleDeployDot(marker, base, selected) {
+  marker.setStyle({
+    color: selected ? "#111827" : "#fff",
+    weight: selected ? 2 : 1,
+    fillColor: base.fillColor,
+    fillOpacity: 0.95,
+  });
+  marker.setRadius(selected ? base.radius + 3 : base.radius);
+  if (selected) marker.bringToFront();
+}
+
+function applyDeployDotSelection() {
+  for (const key of Object.keys(deployDotGroups))
+    for (const { marker, base } of deployDotGroups[key])
+      restyleDeployDot(marker, base, key === selectedDeployDot);
+}
+
+// Toggle: clicking the selected group clears it; another group replaces it.
+function selectDeployDot(key) {
+  selectedDeployDot = key === selectedDeployDot ? null : key;
+  applyDeployDotSelection();
+}
+
+function resetDeployDots() {
+  for (const key of Object.keys(deployDotGroups)) delete deployDotGroups[key];
+  selectedDeployDot = null;
+}
+
+// Draw one deployment's per-drop drift: a green line per forecast feature, plus its
+// synced-t0 dots — coloured by absolute mark hour (deployMarkColor) and clickable to
+// highlight every same-hour dot of this deployment (`deploymentId`). A thin white
+// ring keeps the colour legible over the currents overlay. GeoJSON coords are
+// [lon,lat]; Leaflet wants [lat,lng]. (The ship track + drops are drawn client-side
+// by the caller; the API returns only forecast features.)
+function drawDeployForecastLines(features, deployLayer, horizonH, deploymentId) {
+  const ll = ([lon, lat]) => [lat, lon];
+  for (const f of features) {
+    if (f.properties?.role !== "forecast") continue;
+    const coords = f.geometry?.coordinates ?? [];
+    if (coords.length < 2) continue;
+    L.polyline(coords.map(ll), {
+      pane: "deploy",
+      color: DEPLOY_COLOR,
+      weight: 2,
+      opacity: 0.9,
+      interactive: false,
+    }).addTo(deployLayer);
+    for (const m of f.properties?.marks ?? []) {
+      const base = { radius: 4, fillColor: deployMarkColor(m.hours, horizonH) };
+      const key = `${deploymentId}|${m.hours}`;
+      const dot = L.circleMarker([m.lat, m.lon], {
+        pane: "deploy",
+        radius: base.radius,
+        color: "#fff",
+        weight: 1,
+        fillColor: base.fillColor,
+        fillOpacity: 0.95,
+        bubblingMouseEvents: false, // its click highlights, doesn't reach the map
+      });
+      dot.bindTooltip(`+${m.hours} h`, { direction: "top" });
+      dot.on("click", () => selectDeployDot(key));
+      (deployDotGroups[key] ??= []).push({ marker: dot, base });
+      restyleDeployDot(dot, base, key === selectedDeployDot);
+      dot.addTo(deployLayer);
+    }
+  }
 }
 
 // --- near-inertial animation -------------------------------------------------
@@ -1326,6 +1811,9 @@ async function main() {
   map.createPane("shipTrack").style.zIndex = 640;
   map.createPane("drifters").style.zIndex = 650;
   map.createPane("ship").style.zIndex = 660;
+  // PoC interactive-forecast lines/dots, above the instruments so a placed
+  // forecast is never occluded, below the tooltip pane (680) so its marks label.
+  map.createPane("deploy").style.zIndex = 665;
 
   // Hover tooltips must float above every marker. Leaflet's default tooltipPane is
   // z-index 650 — tied with the drifters pane and *below* the ship pane (660) — so
@@ -1333,14 +1821,44 @@ async function main() {
   // the 700 popupPane) so a fix's tooltip is never occluded by a marker.
   map.getPane("tooltipPane").style.zIndex = 680;
 
-  // Clicking the empty map clears any track selection. Track elements set
-  // bubblingMouseEvents:false, so their clicks don't reach here — only genuine
-  // background clicks do (see the click-to-highlight block above).
-  map.on("click", () => {
+  // PoC interactive deployment planner: its own layer + a top-right "Deploy"
+  // toggle (see buildDeployTool). Background clicks/moves are routed to it below
+  // when armed. `displayedFieldTime` is the valid time of the CMEMS snapshot shown
+  // on the map (set once the currents meta loads, below); it is the run start, so a
+  // placed deployment's drift begins at the same instant as the field.
+  const deployLayer = L.featureGroup().addTo(map);
+  const deployTool = buildDeployTool(deployLayer);
+  deployTool.control.addTo(map);
+  let displayedFieldTime = null;
+
+  // Background map clicks: in Deploy mode a click adds a vertex to the path and a
+  // double-click finishes it (committing the deployment, its drift locked to
+  // displayedFieldTime); otherwise a click clears any track selection or synced-dot
+  // highlight. Track elements and deploy dots set bubblingMouseEvents:false, so their
+  // clicks don't reach here — only genuine background clicks do.
+  map.on("click", (e) => {
+    if (deployTool.state.on) {
+      deployTool.handleClick(e.latlng);
+      return;
+    }
     if (selectedInstrument != null) {
       selectedInstrument = null;
       applySelection();
     }
+    if (selectedDeployDot != null) {
+      selectedDeployDot = null;
+      applyDeployDotSelection();
+    }
+  });
+  map.on("dblclick", (e) => {
+    if (deployTool.state.on) deployTool.handleDblClick(e.latlng, displayedFieldTime);
+  });
+
+  // Live placement preview: while Deploy mode is armed and a path is being drawn,
+  // redraw the polyline + the equally-spaced drops it implies (rubber-banding to the
+  // cursor). Cheap client geometry, no fetch on move (see drawDeployPreview).
+  map.on("mousemove", (e) => {
+    if (deployTool.state.on) deployTool.handleMove(e.latlng);
   });
 
   // Latest positions (required). Group by batch first to drive the fit; the
@@ -1359,6 +1877,8 @@ async function main() {
   // Surface currents, from one CMEMS field: speed shading + flow trails, plus the
   // ζ/f vorticity diagnostic derived from the same field.
   const meta = await fetchJSON(DATA.meta, { optional: true });
+  // Lock the interactive forecast's start time to the displayed field's instant.
+  displayedFieldTime = meta?.valid_time ?? null;
   const currents = await fetchJSON(DATA.currents, { optional: true });
   const vorticityMeta = await fetchJSON(DATA.vorticityMeta, { optional: true });
   const inertialField = await fetchJSON(DATA.inertialField, { optional: true });

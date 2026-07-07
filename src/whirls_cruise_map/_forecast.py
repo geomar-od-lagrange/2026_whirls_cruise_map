@@ -159,20 +159,33 @@ def _rk4_step(
 
 
 def _integrate(
-    field: _Field, lon0: float, lat0: float, t0: float, direction: int = 1
+    field: _Field,
+    lon0: float,
+    lat0: float,
+    t0: float,
+    direction: int = 1,
+    *,
+    horizon_h: float = HORIZON_H,
+    step_min: float = STEP_MIN,
+    vertex_min: float = VERTEX_MIN,
+    mark_hours: tuple = MARK_HOURS,
 ) -> tuple[list[list[float]], list[dict]]:
     """Advect from ``(lon0, lat0)`` at clock time ``t0`` (epoch seconds) to
-    :data:`HORIZON_H`, ``direction`` +1 forward (forecast) or -1 backward
-    (hindcast), returning the polyline ``coords`` (a vertex every :data:`VERTEX_MIN`,
-    starting at the head) and the ``marks`` actually reached (``{hours, lon, lat}``
-    at each :data:`MARK_HOURS`, ``hours`` signed by ``direction``). The clock
-    advances with the integration, so the particle is pushed by the current at each
-    moment. Stops early at the coast/edge/window end; marks beyond the truncation
-    are omitted."""
-    dt = direction * STEP_MIN * 60.0
-    n_steps = round(HORIZON_H * 60.0 / STEP_MIN)
-    vertex_every = round(VERTEX_MIN / STEP_MIN)
-    mark_at = {round(h * 60.0 / STEP_MIN): direction * h for h in MARK_HOURS}
+    ``horizon_h``, ``direction`` +1 forward (forecast) or -1 backward (hindcast),
+    returning the polyline ``coords`` (a vertex every ``vertex_min``, starting at
+    the head) and the ``marks`` actually reached (``{hours, lon, lat}`` at each
+    ``mark_hours``, ``hours`` signed by ``direction``). The clock advances with the
+    integration, so the particle is pushed by the current at each moment. Stops
+    early at the coast/edge/window end; marks beyond the truncation are omitted.
+
+    The four cadence knobs default to the module constants (the build's ±6 h,
+    1/3/6 h forecast); the interactive deployment API passes its own (e.g. a +48 h
+    horizon, marks every 3 h). ``mark_hours`` and ``vertex_min`` must divide ``step_min``
+    evenly so each mark lands on an emitted vertex."""
+    dt = direction * step_min * 60.0
+    n_steps = round(horizon_h * 60.0 / step_min)
+    vertex_every = round(vertex_min / step_min)
+    mark_at = {round(h * 60.0 / step_min): direction * h for h in mark_hours}
 
     coords = [[round(lon0, _COORD_NDIGITS), round(lat0, _COORD_NDIGITS)]]
     marks: list[dict] = []
@@ -219,6 +232,56 @@ def _glider_heads(gliders: list) -> list[tuple[dict, float, float]]:
     return heads
 
 
+def _anchor_t0(sampler: _Field, t0: float | None = None) -> tuple[float, str]:
+    """The advection clock's t = 0 (epoch seconds) and its ISO-8601 ``valid_time``.
+
+    Default (``t0=None``): the window time nearest wall-clock now — the forecast's
+    "present"; the ~sub-hour gap to now is immaterial. The build's per-instrument
+    advection uses this. The interactive API passes an explicit ``t0`` instead —
+    e.g. the displayed CMEMS snapshot's time, so a clicked forecast starts at the
+    same instant as the field shown on the map. The field interpolates linearly in
+    time, so ``t0`` need not fall on a window grid time; a caller that accepts a
+    user-supplied time should first check it lies within the window
+    (``sampler.times[0]..[-1]``)."""
+    if t0 is None:
+        now = np.datetime64(
+            datetime.now(timezone.utc).replace(tzinfo=None), "s"
+        ).astype(np.float64)
+        t0 = float(sampler.times[int(np.argmin(np.abs(sampler.times - now)))])
+    valid = np.datetime_as_string(np.datetime64(int(round(t0)), "s"), unit="s") + "Z"
+    return t0, valid
+
+
+def _advection_feature(
+    sampler: _Field,
+    props: dict,
+    lon: float,
+    lat: float,
+    t0: float,
+    valid: str,
+    direction: int = 1,
+    *,
+    horizon_h: float = HORIZON_H,
+    mark_hours: tuple = MARK_HOURS,
+) -> dict | None:
+    """One advection ``LineString`` Feature from ``(lon, lat)`` at ``t0`` through
+    ``sampler``, or ``None`` if the head is on land/off-grid (a ``<2``-vertex line).
+    ``props`` is merged into the properties beside ``valid_time`` and the signed
+    ``marks``. Shared by :func:`_advection_geojson` (instrument heads, module
+    defaults) and the interactive point-forecast API (a clicked position, its own
+    horizon/marks)."""
+    coords, marks = _integrate(
+        sampler, lon, lat, t0, direction, horizon_h=horizon_h, mark_hours=mark_hours
+    )
+    if len(coords) < 2:
+        return None
+    return {
+        "type": "Feature",
+        "geometry": {"type": "LineString", "coordinates": coords},
+        "properties": {**props, "valid_time": valid, "marks": marks},
+    }
+
+
 def _advection_geojson(
     field: xr.Dataset, tracks: pd.DataFrame, gliders: list, direction: int
 ) -> dict:
@@ -235,26 +298,12 @@ def _advection_geojson(
     by ``direction``).
     """
     sampler = _Field(field)
-    # Anchor t=0 to the window time nearest now (the forecast's "present"); the
-    # ~sub-hour gap to wall-clock now is immaterial. valid_time reports it.
-    now = np.datetime64(
-        datetime.now(timezone.utc).replace(tzinfo=None), "s"
-    ).astype(np.float64)
-    t0 = float(sampler.times[int(np.argmin(np.abs(sampler.times - now)))])
-    valid = np.datetime_as_string(np.datetime64(int(round(t0)), "s"), unit="s") + "Z"
-
+    t0, valid = _anchor_t0(sampler)
     features = []
     for props, lon, lat in _drifter_heads(tracks) + _glider_heads(gliders):
-        coords, marks = _integrate(sampler, lon, lat, t0, direction)
-        if len(coords) < 2:
-            continue
-        features.append(
-            {
-                "type": "Feature",
-                "geometry": {"type": "LineString", "coordinates": coords},
-                "properties": {**props, "valid_time": valid, "marks": marks},
-            }
-        )
+        feature = _advection_feature(sampler, props, lon, lat, t0, valid, direction)
+        if feature is not None:
+            features.append(feature)
     return {"type": "FeatureCollection", "features": features}
 
 

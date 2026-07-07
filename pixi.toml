@@ -6,27 +6,72 @@ platforms = ["osx-arm64", "osx-64", "linux-64"]
 [activation.env]
 PYTHONPATH = "src"
 
+# Parcels v4 (main) is unreleased and needs numpy>=2.1 / zarr>=3 and typing.Self
+# (3.11+); its published classifiers cap at 3.13. We pin to 3.12 — the widest
+# rung with wheels for parcels' whole pypi dep stack (uxarray/xgcm/polars/pyarrow)
+# and the existing conda stack (copernicusmarine/cmocean). See _api_parcels.py.
 [dependencies]
-python = ">=3.11"
+python = ">=3.12,<3.13"
 
 # Data wrangling
-numpy = "*"
-pandas = "*"
-xarray = "*"
+numpy = ">=2.1"  # parcels v4 requires numpy>=2.1
+pandas = ">=2.2"
+xarray = ">=2024.5"
 netcdf4 = "*"
+
+# Parcels v4's runtime deps, provided from conda-forge so the pypi resolver only
+# has to build pure-python `parcels` itself (below) and finds everything it needs
+# already satisfied. Pulling these from pypi instead fails: uxarray drags in a
+# large compiled geo/viz stack (numba, pyproj, cartopy, shapely, geopandas,
+# datashader, …) that either backtracks to a numpy<2 build or can't build its C
+# extensions without conda's PROJ/GEOS. Installing uxarray from conda-forge
+# resolves that whole tree correctly.
+zarr = ">=3"
+cftime = ">=1.6.3"
+pooch = ">=1.8.0"
+tqdm = ">=4.50.0"
+pyarrow = ">=20.0.0"
+dask = ">=2024.5.1"
+xgcm = ">=0.9.0"
+cf_xarray = ">=0.8.6"
+polars = ">=1.31.0"
+uxarray = ">=2026.4.1"
 
 # CMEMS surface currents + speed shading
 copernicusmarine = "*"
 matplotlib = ">=3.11.0,<4"
 cmocean = ">=4.0.3,<5"
 
+# Interactive forecast API (PoC): serves the static map + a /api/forecast
+# endpoint that advects a clicked position through the CMEMS window (see _api.py).
+fastapi = "*"
+uvicorn = "*"
+
 # Dev
 pytest = "*"
 ruff = ">=0.15.12,<0.16"
 
+# OceanParcels v4 (unreleased): built from the GitHub `main` branch as a pypi git
+# dependency. It is a mature Lagrangian integrator we advect the same CMEMS window
+# with, as an independent reference for the hand-rolled RK4 (_forecast.py). Its
+# pure-python deps (uxarray/xgcm/cf_xarray/polars/pyarrow/pooch/dask/cftime/tqdm)
+# are resolved from pypi; numpy/xarray/pandas/netcdf4/zarr are satisfied by conda.
+[pypi-dependencies]
+parcels = { git = "https://github.com/OceanParcels/Parcels.git", branch = "main" }
+
 [tasks]
 build = "python -m whirls_cruise_map.build"
+# Two independent endpoints, so the static half can fall back to GitLab Pages:
+#   serve      static map on :8000 (the same bytes Pages serves)
+#   serve-api  forecast API on :8001 (FastAPI/uvicorn; needs the CMEMS login)
+# For the interactive PoC run both, then open http://localhost:8000/map/ — the
+# client auto-targets the API on :8001 (see resolveApi in app.js).
 serve = "python -m http.server --directory site 8000"
+serve-api = "python -m whirls_cruise_map._api"
+# Alternative forecast API advecting with OceanParcels v4 (:8002), for comparison
+# against serve-api's hand-rolled RK4 (:8001). Engine comparison over the same
+# window; parcels keeps the legacy single-point GET, serve-api is now a batch POST.
+serve-parcels = "python -m whirls_cruise_map._api_parcels"
 test = "pytest -q tests"
 
 [tasks.dev]

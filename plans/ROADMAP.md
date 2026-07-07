@@ -146,3 +146,42 @@ move to `done/` and gain a `docs/` counterpart.
     **SeaExplorer** glider (`seaexplorer.csv`, a mixed-delimiter/BOM/day-first
     dialect the parser now absorbs). Build-time bake kept for resilience. **Done**
     ([docs/gliders.md](../docs/gliders.md), [docs/ship.md](../docs/ship.md)).
+22. [Interactive click-to-deploy forecast](done/021-interactive-forecast.md) —
+    a live backend advects passive particles through the CMEMS window (the build's
+    RK4 reused, seeded by the request) → green solid lines with colour-ramped dots;
+    the run start is locked to the displayed field's time. A **two-endpoint** split
+    (static `:8000` + forecast API `:8001`) chosen over shipping the field to the
+    browser (transport + VSAT caching); the field stays in server memory, each
+    response is a small FeatureCollection. Validated against **OceanParcels v4**
+    (agree to metres; RK4 ~100× faster per particle, so RK4 is the engine and
+    parcels the oracle). **Done** ([docs/interactive_forecast.md](../docs/interactive_forecast.md));
+    a **dev PoC, not in the deployed Pages build**. The single-click +12 h tool this
+    started as is **superseded by the one polyline Deploy tool + batch API in 23**.
+    **Open:** productionization on OpenShift `/analysis` (slow-tier field-cache;
+    ties to [017](017-whirlsview-openshift.md)).
+23. [Deploy tool: one polyline + batch API](done/023-simplify-deploy-polyline.md) —
+    **one** multi-click Deploy tool supersedes both the single-click forecast (22)
+    and the jet-fence / Z deployment patterns
+    ([022](done/022-deployment-pattern.md)): click a ship path, double-click to
+    finish, and the client lays drifter drops at **equal spacing** along it (drop
+    spacing km + ship speed kn knobs) and forecasts each drift to **48 h**. A free
+    polyline is the general case that contained both special-cased geometries (a Z
+    is four clicks), so the bespoke client math and per-pattern endpoints are gone.
+    The client owns the deployment geometry (resample + staggered water-entry times);
+    the API is a **pure batch advector** — `POST /api/forecast` takes a sequence of
+    `(lon, lat, start)` seeds and returns one advection LineString per in-window
+    seed, dotted at **synced wall-clock times** (every drop integrated to a common
+    run-end, dots at absolute run-relative marks, colour-ramped by that `t0`), so the
+    array's shape at one instant reads off the map by colour. Array geometry follows
+    Gui Novelli's
+    [Lagrangian-Drifter-Array](https://github.com/guillaumenovelli/Lagrangian-Drifter-Array)
+    MATLAB package (Novelli, G. (2026), Zenodo
+    [10.5281/zenodo.20650545](https://doi.org/10.5281/zenodo.20650545)). **Done**
+    ([docs/interactive_forecast.md](../docs/interactive_forecast.md)); dev PoC, not
+    in the deployed Pages build. **Open — the `t0` inversion:** the reference time
+    for a deformation / flow-map estimate is when the array is *complete* in the
+    water, but staggered deployment means the clean array exists in the deploy frame,
+    not at `t0`. Novelli's package designs the array forward in space and never
+    advects it; the inverse — backward-advect an ideal `t0` configuration through the
+    field to each drop's deploy time (a fixed point: drop time ↔ ship track ↔ drop
+    positions) so deployment *lands* the array in that configuration — is ours to add.

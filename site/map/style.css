@@ -264,6 +264,133 @@ body {
   margin: 6px 0;
 }
 
+/* PoC deploy tool (interactive multi-click deployment planner). Reuses the
+   .map-control box and the .ft-* look — toggle/clear buttons, a hint, a status
+   line — plus its own .pt-* knob rows. The crosshair cursor is worn by the map
+   while the mode is armed. */
+.deploy-tool {
+  width: 190px;
+}
+.deploy-tool .ft-poc {
+  margin-left: 5px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #16a34a;
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  vertical-align: middle;
+}
+.deploy-tool .ft-btn {
+  display: block;
+  width: 100%;
+  margin: 0 0 5px;
+  padding: 4px 6px;
+  border: 1px solid #c3ccd6;
+  border-radius: 3px;
+  background: #f4f6f8;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.deploy-tool .ft-btn:hover {
+  background: #e8edf2;
+}
+.deploy-tool .ft-toggle.on {
+  background: #16a34a;
+  border-color: #0f7a37;
+  color: #fff;
+}
+.deploy-tool .ft-hint {
+  margin: 2px 0 0;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+.deploy-tool .ft-status {
+  margin: 4px 0 0;
+  min-height: 1em;
+  font-size: 0.7rem;
+  color: #0f7a37;
+}
+/* Deploy tool's compact knob inputs — a label + a narrow number field or a
+   checkbox per row (drop spacing, ship speed, forecast horizon, drift on/off). */
+.deploy-tool .pt-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.deploy-tool .pt-label {
+  flex: 1 1 auto;
+}
+.deploy-tool .pt-num {
+  flex: 0 0 46px;
+  width: 46px;
+  padding: 2px 4px;
+  border: 1px solid #c3ccd6;
+  border-radius: 3px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.72rem;
+}
+.deploy-tool .pt-check {
+  margin: 0;
+  cursor: pointer;
+}
+/* Synced-snapshot dot legend: a caption, the divergent RdYlBu gradient bar, and its
+   three ticks (run · mid · horizon, the ticks tracking the run's horizon), so a dot's
+   colour maps to its time since the run began (the array's shape at that t0). */
+.deploy-tool .pt-legend {
+  margin: 6px 0 0;
+}
+.deploy-tool .pt-legend-cap {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+.deploy-tool .pt-legend-bar {
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
+.deploy-tool .pt-legend-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 1px;
+  font-size: 0.62rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+/* The placement preview's floating label (drop count · path length · transit
+   time), pinned at the cursor while the path is drawn. Reuses the deploy green so
+   it reads as part of the ephemeral preview, not a map tooltip; the arrow is
+   dropped since it labels a point, not a callout. */
+.leaflet-tooltip.pt-preview-label {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #16a34a;
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: #0f7a37;
+  font-size: 0.7rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  box-shadow: none;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.leaflet-tooltip.pt-preview-label::before {
+  display: none;
+}
+.leaflet-container.deploy-cursor {
+  cursor: crosshair;
+}
+
 /* Ship markers (Marion Dufresne, Agulhas II): a coloured disc with a white ring
    and a boat glyph, set apart from the small blue drifter circles. The inner
    .ship-disc carries the per-vessel fill (set inline); the crimson vs near-black
