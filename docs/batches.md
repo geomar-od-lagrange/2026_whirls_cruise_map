@@ -47,9 +47,12 @@ roster is what lands in `deployments.json`. Examples so far: **Deployment 1** �
 smaller batch (3 drifters) that had separated from the ship and drifted steadily
 for over an hour; **Deployment 3** — a further 3 drifters (D-566, D-567, D-582),
 each confirmed separated from the vessel (2.9–11.6 km) and drifting at surface-current
-speed (~0.5–0.7 m/s) at assignment. Drifters that merely reported the same day
-while stationary on deck, or that showed only brief ship-transit motion, stayed
-`pre_deploy`.
+speed (~0.5–0.7 m/s) at assignment; **Deployment 4** — an array staged together on
+the Marion Dufresne and left in the water as the ship departed station, seeded with
+the two drifters (D-433, D-434) confirmed separated (21–44 km) and drifting (~0.2 m/s)
+first, to be extended as the array's other staged drifters report their own free
+drift. Drifters that merely reported the same day while stationary on deck, or that
+showed only brief ship-transit motion, stayed `pre_deploy`.
 
 ## GUI: the instrument filter
 
@@ -108,7 +111,7 @@ lands.
 `styleForBatch()` is the single seam for per-batch appearance, and the swatches
 in the control follow whatever it returns. Staged drifters (`pre_deploy`) render
 muted grey; each deployment batch has its own vivid colour (Deployment 1 blue,
-Deployment 2 teal, Deployment 3 orange), so in-water drifters stand out from
-those still awaiting deployment and successive deployments read apart. Colours
-live in `BATCH_STYLES` in `app.js`; a further deployment with no entry falls back
-to blue until given one.
+Deployment 2 teal, Deployment 3 orange, Deployment 4 purple), so in-water drifters
+stand out from those still awaiting deployment and successive deployments read
+apart. Colours live in `BATCH_STYLES` in `app.js`; a further deployment with no
+entry falls back to blue until given one.
