@@ -894,6 +894,17 @@ function buildDeployTool(deployLayer) {
       setStatus("");
     });
 
+    // Export the placed drops (every deployment) as a flat waypoint CSV. Reads the
+    // live deployWaypoints registry on click; empty = nothing placed, so it just
+    // says so rather than offering an empty file.
+    const download = L.DomUtil.create("button", "ft-btn", div);
+    download.type = "button";
+    download.textContent = "Download CSV";
+    download.addEventListener("click", () => {
+      const n = downloadDeployWaypoints();
+      setStatus(n ? `downloaded ${n} waypoint(s)` : "no drops placed yet");
+    });
+
     L.DomUtil.create("p", "ft-hint", div).textContent =
       "click a path · double-click to finish · right-click / Esc to cancel";
     buildDeployLegend(div);
@@ -918,6 +929,18 @@ async function placeDeployment(vertices, deployLayer, setStatus, startTime, opts
     start: seedTime(startTime, d.cumKm, opts.shipKn),
   }));
   const dropRecords = drops.map((d, i) => ({ latlng: d.latlng, start: seeds[i].start }));
+  // The drops ARE this deployment's waypoints: capture them (5-decimal lon/lat +
+  // absolute water-entry time, matching the seeds) so the Deploy control's
+  // "Download CSV" button can export them without re-deriving any geometry. Both
+  // branches below place drops, so registering here covers drift-on and drift-off.
+  deployWaypoints[deploymentId] = drops.map((d, i) => ({
+    deployment: deploymentId,
+    drop: i + 1,
+    lat: seeds[i].lat,
+    lon: seeds[i].lon,
+    start: seeds[i].start,
+    cumKm: d.cumKm,
+  }));
   drawShipTrack(vertices, deployLayer);
 
   const transitH = totalKm / (opts.shipKn * KN_TO_KMH);
@@ -1101,6 +1124,10 @@ function selectDeployDot(key) {
 const DEPLOY_DROP_RADIUS = 4;
 const deployDropSets = {}; // deploymentId -> [disc markers]
 const deployTracks = {};   // `${deploymentId}#${index}` -> line
+// The drop data behind the discs, kept for the CSV export (see deployWaypointsCsv):
+// deploymentId -> [{ deployment, drop, lat, lon, start, cumKm }]. Populated in
+// placeDeployment, cleared with the rest in resetDeployHighlights.
+const deployWaypoints = {};
 let selectedDropSet = null; // deploymentId (string) or null
 let selectedTrack = null;   // track key or null
 
@@ -1148,9 +1175,53 @@ function resetDeployHighlights() {
   for (const key of Object.keys(deployDotGroups)) delete deployDotGroups[key];
   for (const id of Object.keys(deployDropSets)) delete deployDropSets[id];
   for (const key of Object.keys(deployTracks)) delete deployTracks[key];
+  for (const id of Object.keys(deployWaypoints)) delete deployWaypoints[id];
   selectedDeployDot = null;
   selectedDropSet = null;
   selectedTrack = null;
+}
+
+// --- waypoint CSV export -----------------------------------------------------
+// The placed drops ARE the deployment waypoints — where each drifter enters the
+// water and when (the staggered ship-transit ETA) — so the Deploy tool's
+// "Download CSV" button dumps them flat for the ship, no server round-trip and no
+// re-derivation (deployWaypoints already mirrors the drawn drops).
+const DEPLOY_CSV_COLUMNS = ["deployment", "drop", "latitude", "longitude", "water_entry_utc", "cum_km"];
+
+// Total placed drops across every deployment (0 when nothing is placed yet).
+function deployWaypointCount() {
+  return Object.values(deployWaypoints).reduce((n, rows) => n + rows.length, 0);
+}
+
+// Flatten every placed deployment's drops into one CSV string, ordered by
+// deployment then drop, or null when nothing is placed. Values are plain
+// numbers / ISO strings with no separators, so no quoting is needed.
+function deployWaypointsCsv() {
+  if (!deployWaypointCount()) return null;
+  const ids = Object.keys(deployWaypoints).map(Number).sort((a, b) => a - b);
+  const lines = [DEPLOY_CSV_COLUMNS.join(",")];
+  for (const id of ids)
+    for (const w of deployWaypoints[id])
+      lines.push([w.deployment, w.drop, w.lat, w.lon, w.start, +w.cumKm.toFixed(3)].join(","));
+  return lines.join("\n") + "\n";
+}
+
+// Trigger a client-side download of the placed waypoints as deploy_waypoints.csv
+// (an ephemeral object URL + a synthetic anchor click). Returns the drop count so
+// the caller can report it; 0 means nothing was placed (no file offered).
+function downloadDeployWaypoints() {
+  const csv = deployWaypointsCsv();
+  if (!csv) return 0;
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "deploy_waypoints.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  return deployWaypointCount();
 }
 
 // A mark's absolute wall-clock time (ISO-8601, whole seconds — the drop discs' ETA
