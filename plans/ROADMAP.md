@@ -200,3 +200,12 @@ move to `done/` and gain a `docs/` counterpart.
     up front (lighter than the old single raster), prefetching the rest lazily — ζ/f
     frames only once selected. Flow trails / near-inertial stay the now snapshot.
     **Done** ([docs/currents.md](../docs/currents.md)).
+25. [Deploy tool: waypoint CSV export](done/025-deploy-waypoint-csv.md) — a
+    **Download CSV** button on the Deploy tool exports the placed drops as a flat
+    waypoint table (`deployment, drop, latitude, longitude, water_entry_utc,
+    cum_km`) — one row per drop across every placed deployment. The drops *are* the
+    deployment waypoints (position + staggered water-entry ETA), so the export is a
+    client-side dump of geometry already owned: no API round-trip, no build
+    artifact, wiped by **Clear**. **Done**
+    ([docs/interactive_forecast.md](../docs/interactive_forecast.md)); dev PoC, like
+    the rest of the Deploy tool.

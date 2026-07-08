@@ -245,6 +245,28 @@ forecasts are ad-hoc and ephemeral — never persisted, never a build artifact �
 drawn in a distinct **green** so they don't read as the instrument forecast (violet).
 **Clear** wipes them.
 
+## Waypoint CSV export
+
+**Download CSV** (beside **Clear**) exports the placed drops as a flat waypoint
+table for the ship. The drops *are* the deployment waypoints — where each drifter
+enters the water and its staggered ship-transit ETA — so the export is a straight
+dump of geometry the client already owns: no server round-trip and no build
+artifact. One row per drop across **every** currently-placed deployment (a Deploy
+session can place several), ordered by deployment then drop:
+
+```
+deployment,drop,latitude,longitude,water_entry_utc,cum_km
+```
+
+`deployment` is the placement's id, `drop` its 1-based index, `latitude`/`longitude`
+the seed's 5-decimal position (what was forecast), `water_entry_utc` the seed's
+absolute ISO `start`, and `cum_km` the arc length from the path start. The clicked
+route corners are *not* exported — the drops lie along that route, so their ordered
+positions give both the where and the when without the raw vertices. Drops are
+captured whether or not **Forecast drift** is on (both draw drops), and **Clear**
+wipes the captured waypoints along with the layers. The download is client-side (a
+Blob + object URL), so it works under `pixi run serve` with no backend.
+
 Leaflet fires two `click`s before a `dblclick`, so the finishing double-click's
 near-duplicate tail vertex is dropped, and `doubleClickZoom` is disabled while armed
 so the finish doesn't also zoom. The drop dots are coloured by their synced `t0` from
