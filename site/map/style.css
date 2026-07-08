@@ -4,7 +4,7 @@
   --ink: #1b2733;
   --muted: #5a6b7b;
   --accent: #1f5fa8;
-  --header-h: 64px;
+  --header-h: 48px;
 }
 
 * {
@@ -19,36 +19,23 @@ body {
   color: var(--ink);
 }
 
-/* Banner + header + map stack vertically; the map region flexes to fill what
-   the two fixed strips above it leave, so the banner height needs no manual
-   subtraction from the layout height. */
+/* Header + map stack vertically; the map region flexes to fill what the fixed
+   header above it leaves, so no manual height subtraction is needed. */
 body {
   display: flex;
   flex-direction: column;
 }
 
-/* Unofficial / work-in-progress caution strip, pinned above the header. */
-#wip-banner {
-  flex: 0 0 auto;
-  background: #f6c445;
-  color: #3a2c00;
-  border-bottom: 1px solid #d9a400;
-  padding: 5px 14px;
-  text-align: center;
-  font-size: 0.78rem;
-  font-weight: 600;
-  line-height: 1.4;
-}
-
 #app-header {
   flex: 0 0 auto;
   height: var(--header-h);
-  padding: 8px 18px;
+  padding: 0 18px;
   background: var(--bg);
   color: #fff;
   display: flex;
-  flex-direction: column;
-  justify-content: center;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
 }
 
 #app-header h1 {
@@ -57,10 +44,19 @@ body {
   font-weight: 600;
 }
 
-#app-header .subtitle {
-  margin: 2px 0 0;
-  font-size: 0.8rem;
-  color: #b8c6d4;
+/* Unofficial / work-in-progress caution, now a compact amber tag beside the
+   title (in the old banner's amber) rather than a full-width strip. */
+.wip-tag {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #f6c445;
+  background: rgba(246, 196, 69, 0.14);
+  border: 1px solid rgba(246, 196, 69, 0.4);
+  border-radius: 999px;
+  padding: 2px 9px;
+  white-space: nowrap;
+  cursor: default;
 }
 
 #layout {
@@ -83,10 +79,47 @@ body {
   padding: 14px 16px;
 }
 
-#sidebar h2 {
-  margin: 0 0 4px;
+/* Sidebar sections are collapsible <details>; the <summary> carries the old <h2>
+   look plus a disclosure caret. Freshness, ships and currents open by default;
+   the read-once/occasional panels (vorticity, drift, awaiting) start collapsed to
+   keep the initial column short. */
+#sidebar summary {
+  margin: 0;
   font-size: 0.95rem;
   font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 0;
+}
+#sidebar summary::-webkit-details-marker {
+  display: none;
+}
+#sidebar summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-left: 5px solid var(--muted);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+}
+#sidebar .panel[open] > summary::before {
+  transform: rotate(90deg);
+}
+#sidebar .panel[open] > summary {
+  margin-bottom: 8px;
+}
+#sidebar summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  #sidebar summary::before {
+    transition: transform 0.12s ease;
+  }
 }
 
 #sidebar .count {
@@ -100,13 +133,15 @@ body {
   color: var(--muted);
 }
 
-#status-panel,
-.ship-panel,
-#currents-panel,
-#drift-panel {
-  margin-bottom: 18px;
-  padding-bottom: 14px;
+#sidebar .panel {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
   border-bottom: 1px solid #e3e9ef;
+}
+#sidebar .panel:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
 }
 
 .status-row {
@@ -185,14 +220,15 @@ body {
 /* Time slider (bottom-centre): scrubs the speed / ζ/f shadings through the CMEMS
    forecast at 12 h steps. A plain positioned element inside the map container (not
    an L.control) so it can centre and cap its width; shares the .map-control look.
-   z-index 1000 matches Leaflet's own controls so the handle is reliably clickable
-   where it might overlap one. */
+   z-index sits above the map panes/popups (≤700) but below Leaflet's controls
+   (1000), so an expanded control dock overlapping it on a short window draws on
+   top rather than being hidden behind the slider. */
 .time-slider-control {
   position: absolute;
   left: 50%;
   bottom: 18px;
   transform: translateX(-50%);
-  z-index: 1000;
+  z-index: 800;
   width: min(92vw, 560px);
   background: var(--panel);
   color: var(--ink);
@@ -200,16 +236,6 @@ body {
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.4);
   padding: 8px 12px 6px;
   font-size: 0.8rem;
-}
-
-.time-slider-control .ts-label {
-  margin-bottom: 4px;
-  text-align: center;
-  color: var(--ink);
-}
-
-.time-slider-control .ts-title {
-  color: var(--muted);
 }
 
 .time-slider-control .ts-range {
@@ -225,6 +251,15 @@ body {
   margin-top: 2px;
   font-size: 0.66rem;
   color: var(--muted);
+}
+
+/* The selected frame's valid time, tucked into the box's lower-right corner. */
+.time-slider-control .ts-time {
+  margin-top: 3px;
+  text-align: right;
+  font-size: 0.7rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .time-slider-control .ts-tick.ts-now {
@@ -244,12 +279,8 @@ body {
   }
 }
 
-/* The three top-right map controls — Instruments (custom .batch-control), Currents
-   and Ships (Leaflet overlay controls) — share one box style via .map-control, so
-   they read as one titled set. app.js adds .map-control to every control container
-   and an <h4> title to each; because style.css loads after leaflet.css, these win
-   over Leaflet's own .leaflet-control-layers(-expanded) defaults at equal
-   specificity, so no per-control override is needed. */
+/* Shared box style for the top-right chrome — the control dock and the time
+   slider — so they read as one set: white card, soft shadow, small type. */
 .map-control {
   background: var(--panel);
   color: var(--ink);
@@ -260,32 +291,134 @@ body {
   font-size: 0.8rem;
 }
 
-.map-control h4 {
-  margin: 0 0 6px;
-  font-size: 0.8rem;
+/* The control dock: one top-right box with a header bar, a tab strip, and one
+   visible body at a time (Instruments / Currents / Ships / Deploy), so the
+   footprint is the tallest single tab, not the sum of stacked boxes. Overrides the
+   shared .map-control padding so the bar and tabs meet the box edges; each body
+   carries its own padding. */
+.control-dock {
+  width: 268px;
+  padding: 0;
+}
+/* Collapsed, the box shrinks to just "Controls  v" instead of keeping the full
+   open width as an empty bar. */
+.control-dock.collapsed {
+  width: auto;
+}
+/* Top bar: the tab strip + collapse caret when open; a "Controls" label + caret
+   when collapsed (the bar is then all that remains). */
+.dock-bar {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid #d8e0e8;
+}
+.control-dock.collapsed .dock-bar {
+  border-bottom: none;
+}
+/* The "Controls" label is only for the collapsed state; hidden while open. */
+.dock-title {
+  display: none;
+  align-items: center;
+  flex: 1 1 auto;
+  padding: 6px 0 6px 10px;
+  font-size: 0.7rem;
   font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.control-dock.collapsed .dock-title {
+  display: flex;
+}
+.dock-collapse {
+  flex: 0 0 auto;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  margin: 0 4px;
+  padding: 3px;
+  border-radius: 4px;
+}
+.dock-collapse:hover {
+  color: var(--ink);
+  background: #eef3f8;
+}
+.dock-collapse svg {
+  display: block;
+}
+/* Chevron points up when the dock is open (click to collapse), down when it's
+   collapsed (click to expand). */
+.control-dock:not(.collapsed) .dock-collapse svg {
+  transform: rotate(180deg);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .dock-collapse svg {
+    transition: transform 0.15s ease;
+  }
+}
+.dock-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.control-dock.collapsed .dock-tabs {
+  display: none;
+}
+.dock-tab {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 2px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  font: inherit;
+  font-size: 0.73rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--muted);
+  cursor: pointer;
+}
+.dock-tab:hover {
+  color: var(--ink);
+}
+.dock-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+/* Cap a tall tab (the full Instruments list) at the map height and let it scroll,
+   rather than let it grow past the viewport as the old stacked boxes did. */
+.dock-body {
+  padding: 8px 10px;
+  max-height: min(60vh, 460px);
+  overflow-y: auto;
+}
+/* Small group caption inside a tab (e.g. "Surface shading" above the radios). */
+.dock-cap {
+  display: block;
+  margin: 2px 0 4px;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+/* Placeholder shown in the Ships tab before any vessel reports a fix. */
+.dock-empty {
+  margin: 0;
+  font-size: 0.75rem;
+  font-style: italic;
+  color: var(--muted);
 }
 
-/* Leaflet's overlay rows -> the batch rows' inline layout (checkbox + swatchless
-   label). Only Leaflet controls carry .leaflet-control-layers, so the batch rows
-   (styled by .batch-row) are untouched. */
-.map-control.leaflet-control-layers label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  line-height: 1.6;
-  margin: 0;
-}
-.map-control.leaflet-control-layers label > span {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-/* The rule between base-layer radios (shadings) and overlay checkboxes, matched
-   to the Instruments control's .batch-divider. */
-.map-control .leaflet-control-layers-separator {
-  border-top: 1px solid #d8e0e8;
-  margin: 6px 0;
+/* A sidebar legend hidden while its shading is off (contextual legends): the
+   speed legend shows only under the "Current speed" shading, ζ/f only under
+   "Vorticity ζ/f". Toggled from onShadingChange in app.js. */
+.legend-hidden {
+  display: none;
 }
 
 .batch-row {
@@ -326,24 +459,10 @@ body {
   margin: 6px 0;
 }
 
-/* PoC deploy tool (interactive multi-click deployment planner). Reuses the
-   .map-control box and the .ft-* look — toggle/clear buttons, a hint, a status
-   line — plus its own .pt-* knob rows. The crosshair cursor is worn by the map
-   while the mode is armed. */
-.deploy-tool {
-  width: 190px;
-}
-.deploy-tool .ft-poc {
-  margin-left: 5px;
-  padding: 0 4px;
-  border-radius: 3px;
-  background: #16a34a;
-  color: #fff;
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  vertical-align: middle;
-}
+/* PoC deploy tool (interactive multi-click deployment planner). Renders into the
+   dock's Deploy tab (the dock is the box), so it no longer sets its own width; it
+   keeps the .ft-* look — toggle/clear buttons, a hint, a status line — plus its
+   own .pt-* knob rows. The crosshair cursor is worn by the map while armed. */
 .deploy-tool .ft-btn {
   display: block;
   width: 100%;
@@ -516,14 +635,33 @@ body {
   font-size: 0.9rem;
 }
 
+/* Narrow window: the side-by-side sidebar no longer fits, so the layout stacks
+   and the sidebar drops below the map. A tall (high-aspect-ratio) window has the
+   vertical room to spare for it there. */
 @media (max-width: 720px) {
   #layout {
     flex-direction: column;
   }
+  #map {
+    height: auto;
+    min-height: 0;
+  }
   #sidebar {
     flex: 0 0 auto;
-    max-height: 180px;
+    max-height: 35vh;
     border-left: none;
     border-top: 1px solid #d8e0e8;
+  }
+}
+
+/* Narrow AND short — both dimensions forbid it — so even a bottom strip isn't
+   worth the room: the sidebar drops out and the map takes the whole viewport. Its
+   freshness/ship/awaiting detail is reference data, and the layer + ship controls
+   stay reachable in the map's control dock. The height cutoff is set so the
+   sidebar gives way to the map once its 35vh strip would eat into a short window,
+   rather than clinging on until it owns half the screen. */
+@media (max-width: 720px) and (max-height: 760px) {
+  #sidebar {
+    display: none;
   }
 }

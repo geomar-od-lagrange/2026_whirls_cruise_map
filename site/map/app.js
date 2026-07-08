@@ -339,7 +339,7 @@ function buildBatchGroups(geojson) {
 // is one more list entry. (Gliders carry a track but no forecast/hindcast, so the
 // Forecast/Hindcast masters simply have no glider layer to act on.) Markers start
 // visible; overlays start at their own `on` (off by default).
-function buildBatchControl(map, markerGroups, overlays) {
+function buildInstrumentRows(div, map, markerGroups, overlays) {
   // Pre-deployment drifters are staged (still aboard, not in the water), so they
   // start hidden; deployment batches start visible. sync() (called at build) then
   // reconciles the map to this initial state.
@@ -363,76 +363,213 @@ function buildBatchControl(map, markerGroups, overlays) {
     }
   }
 
-  const control = L.control({ position: "topright" });
-  control.onAdd = () => {
-    const div = L.DomUtil.create("div", "map-control batch-control");
-    L.DomEvent.disableClickPropagation(div);
-    L.DomEvent.disableScrollPropagation(div);
-    const title = L.DomUtil.create("h4", "", div);
-    title.textContent = "Instruments";
+  // Master row per overlay, above the batch rows. A short line swatch in the
+  // overlay's own colour keys the checkbox to the lines it draws on the map.
+  for (const overlay of activeOverlays) {
+    const row = L.DomUtil.create("label", "batch-row", div);
+    const cb = L.DomUtil.create("input", "", row);
+    cb.type = "checkbox";
+    cb.checked = overlay.on;
+    const swatch = L.DomUtil.create("span", "batch-line-swatch", row);
+    swatch.style.background = overlay.color;
+    const text = L.DomUtil.create("span", "batch-text", row);
+    text.textContent = overlay.label;
+    cb.addEventListener("change", () => {
+      overlay.on = cb.checked;
+      sync();
+    });
+  }
 
-    // Master row per overlay, above the batch rows. A short line swatch in the
-    // overlay's own colour keys the checkbox to the lines it draws on the map.
-    for (const overlay of activeOverlays) {
-      const row = L.DomUtil.create("label", "batch-row", div);
-      const cb = L.DomUtil.create("input", "", row);
-      cb.type = "checkbox";
-      cb.checked = overlay.on;
-      const swatch = L.DomUtil.create("span", "batch-line-swatch", row);
-      swatch.style.background = overlay.color;
-      const text = L.DomUtil.create("span", "batch-text", row);
-      text.textContent = overlay.label;
-      cb.addEventListener("change", () => {
-        overlay.on = cb.checked;
-        sync();
-      });
-    }
+  // Divider separating the overlay (line) rows above from the batch (marker)
+  // rows below.
+  if (activeOverlays.length) L.DomUtil.create("hr", "batch-divider", div);
 
-    // Divider separating the overlay (line) rows above from the batch (marker)
-    // rows below.
-    if (activeOverlays.length) L.DomUtil.create("hr", "batch-divider", div);
+  for (const batch of Object.keys(markerGroups).sort(instrumentOrder)) {
+    const group = markerGroups[batch];
+    const row = L.DomUtil.create("label", "batch-row", div);
+    const cb = L.DomUtil.create("input", "", row);
+    cb.type = "checkbox";
+    cb.checked = batchOn[batch];
+    const swatch = L.DomUtil.create("span", "batch-swatch", row);
+    // Glider rows key to their instrument colour; drifter batches to their
+    // marker fill.
+    swatch.style.background =
+      GLIDER_STYLES[batch]?.color ?? styleForBatch(batch).fillColor;
+    const text = L.DomUtil.create("span", "batch-text", row);
+    text.textContent = `${batchLabel(batch)} (${group.getLayers().length})`;
+    cb.addEventListener("change", () => {
+      batchOn[batch] = cb.checked;
+      sync();
+    });
+  }
 
-    for (const batch of Object.keys(markerGroups).sort(instrumentOrder)) {
-      const group = markerGroups[batch];
-      const row = L.DomUtil.create("label", "batch-row", div);
-      const cb = L.DomUtil.create("input", "", row);
-      cb.type = "checkbox";
-      cb.checked = batchOn[batch];
-      const swatch = L.DomUtil.create("span", "batch-swatch", row);
-      // Glider rows key to their instrument colour; drifter batches to their
-      // marker fill.
-      swatch.style.background =
-        GLIDER_STYLES[batch]?.color ?? styleForBatch(batch).fillColor;
-      const text = L.DomUtil.create("span", "batch-text", row);
-      text.textContent = `${batchLabel(batch)} (${group.getLayers().length})`;
-      cb.addEventListener("change", () => {
-        batchOn[batch] = cb.checked;
-        sync();
-      });
-    }
-
-    // Apply the initial visibility (hides the default-off pre-deployment batch,
-    // which main() added to the map before this control was built).
-    sync();
-    return div;
-  };
-  return control;
+  // Apply the initial visibility (hides the default-off pre-deployment batch,
+  // which main() adds to the map before this dock is built).
+  sync();
 }
 
-// A Leaflet layer control that matches the Instruments box: the shared
-// `map-control` class gives it the same styling, and a prepended <h4> gives it a
-// title (Leaflet's layer control has neither natively). This is what lets the
-// Currents and Ships controls read as titled boxes alongside the custom
-// "Instruments" control. `baseLayers` (radios, mutually exclusive) and `overlays`
-// (checkboxes) follow L.control.layers; either may be null/empty (the Ships
-// control starts bare and gets its vessels via addOverlay on their first fix).
-function titledLayerControl(map, baseLayers, overlays, title) {
-  const control = L.control.layers(baseLayers, overlays, { collapsed: false }).addTo(map);
-  const container = control.getContainer();
-  container.classList.add("map-control");
-  const heading = L.DomUtil.create("h4", "");
-  heading.textContent = title;
-  container.insertBefore(heading, container.firstChild);
+// Surface-currents rows for the dock's Layers tab. Replaces the old
+// L.control.layers box: the shadings (`shadings`, e.g. speed / ζ·f / None) are
+// mutually-exclusive **radios** — selecting one adds its layer and removes the
+// others; the flow / near-inertial layers (`overlays`) are independent
+// **checkboxes**. Rows are appended to `div` (the dock owns the box). The
+// initially-active shading is whichever `shadings` layer is already on the map
+// (speed, added by default), else "None". `onShadingChange(name)` fires on every
+// selection and once at build, so the caller can key the contextual sidebar
+// legends and the lazy ζ·f prefetch to the active shading.
+function buildShadingRows(div, map, shadings, overlays, onShadingChange) {
+  const names = Object.keys(shadings);
+  let active = names.find((n) => n !== "None" && map.hasLayer(shadings[n])) ?? "None";
+  const select = (name) => {
+    active = name;
+    for (const n of names) {
+      if (n === name) shadings[n].addTo(map);
+      else map.removeLayer(shadings[n]);
+    }
+    onShadingChange?.(name);
+  };
+
+  if (names.length) {
+    L.DomUtil.create("span", "dock-cap", div).textContent = "Surface shading";
+    for (const name of names) {
+      const row = L.DomUtil.create("label", "batch-row", div);
+      const rb = L.DomUtil.create("input", "", row);
+      rb.type = "radio";
+      rb.name = "dock-shading";
+      rb.checked = name === active;
+      L.DomUtil.create("span", "batch-text", row).textContent = name;
+      rb.addEventListener("change", () => rb.checked && select(name));
+    }
+  }
+
+  const overlayNames = Object.keys(overlays);
+  if (overlayNames.length) {
+    if (names.length) L.DomUtil.create("hr", "batch-divider", div);
+    for (const name of overlayNames) {
+      const layer = overlays[name];
+      const row = L.DomUtil.create("label", "batch-row", div);
+      const cb = L.DomUtil.create("input", "", row);
+      cb.type = "checkbox";
+      cb.checked = map.hasLayer(layer);
+      L.DomUtil.create("span", "batch-text", row).textContent = name;
+      cb.addEventListener("change", () =>
+        cb.checked ? layer.addTo(map) : map.removeLayer(layer)
+      );
+    }
+  }
+
+  onShadingChange?.(active); // set the initial legend state to match the default shading
+}
+
+// The dock's Ships tab. A vessel's row is added lazily (`addVessel`) on its first
+// fix — same "no fix ⇒ no dead toggle" contract as before, but the tab itself
+// always exists, showing a placeholder until a vessel reports. `render(div)`
+// captures the tab body; `addVessel` appends a checkbox that shows/hides the
+// vessel's track group and re-paints. The group is already on the map when
+// `addVessel` is called, so the checkbox starts checked.
+function buildShipsTab(map) {
+  const vessels = [];
+  let body = null;
+  const paint = () => {
+    if (!body) return;
+    body.replaceChildren();
+    if (!vessels.length) {
+      L.DomUtil.create("p", "dock-empty", body).textContent = "No vessel fixes yet.";
+      return;
+    }
+    for (const { group, name } of vessels) {
+      const row = L.DomUtil.create("label", "batch-row", body);
+      const cb = L.DomUtil.create("input", "", row);
+      cb.type = "checkbox";
+      cb.checked = map.hasLayer(group);
+      L.DomUtil.create("span", "batch-text", row).textContent = name;
+      cb.addEventListener("change", () =>
+        cb.checked ? group.addTo(map) : map.removeLayer(group)
+      );
+    }
+  };
+  return {
+    render: (div) => {
+      body = div;
+      paint();
+    },
+    addVessel: (group, name) => {
+      if (vessels.some((v) => v.group === group)) return;
+      vessels.push({ group, name });
+      paint();
+    },
+  };
+}
+
+// One top-right control housing every map control as tabs, so the footprint is
+// bounded by the tallest single tab instead of the sum of stacked boxes (which
+// overflow a 13" laptop and collide with the time slider). `tabs` is
+// `[{ id, label, render(bodyDiv) }]`; each body is built once and shown or hidden
+// by `display`, so tabs keep their state (the deploy tool's arming, the ships
+// list) across switches. A header caret collapses the whole box to just its bar so
+// the controls can be tucked away to clear the map. Click propagation is disabled
+// on the whole box, so no per-tab guard is needed.
+function buildControlDock(map, tabs) {
+  const control = L.control({ position: "topright" });
+  control.onAdd = () => {
+    const div = L.DomUtil.create("div", "map-control control-dock");
+    L.DomEvent.disableClickPropagation(div);
+    L.DomEvent.disableScrollPropagation(div);
+
+    // Top bar: the tab strip and a collapse caret, plus a "Controls" label that
+    // shows only when collapsed (open, the tabs speak for themselves, so the caret
+    // just sits at the end of the tab row). Everything below the bar lives in
+    // `panel`, so one display toggle hides tabs' bodies, leaving the bar as the
+    // re-open handle.
+    const bar = L.DomUtil.create("div", "dock-bar", div);
+    const strip = L.DomUtil.create("div", "dock-tabs", bar);
+    L.DomUtil.create("span", "dock-title", bar).textContent = "Controls";
+    const caret = L.DomUtil.create("button", "dock-collapse", bar);
+    caret.type = "button";
+    // A single chevron glyph; CSS rotates it to point up when expanded (click to
+    // collapse) and down when collapsed (click to expand) — cleaner than swapping
+    // ^ / v text glyphs, which render unevenly across fonts.
+    caret.innerHTML =
+      '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">' +
+      '<path d="M3.5 6.25 8 10.75l4.5-4.5" fill="none" stroke="currentColor" ' +
+      'stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+    const panel = L.DomUtil.create("div", "dock-panel", div);
+    const buttons = [];
+    const bodies = [];
+    const show = (i) => {
+      bodies.forEach((b, j) => (b.style.display = j === i ? "" : "none"));
+      buttons.forEach((b, j) => b.classList.toggle("active", j === i));
+    };
+
+    tabs.forEach((tab, i) => {
+      const btn = L.DomUtil.create("button", "dock-tab", strip);
+      btn.type = "button";
+      btn.textContent = tab.label;
+      btn.addEventListener("click", () => show(i));
+      buttons.push(btn);
+
+      const body = L.DomUtil.create("div", "dock-body", panel);
+      tab.render(body);
+      bodies.push(body);
+    });
+
+    let collapsed = false;
+    const paintCollapse = () => {
+      panel.style.display = collapsed ? "none" : "";
+      div.classList.toggle("collapsed", collapsed);
+      caret.setAttribute("aria-expanded", String(!collapsed));
+      caret.setAttribute("aria-label", collapsed ? "Expand controls" : "Collapse controls");
+    };
+    caret.addEventListener("click", () => {
+      collapsed = !collapsed;
+      paintCollapse();
+    });
+
+    show(0);
+    paintCollapse();
+    return div;
+  };
   return control;
 }
 
@@ -450,7 +587,6 @@ function frameOffsetLabel(offsetH) {
 // mouse propagation is disabled so dragging the handle never pans the map.
 function buildTimeSlider(map, frames, nowIdx, onChange) {
   const el = L.DomUtil.create("div", "time-slider-control");
-  const label = L.DomUtil.create("div", "ts-label", el);
   const input = L.DomUtil.create("input", "ts-range", el);
   input.type = "range";
   input.min = "0";
@@ -465,24 +601,25 @@ function buildTimeSlider(map, frames, nowIdx, onChange) {
     t.textContent = frameOffsetLabel(f.offset_h);
   });
 
-  const setLabel = (i) => {
-    const f = frames[i];
-    const off = f.offset_h === 0 ? "now" : (f.offset_h > 0 ? "+" : "") + f.offset_h + " h";
-    label.innerHTML =
-      `<span class="ts-title">CMEMS field</span> ` +
-      `<strong>${off}</strong> · ${formatFixTime(f.valid_time)}`;
+  // Just the selected frame's valid time, small in the box's lower-right corner.
+  // The offset (now / +12 h …) is already the picked tick's label, and that it's
+  // the shading — not the tracks — that moves is plain from watching the map while
+  // scrubbing, so neither needs a header line.
+  const timeEl = L.DomUtil.create("div", "ts-time", el);
+  const setTime = (i) => {
+    timeEl.textContent = formatFixTime(frames[i].valid_time);
   };
-  setLabel(nowIdx);
+  setTime(nowIdx);
 
   L.DomEvent.on(input, "input", () => {
     const i = Number(input.value);
-    setLabel(i);
+    setTime(i);
     onChange(i);
   });
   L.DomEvent.disableClickPropagation(el);
   L.DomEvent.disableScrollPropagation(el);
   map.getContainer().appendChild(el);
-  return { el, setLabel };
+  return { el, setTime };
 }
 
 // Track colour for the trajectory lines and the intermediate-fix dots that ride
@@ -536,7 +673,7 @@ const KM_PER_DEG = 111.19492664455873;
 const KN_TO_KMH = 1.852;
 
 // Trajectories, grouped by `batch` so each batch's lines+dots toggle with that
-// batch's markers (see buildBatchControl). For each drifter: one line, plus a
+// batch's markers (see buildInstrumentRows). For each drifter: one line, plus a
 // small dot at every fix. Each dot carries the same hover tooltip as the drifter's
 // main marker, but filled with *that fix's* own time, battery, and reported/derived
 // velocity — read from the per-vertex `fixes` array that rides parallel to
@@ -589,7 +726,7 @@ function buildTrackGroups(geojson) {
 
 // Current-advection line (forecast forward, or hindcast backward), grouped by
 // `batch` so each batch's lines+dots toggle with that batch's markers and the
-// master Forecast/Hindcast row (see buildBatchControl). For each drifter: one
+// master Forecast/Hindcast row (see buildInstrumentRows). For each drifter: one
 // solid line from its head — the time-dependent-current advection path, which
 // curls into the model's inertial loop — in `color`, plus a small dot at each
 // `marks` entry (1/3/6 h). Dots carry no
@@ -759,8 +896,9 @@ function drawDrops(drops, deployLayer, deploymentId) {
 // double-click finishes (Leaflet fires two clicks before a dblclick, so the
 // near-duplicate tail vertex is dropped and doubleClickZoom is disabled while
 // armed). The knobs (drop spacing km, ship speed kn, forecast horizon h) bind
-// straight onto `state`. Returns { control, state, handleClick, handleDblClick,
-// handleMove }; main() routes background events through the handlers.
+// straight onto `state`. Returns { state, handleClick, handleDblClick, handleMove,
+// handleAbort, renderBody }; the dock renders renderBody into its Deploy tab and
+// main() routes background events through the handlers.
 function buildDeployTool(deployLayer) {
   const state = {
     on: false,
@@ -822,18 +960,14 @@ function buildDeployTool(deployLayer) {
     return true;
   };
 
-  const control = L.control({ position: "topright" });
-  control.onAdd = (map) => {
+  // Render the deploy tool's body into the dock's Deploy tab. The dock owns the
+  // box and the click-propagation guard, and the tab label carries the
+  // "Deploy · PoC" heading — so the body starts straight at the arm toggle.
+  // Captures the map and arms the preview layer on first render.
+  const renderBody = (div, map) => {
+    div.classList.add("deploy-tool");
     mapRef = map;
     previewLayer.addTo(map);
-
-    const div = L.DomUtil.create("div", "map-control deploy-tool");
-    L.DomEvent.disableClickPropagation(div);
-    L.DomEvent.disableScrollPropagation(div);
-
-    const title = L.DomUtil.create("h4", "", div);
-    title.textContent = "Deploy ";
-    L.DomUtil.create("span", "ft-poc", title).textContent = "PoC";
 
     const toggle = L.DomUtil.create("button", "ft-btn ft-toggle", div);
     toggle.type = "button";
@@ -909,10 +1043,8 @@ function buildDeployTool(deployLayer) {
       "click a path · double-click to finish · right-click / Esc to cancel";
     buildDeployLegend(div);
     statusEl = L.DomUtil.create("p", "ft-status", div);
-
-    return div;
   };
-  return { control, state, handleClick, handleDblClick, handleMove, handleAbort };
+  return { state, handleClick, handleDblClick, handleMove, handleAbort, renderBody };
 }
 
 // Resample the finished path into equally-spaced drops, stagger each drop's
@@ -1627,7 +1759,7 @@ function gliderPopupHtml(props, latlng) {
 }
 
 // Latest-position markers, one feature group per glider `type`, so each platform
-// class is an instrument row in the batch control (see buildBatchControl) — the
+// class is an instrument row in the batch control (see buildInstrumentRows) — the
 // same shape as buildBatchGroups for drifters. Diamond marker so gliders read
 // apart from the drifters' circles. Returns { type: featureGroup }.
 function buildGliderMarkerGroups(geojson) {
@@ -2104,14 +2236,14 @@ async function main() {
   // the 700 popupPane) so a fix's tooltip is never occluded by a marker.
   map.getPane("tooltipPane").style.zIndex = 680;
 
-  // PoC interactive deployment planner: its own layer + a top-right "Deploy"
-  // toggle (see buildDeployTool). Background clicks/moves are routed to it below
-  // when armed. `displayedFieldTime` is the valid time of the CMEMS snapshot shown
-  // on the map (set once the currents meta loads, below); it is the run start, so a
-  // placed deployment's drift begins at the same instant as the field.
+  // PoC interactive deployment planner: its own layer + a "Deploy" tab in the
+  // control dock (built below; its body is deployTool.renderBody). Background
+  // clicks/moves are routed to it when armed. `displayedFieldTime` is the valid
+  // time of the CMEMS snapshot shown on the map (set once the currents meta loads,
+  // below); it is the run start, so a placed deployment's drift begins at the same
+  // instant as the field.
   const deployLayer = L.featureGroup().addTo(map);
   const deployTool = buildDeployTool(deployLayer);
-  deployTool.control.addTo(map);
   let displayedFieldTime = null;
 
   // Background map clicks: in Deploy mode a click adds a vertex to the path and a
@@ -2196,6 +2328,13 @@ async function main() {
   const nowIndex = (m) =>
     Math.max(0, (m?.frames ?? []).findIndex((f) => f.offset_h === (m.now_offset_h ?? 0)));
 
+  // Warm the browser cache with a meta's frames so the slider scrubs smoothly.
+  // Lifted out of the slider block because the shading radios trigger the lazy ζ/f
+  // prefetch on first selection (see onShadingChange, below), not a Leaflet
+  // baselayerchange event.
+  const prefetchFrames = (fs) => (fs ?? []).forEach((f) => { new Image().src = frameUrl(f.file); });
+  let vortPrefetched = false;
+
   // The two shadings (speed, ζ/f) both fill the same `shading` pane, so only one
   // makes sense at a time — they are mutually exclusive **base layers** (radio
   // buttons) in the Currents control, not overlays. Fully opaque: the raster is
@@ -2240,8 +2379,6 @@ async function main() {
   // when there is more than one frame to move between.
   if (meta?.frames?.length > 1) {
     const frames = meta.frames;
-    let vortPrefetched = false;
-    const prefetch = (fs) => fs.forEach((f) => { new Image().src = frameUrl(f.file); });
     buildTimeSlider(map, frames, nowIndex(meta), (i) => {
       for (const s of shadingLayers) {
         const file = s.frames[i]?.file;
@@ -2255,13 +2392,7 @@ async function main() {
     // loaded); prefetch the ζ/f frames only once vorticity is first selected, so an
     // untouched layer costs no bytes. Both keep the slider smooth without inflating
     // the critical-path load.
-    (window.requestIdleCallback || ((cb) => setTimeout(cb, 1500)))(() => prefetch(frames));
-    map.on("baselayerchange", (e) => {
-      if (!vortPrefetched && e.name === "Vorticity ζ/f" && vorticityMeta?.frames) {
-        vortPrefetched = true;
-        prefetch(vorticityMeta.frames);
-      }
-    });
+    (window.requestIdleCallback || ((cb) => setTimeout(cb, 1500)))(() => prefetchFrames(frames));
   }
 
   // Flow trails: dark->white ramp keyed to speed, so the bright jet pops over the
@@ -2324,57 +2455,88 @@ async function main() {
   const gliderMarkerGroups = gliders ? buildGliderMarkerGroups(gliders) : {};
   const gliderTrackGroups = gliders ? buildGliderTrackGroups(gliders) : {};
 
-  // One instrument control governs drifter batches *and* gliders. Marker rows =
+  // One instrument list governs drifter batches *and* gliders. Marker rows =
   // drifter batches + glider platforms; the True-track overlay carries both the
   // drifter trajectories and the glider tracks, so its master toggle acts on
   // every instrument at once.
   const markerGroups = { ...batchGroups, ...gliderMarkerGroups };
 
   // Markers last, so they sit on top of the shading and flow layers. Added
-  // directly; the instrument control (not the layer control) governs their
-  // visibility — and the tracks', forecast's, and hindcast's. (sync() in the
-  // control reconciles the initial checkbox state, e.g. hiding pre-deploy.)
+  // directly; the Layers tab's rows (not a layer control) govern their visibility
+  // — and the tracks', forecast's, and hindcast's. (sync() reconciles the initial
+  // checkbox state, e.g. hiding pre-deploy.)
   for (const group of Object.values(markerGroups)) {
     group.addTo(map);
   }
-  buildBatchControl(map, markerGroups, [
-    {
-      label: "True track",
-      groups: { ...trackGroups, ...gliderTrackGroups },
-      on: false,
-      color: TRACK_COLOR,
-    },
-    { label: "Forecast (1/3/6 h)", groups: forecastGroups, on: false, color: FORECAST_COLOR },
-    { label: "Hindcast (1/3/6 h)", groups: hindcastGroups, on: false, color: HINDCAST_COLOR },
-  ]).addTo(map);
 
   // Awaiting-first-fix sidebar.
   renderAwaiting(await fetchJSON(DATA.awaiting, { optional: true }));
 
-  // Map layers are split into two titled controls that sit below the custom
-  // "Instruments" control, so the three read as one set: **Currents** and
-  // **Ships** (the vessels). OpenStreetMap is the sole basemap — there is no
-  // basemap radio.
-  //
-  // In Currents the two shadings are mutually-exclusive **base layers** (radios)
-  // plus a "None" radio to turn shading off; the flow trails and near-inertial
-  // animation, which can coexist with either shading, are **overlays**
-  // (checkboxes). The control is built only when it has something to show (CMEMS
-  // up), and Ships is created lazily on the first vessel fix (below), so neither
-  // ever shows a dead-empty box.
-  if (Object.keys(currentShading).length || Object.keys(currentOverlays).length) {
-    if (Object.keys(currentShading).length) currentShading["None"] = L.layerGroup();
-    titledLayerControl(map, currentShading, currentOverlays, "Currents");
-  }
-  let shipsControl = null;
-  const ensureShipsControl = () =>
-    (shipsControl ??= titledLayerControl(map, null, {}, "Ships"));
+  // Contextual sidebar legends: the speed legend shows only while "Current speed"
+  // is the active shading, the ζ/f legend only while "Vorticity ζ/f" is — so a
+  // legend never sits open for a shading that's off. This is also the seam for the
+  // lazy ζ/f-frame prefetch (first time that shading is picked), which used to hang
+  // off the removed layer control's baselayerchange event.
+  const setLegendShown = (id, shown) =>
+    document.getElementById(id)?.classList.toggle("legend-hidden", !shown);
+  const onShadingChange = (name) => {
+    setLegendShown("speed-legend", name === "Current speed");
+    setLegendShown("vorticity-legend", name === "Vorticity ζ/f");
+    if (name === "Vorticity ζ/f" && !vortPrefetched && vorticityMeta?.frames) {
+      vortPrefetched = true;
+      prefetchFrames(vorticityMeta.frames);
+    }
+  };
+
+  // The former top-right boxes are now one tabbed dock (buildControlDock):
+  //   • Instruments — the overlay masters (track / forecast / hindcast) + the
+  //     drifter/glider batch rows;
+  //   • Currents — the mutually-exclusive shading radios (None / speed / ζ·f, the
+  //     "None" added only when there is a shading to turn off) plus the flow /
+  //     near-inertial overlay checkboxes; present only when CMEMS is up;
+  //   • Ships — one row per vessel, filled lazily on first fix (buildShipsTab);
+  //   • Deploy — the PoC placement tool's body.
+  // Only one body shows at a time, so the top-right footprint stays bounded on a
+  // 13" laptop instead of overflowing into the time slider.
+  const shipsTab = buildShipsTab(map);
+  const hasCurrents =
+    Object.keys(currentShading).length || Object.keys(currentOverlays).length;
+  if (Object.keys(currentShading).length) currentShading["None"] = L.layerGroup();
+  buildControlDock(map, [
+    {
+      id: "instruments",
+      label: "Instruments",
+      render: (div) =>
+        buildInstrumentRows(div, map, markerGroups, [
+          {
+            label: "True track",
+            groups: { ...trackGroups, ...gliderTrackGroups },
+            on: false,
+            color: TRACK_COLOR,
+          },
+          { label: "Forecast (1/3/6 h)", groups: forecastGroups, on: false, color: FORECAST_COLOR },
+          { label: "Hindcast (1/3/6 h)", groups: hindcastGroups, on: false, color: HINDCAST_COLOR },
+        ]),
+    },
+    ...(hasCurrents
+      ? [
+          {
+            id: "currents",
+            label: "Currents",
+            render: (div) =>
+              buildShadingRows(div, map, currentShading, currentOverlays, onShadingChange),
+          },
+        ]
+      : []),
+    { id: "ships", label: "Ships", render: shipsTab.render },
+    { id: "deploy", label: "Deploy", render: (div) => deployTool.renderBody(div, map) },
+  ]).addTo(map);
 
   // R/V Marion Dufresne live track (client-side; Flotte Océanographique Française
   // API). Last, and deliberately not awaited: it is the one third-party fetch, so
   // blocking on it would stall the same-origin layers and controls above behind a
   // slow host. Each poll requests only the window since the last fix and appends.
-  // The overlay is added to the layer control on the first fix (not before, so an
+  // The vessel row joins the Ships tab on the first fix (not before, so an
   // empty/failed start never shows a dead toggle) and the marker reveals then; the
   // interval keeps trying, so a later poll revives the layer once the API recovers.
   // Polls are skipped while the tab is hidden — and resumed on return — to avoid
@@ -2388,7 +2550,7 @@ async function main() {
       renderShipInfo(VESSELS.md, null);
     } else if (!shipShown) {
       ship.group.addTo(map);
-      ensureShipsControl().addOverlay(ship.group, VESSELS.md.name);
+      shipsTab.addVessel(ship.group, VESSELS.md.name);
       shipShown = true;
     }
   }
@@ -2417,7 +2579,7 @@ async function main() {
     agulhas.append(fixes);
     if (!agulhasShown) {
       agulhas.group.addTo(map);
-      ensureShipsControl().addOverlay(agulhas.group, VESSELS.agulhas.name);
+      shipsTab.addVessel(agulhas.group, VESSELS.agulhas.name);
       agulhasShown = true;
     }
   }
