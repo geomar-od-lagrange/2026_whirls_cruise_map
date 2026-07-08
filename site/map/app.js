@@ -6,7 +6,8 @@
  *   tracks.geojson                 -> trajectory lines (off by default)
  *   forecast.geojson               -> per-drifter current-advection track (off)
  *   hindcast.geojson               -> per-drifter current-advection back-track (off)
- *   speed.png + currents_meta.json -> surface-speed shading (imageOverlay)
+ *   speed_±NNh.webp + currents_meta.json -> surface-speed shading, one lossless
+ *                                           WebP frame per slider offset (imageOverlay)
  *   currents.json                  -> leaflet-velocity flow trails (optional)
  *   inertial_field.json            -> animated near-inertial particle tracks (off)
  *   awaiting.json                  -> sidebar list, no map geometry
@@ -20,9 +21,10 @@ const DATA = {
   hindcast: "./data/hindcast.geojson",
   awaiting: "./data/awaiting.json",
   currents: "./data/currents.json",
+  // Shading rasters are per-frame files named in the metas' `frames` manifest
+  // (speed_±NNh.webp / vorticity_±NNh.webp), resolved under this base.
+  dataBase: "./data/",
   meta: "./data/currents_meta.json",
-  speed: "./data/speed.png",
-  vorticity: "./data/vorticity.png",
   vorticityMeta: "./data/vorticity_meta.json",
   inertialField: "./data/inertial_field.json",
   build: "./data/build.json",
@@ -430,6 +432,55 @@ function titledLayerControl(map, baseLayers, overlays, title) {
   heading.textContent = title;
   container.insertBefore(heading, container.firstChild);
   return control;
+}
+
+// Short offset label for a slider frame: "now", "+12h", "-12h".
+function frameOffsetLabel(offsetH) {
+  if (offsetH === 0) return "now";
+  return (offsetH > 0 ? "+" : "") + offsetH + "h";
+}
+
+// Time-slider control (bottom-centre): scrubs the surface-current speed / ζ/f
+// shadings through the CMEMS forecast at 12 h steps (-12 … now … +72 h). `frames`
+// is the metas' shared manifest [{offset_h, valid_time, file}]; `onChange(i)`
+// swaps every registered shading overlay to that frame. It is a plain positioned
+// element (not an L.control) so it can centre and span the map width; Leaflet
+// mouse propagation is disabled so dragging the handle never pans the map.
+function buildTimeSlider(map, frames, nowIdx, onChange) {
+  const el = L.DomUtil.create("div", "time-slider-control");
+  const label = L.DomUtil.create("div", "ts-label", el);
+  const input = L.DomUtil.create("input", "ts-range", el);
+  input.type = "range";
+  input.min = "0";
+  input.max = String(frames.length - 1);
+  input.step = "1";
+  input.value = String(nowIdx);
+  input.setAttribute("aria-label", "CMEMS forecast time");
+
+  const ticks = L.DomUtil.create("div", "ts-ticks", el);
+  frames.forEach((f) => {
+    const t = L.DomUtil.create("span", "ts-tick" + (f.offset_h === 0 ? " ts-now" : ""), ticks);
+    t.textContent = frameOffsetLabel(f.offset_h);
+  });
+
+  const setLabel = (i) => {
+    const f = frames[i];
+    const off = f.offset_h === 0 ? "now" : (f.offset_h > 0 ? "+" : "") + f.offset_h + " h";
+    label.innerHTML =
+      `<span class="ts-title">CMEMS field</span> ` +
+      `<strong>${off}</strong> · ${formatFixTime(f.valid_time)}`;
+  };
+  setLabel(nowIdx);
+
+  L.DomEvent.on(input, "input", () => {
+    const i = Number(input.value);
+    setLabel(i);
+    onChange(i);
+  });
+  L.DomEvent.disableClickPropagation(el);
+  L.DomEvent.disableScrollPropagation(el);
+  map.getContainer().appendChild(el);
+  return { el, setLabel };
 }
 
 // Track colour for the trajectory lines and the intermediate-fix dots that ride
@@ -1588,7 +1639,10 @@ function renderAwaiting(ids) {
   }
 }
 
-function renderCurrentsInfo(meta) {
+// The legend (colour bar + shared vmax) is constant across the slider; only the
+// displayed *time* changes. Pass the selected `frame` ({offset_h, valid_time}) to
+// show which forecast step is on the map; without it, the now frame.
+function renderCurrentsInfo(meta, frame) {
   const timeEl = document.getElementById("currents-time");
   const legendEl = document.getElementById("speed-legend");
   if (!meta) {
@@ -1596,7 +1650,10 @@ function renderCurrentsInfo(meta) {
     legendEl.innerHTML = "";
     return;
   }
-  timeEl.textContent = `Valid ${formatFixTime(meta.valid_time)} — CMEMS analysis/forecast.`;
+  const shown = frame ?? meta.frames?.find((f) => f.offset_h === (meta.now_offset_h ?? 0));
+  const at = shown ? formatFixTime(shown.valid_time) : formatFixTime(meta.valid_time);
+  const off = shown && shown.offset_h !== 0 ? ` (${frameOffsetLabel(shown.offset_h)})` : "";
+  timeEl.textContent = `Showing ${at}${off} — CMEMS analysis/forecast.`;
   const gradient = meta.colorbar.join(", ");
   legendEl.innerHTML =
     `<div class="legend-bar" style="background:linear-gradient(to right, ${gradient})"></div>` +
@@ -2044,14 +2101,22 @@ async function main() {
     map.fitBounds(bounds, { padding: [40, 40], maxZoom: 9 });
   }
 
-  // Surface currents, from one CMEMS field: speed shading + flow trails, plus the
-  // ζ/f vorticity diagnostic derived from the same field.
+  // Surface currents, from one CMEMS forecast window: speed + ζ/f shadings — one
+  // lossless-WebP frame per 12 h slider offset (-12 … +72 h) sharing one colour
+  // scale — plus the flow trails (the now slice; a one-instant texture the slider
+  // does not scrub).
   const meta = await fetchJSON(DATA.meta, { optional: true });
-  // Lock the interactive forecast's start time to the displayed field's instant.
+  // Lock the interactive forecast's start time to the displayed field's instant
+  // (the now frame at load; the slider updates it as the displayed field changes).
   displayedFieldTime = meta?.valid_time ?? null;
   const currents = await fetchJSON(DATA.currents, { optional: true });
   const vorticityMeta = await fetchJSON(DATA.vorticityMeta, { optional: true });
   const inertialField = await fetchJSON(DATA.inertialField, { optional: true });
+
+  // Resolve a frame file under the data dir, and the index of a meta's `now` frame.
+  const frameUrl = (file) => DATA.dataBase + file;
+  const nowIndex = (m) =>
+    Math.max(0, (m?.frames ?? []).findIndex((f) => f.offset_h === (m.now_offset_h ?? 0)));
 
   // The two shadings (speed, ζ/f) both fill the same `shading` pane, so only one
   // makes sense at a time — they are mutually exclusive **base layers** (radio
@@ -2059,31 +2124,67 @@ async function main() {
   // the ocean's true colour, not a wash over the basemap (land stays transparent
   // via the PNG's own alpha mask, so the coastline still shows through).
   const currentShading = {};
+  // Shading overlays the time slider re-points frame-by-frame: {layer, frames}.
+  const shadingLayers = [];
 
-  // Speed shading: a Mercator-warped PNG in the bottom data pane, shown by
-  // default. The PNG is at the native CMEMS grid resolution (one pixel per cell);
-  // `crisp` disables the browser's default bilinear upscaling so the cells render
-  // as sharp pixels instead of a smooth blur.
-  if (meta && meta.bounds) {
-    const speedLayer = L.imageOverlay(DATA.speed, meta.bounds, {
+  // Speed shading: a lossless-WebP Mercator raster in the bottom data pane, shown
+  // by default, initialised at the `now` frame. The image is at the native CMEMS
+  // grid resolution (one pixel per cell); `crisp` disables the browser's default
+  // bilinear upscaling so the cells render as sharp pixels instead of a smooth blur.
+  if (meta && meta.bounds && meta.frames?.length) {
+    const speedLayer = L.imageOverlay(frameUrl(meta.frames[nowIndex(meta)].file), meta.bounds, {
       pane: "shading",
       className: "crisp-raster",
     });
     speedLayer.addTo(map); // the default-selected shading radio
     currentShading["Current speed"] = speedLayer;
+    shadingLayers.push({ layer: speedLayer, frames: meta.frames });
   }
   renderCurrentsInfo(meta);
 
   // Vorticity ζ/f: the alternative shading in the same pane, off by default (its
   // radio unselected until picked, which swaps it in for the speed raster).
-  if (vorticityMeta && vorticityMeta.bounds) {
-    const vorticityLayer = L.imageOverlay(DATA.vorticity, vorticityMeta.bounds, {
-      pane: "shading",
-      className: "crisp-raster",
-    });
+  if (vorticityMeta && vorticityMeta.bounds && vorticityMeta.frames?.length) {
+    const vorticityLayer = L.imageOverlay(
+      frameUrl(vorticityMeta.frames[nowIndex(vorticityMeta)].file),
+      vorticityMeta.bounds,
+      { pane: "shading", className: "crisp-raster" }
+    );
     currentShading["Vorticity ζ/f"] = vorticityLayer;
+    shadingLayers.push({ layer: vorticityLayer, frames: vorticityMeta.frames });
   }
   renderVorticityInfo(vorticityMeta);
+
+  // Time slider: scrub both shadings through the forecast together. It drives the
+  // speed frames' offsets/times (vorticity shares the same offsets); moving it
+  // re-points every registered shading overlay, updates the sidebar displayed-time
+  // line, and re-locks the deploy tool's start to the displayed field. Only built
+  // when there is more than one frame to move between.
+  if (meta?.frames?.length > 1) {
+    const frames = meta.frames;
+    let vortPrefetched = false;
+    const prefetch = (fs) => fs.forEach((f) => { new Image().src = frameUrl(f.file); });
+    buildTimeSlider(map, frames, nowIndex(meta), (i) => {
+      for (const s of shadingLayers) {
+        const file = s.frames[i]?.file;
+        if (file) s.layer.setUrl(frameUrl(file));
+      }
+      const f = frames[i];
+      displayedFieldTime = f.valid_time;
+      renderCurrentsInfo(meta, f);
+    });
+    // Prefetch the speed frames once the map is idle (the now frame is already
+    // loaded); prefetch the ζ/f frames only once vorticity is first selected, so an
+    // untouched layer costs no bytes. Both keep the slider smooth without inflating
+    // the critical-path load.
+    (window.requestIdleCallback || ((cb) => setTimeout(cb, 1500)))(() => prefetch(frames));
+    map.on("baselayerchange", (e) => {
+      if (!vortPrefetched && e.name === "Vorticity ζ/f" && vorticityMeta?.frames) {
+        vortPrefetched = true;
+        prefetch(vorticityMeta.frames);
+      }
+    });
+  }
 
   // Flow trails: dark->white ramp keyed to speed, so the bright jet pops over the
   // shading. The magnitude is sqrt-compressed server-side so slow eddies animate,

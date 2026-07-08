@@ -165,10 +165,14 @@ backward-advecting each node to its drop time is the inverse step, not yet built
 
 ## Start time, locked to the displayed field; staggered entry
 
-The run start is the **displayed CMEMS snapshot's time** (`currents_meta.json`'s
-`valid_time`), which the client passes as drop #1's `start`, so a placed deployment
-begins at the same instant as the current field shown on the map (and the first
-segment aligns with the displayed currents — see below). Each later drop enters the
+The run start is the **displayed CMEMS field's time**, which the client passes as
+drop #1's `start`, so a placed deployment begins at the same instant as the field
+shown on the map (and the first segment aligns with the displayed currents — see
+below). At load this is the now frame (`currents_meta.json`'s `valid_time`); moving
+the **time slider** ([currents.md](currents.md)) re-locks it to the selected
+forecast step, so a deployment placed while the slider shows +24 h starts its drift
+there. The API validates every seed's start against its loaded window and skips any
+it can't cover, so a start out past the window is handled gracefully. Each later drop enters the
 water at `run_start + cum_km / (ship_speed · 1.852)` — the ship-speed knob turned
 into a staggered water-entry time, baked into that seed's `start` client-side. The
 API validates each start against the loaded window and skips any it can't cover.

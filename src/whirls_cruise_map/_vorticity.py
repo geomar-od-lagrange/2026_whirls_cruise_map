@@ -9,15 +9,16 @@ ratio ``ζ/f``. With both ζ and f negative for a Southern-Hemisphere cyclone,
 Rossby-number sign, identical in both hemispheres, so cyclones and anticyclones
 read directly as opposite-signed lobes that the speed magnitude alone hides.
 
-Derived from the **same single-time field** the speed/flow overlays use
-(:func:`whirls_cruise_map._currents.fetch_field`): vorticity is a spatial
+Derived from the **same forecast window** the speed/flow overlays use
+(:func:`whirls_cruise_map._currents.fetch_shading_window`): vorticity is a spatial
 derivative of the ``uo``/``vo`` already in hand, so it needs no extra fetch and
-renders at the same near-native 1/12° grid. It is a snapshot diagnostic, not an
-advected field.
+renders at the same near-native 1/12° grid. One frame per slider offset
+(``-12 … +72 h``); each is a snapshot diagnostic of that instant, not an advected
+field.
 
-Structured exactly like the surface-speed shading (:func:`._currents.to_speed_png`)
-and the inertial-amplitude raster (:func:`._inertial.to_inertial_png`) — one
-diagnostic 2-D field through the shared :func:`._raster.mercator_rgba_png` helper —
+Structured exactly like the surface-speed shading
+(:func:`._currents.to_speed_frames`) — one diagnostic 2-D field per frame through
+the shared :func:`._raster.mercator_rgba_webp` helper on one shared colour scale —
 with two differences that follow from ζ/f being **signed**: a *diverging* colour
 map and a *symmetric* ``±vmax`` clip, reported to the client as a ``vmin`` key in
 the meta so the legend spans −vmax…0…+vmax rather than 0…vmax.
@@ -83,18 +84,24 @@ def _colorbar_stops(n: int = COLORBAR_STOPS) -> list[str]:
     return [mcolors.to_hex(VORT_CMAP(i / (n - 1))) for i in range(n)]
 
 
-def to_vorticity_png(field: xr.Dataset) -> tuple[bytes, dict]:
-    """Render ζ/f as a Mercator-warped RGBA PNG (cmocean ``curl``, clipped to a
-    symmetric ``±vmax``, land transparent) and return ``(png_bytes, meta)``.
+def to_vorticity_frames(
+    window: xr.Dataset, offsets: list[int] = _currents.SHADING_OFFSETS_H
+) -> tuple[list[dict], dict]:
+    """Render ζ/f for each slider offset as a compact **lossless WebP** (cmocean
+    ``curl``, symmetric ``±vmax`` clip, land transparent) and return
+    ``(frames, meta)`` — the signed, diverging twin of
+    :func:`._currents.to_speed_frames`.
 
-    ``vmax`` is the ``CLIP_PERCENTILE``-th percentile of ``|ζ/f|``; the field is
-    mapped from ``[−vmax, +vmax]`` onto the diverging map so zero lands on its
-    neutral midpoint. ``meta`` matches ``currents_meta.json``'s shape plus a
-    ``vmin`` (= ``−vmax``) that marks the symmetric range for the client legend;
-    ``valid_time`` reuses the field's own so ζ/f shares the speed raster's clock.
+    ``vmax`` is the ``CLIP_PERCENTILE`` of ``|ζ/f|`` pooled over *every* frame, so
+    the symmetric ``[−vmax, +vmax]`` scale (and its single legend) holds across the
+    slider; each field maps onto the diverging map with zero at its neutral
+    midpoint. Frames are ``{offset_h, valid_time, file, image}``; ``meta`` matches
+    ``currents_meta.json``'s slider shape plus a ``vmin`` (= ``−vmax``) marking the
+    symmetric range for the client legend.
     """
-    zof, lats, lons = zeta_over_f(field)
-    vmax = float(np.nanpercentile(np.abs(zof), CLIP_PERCENTILE))
+    slices = _currents.select_frames(window, offsets)
+    fields = [zeta_over_f(ds) for _, ds in slices]  # (zof, lats, lons) per frame
+    vmax = float(np.nanpercentile(np.abs(np.stack([z for z, _, _ in fields])), CLIP_PERCENTILE))
 
     def to_rgba(warped):
         # [-vmax, vmax] -> [0, 1] so zero maps to the diverging map's midpoint.
@@ -102,13 +109,25 @@ def to_vorticity_png(field: xr.Dataset) -> tuple[bytes, dict]:
         rgba[np.isnan(warped), 3] = 0.0  # land transparent
         return rgba
 
-    png, bounds = _raster.mercator_rgba_png(zof, lats, lons, to_rgba)
+    frames, bounds = [], None
+    for (offset, ds), (zof, lats, lons) in zip(slices, fields):
+        image, bounds = _raster.mercator_rgba_webp(zof, lats, lons, to_rgba)
+        frames.append(
+            {
+                "offset_h": offset,
+                "valid_time": _currents.valid_time(ds),
+                "file": _currents.frame_filename("vorticity", offset),
+                "image": image,
+            }
+        )
     meta = {
-        "valid_time": _currents.valid_time(field),
+        "valid_time": _currents._now_valid_time(frames),
         "bounds": bounds,
         "vmin": -vmax,
         "vmax": vmax,
         "units": "ζ/f",
         "colorbar": _colorbar_stops(),
+        "now_offset_h": 0,
+        "frames": [{k: f[k] for k in ("offset_h", "valid_time", "file")} for f in frames],
     }
-    return png, meta
+    return frames, meta

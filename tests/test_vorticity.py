@@ -6,15 +6,16 @@ render emits a symmetric-range PNG with land carried through as transparency.
 from __future__ import annotations
 
 import io
+from datetime import datetime, timezone
 
-import matplotlib.image as mpimg
 import numpy as np
 import xarray as xr
+from PIL import Image
 
 from whirls_cruise_map._vorticity import (
     OMEGA,
     _EARTH_RADIUS_M,
-    to_vorticity_png,
+    to_vorticity_frames,
     zeta_over_f,
 )
 
@@ -89,36 +90,57 @@ def test_sh_cyclone_is_positive():
     assert zof[5, 5] > 0.0  # centre cell, cyclonic
 
 
-def _field_and_meta(with_land: bool):
+def _window(with_land: bool):
+    """A time-dimensioned window spanning the slider offsets around now, so
+    to_vorticity_frames can select its -12…+72 h frames."""
     lats = np.linspace(-42.0, -38.0, 12)
     lons = np.linspace(9.0, 13.0, 12)
     rng = np.arange(lons.size, dtype=float)
-    u = np.tile(rng, (lats.size, 1)) * 0.01
-    v = np.tile(rng[::-1], (lats.size, 1)) * 0.01
+    u2 = np.tile(rng, (lats.size, 1)) * 0.01
+    v2 = np.tile(rng[::-1], (lats.size, 1)) * 0.01
     if with_land:
-        u[0, 0] = np.nan  # a "land" cell
-    return to_vorticity_png(_field(lats, lons, u, v, with_time=True))
+        u2 = u2.copy()
+        u2[0, 0] = np.nan  # a "land" cell (persists across every frame)
+    now = np.datetime64(datetime.now(timezone.utc).replace(tzinfo=None), "ns")
+    times = now + np.arange(-12, 78, 6).astype("timedelta64[h]")  # 6-hourly bracket
+    u = np.repeat(u2[None], times.size, axis=0)
+    v = np.repeat(v2[None], times.size, axis=0)
+    ds = xr.Dataset(
+        {"uo": (("time", "latitude", "longitude"), u),
+         "vo": (("time", "latitude", "longitude"), v)},
+        coords={"time": times, "latitude": lats, "longitude": lons},
+    )
+    return to_vorticity_frames(ds)
+
+
+def _alpha(image: bytes) -> np.ndarray:
+    """Alpha plane of a frame image, via its RGBA expansion."""
+    return np.array(Image.open(io.BytesIO(image)).convert("RGBA"))[..., 3]
 
 
 def test_render_meta_is_symmetric():
-    _, meta = _field_and_meta(with_land=False)
-    assert meta["vmin"] == -meta["vmax"]  # symmetric range
+    frames, meta = _window(with_land=False)
+    assert meta["vmin"] == -meta["vmax"]  # symmetric range, shared across frames
     assert meta["vmax"] > 0
     assert meta["units"] == "ζ/f"
     assert len(meta["colorbar"]) == 16
-    assert meta["valid_time"] == "2026-07-04T00:00:00Z"
+    assert [f["offset_h"] for f in meta["frames"]] == [-12, 0, 12, 24, 36, 48, 60, 72]
+    assert meta["now_offset_h"] == 0
+    # top-level valid_time is the now (offset 0) frame's, ISO-8601 Z.
+    now_frame = next(f for f in meta["frames"] if f["offset_h"] == 0)
+    assert meta["valid_time"] == now_frame["valid_time"]
+    assert meta["valid_time"].endswith("Z")
+    assert now_frame["file"] == "vorticity_+00h.webp"
 
 
 def test_land_becomes_transparent():
-    """A NaN input cell must reach the PNG as fully transparent pixels, and an
-    all-ocean field must have none — pinning the alpha mask (rgba[isnan,3]=0), not
-    just the PNG signature."""
-    def alpha(png: bytes) -> np.ndarray:
-        return mpimg.imread(io.BytesIO(png))[..., 3]
+    """A NaN input cell must reach every frame image as fully transparent pixels,
+    and an all-ocean field must have none — pinning the land alpha mask, not just
+    the container format."""
+    land_frames, _ = _window(with_land=True)
+    ocean_frames, _ = _window(with_land=False)
 
-    land_png, _ = _field_and_meta(with_land=True)
-    ocean_png, _ = _field_and_meta(with_land=False)
-
-    assert land_png[:8] == b"\x89PNG\r\n\x1a\n"  # PNG signature
-    assert (alpha(land_png) == 0.0).any()  # the land cell shows through
-    assert (alpha(ocean_png) > 0.0).all()  # no spurious transparency
+    assert land_frames[0]["image"][:4] == b"RIFF"  # WebP RIFF container
+    assert Image.open(io.BytesIO(land_frames[0]["image"])).format == "WEBP"
+    assert (_alpha(land_frames[0]["image"]) == 0).any()  # the land cell shows through
+    assert (_alpha(ocean_frames[0]["image"]) > 0).all()  # no spurious transparency
