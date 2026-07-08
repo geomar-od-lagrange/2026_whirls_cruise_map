@@ -30,8 +30,17 @@ import numpy as np  # noqa: E402
 import xarray as xr  # noqa: E402
 
 from . import _raster  # noqa: E402
+from ._retry import with_retry  # noqa: E402
 
 BBOX = {"lon_min": -10.0, "lon_max": 35.0, "lat_min": -55.0, "lat_max": -15.0}
+
+# CMEMS fetches run only on the slow (6-hourly) tier, so a transient blip that
+# isn't retried leaves currents/vorticity/forecast/hindcast/inertial stale for
+# up to 6h. copernicusmarine exposes no timeout/retry knob, so wrap the subset
+# in a few backed-off attempts. Kept small to stay inside the slow job's 1800s
+# deadline even across both (field + window) fetches.
+_ATTEMPTS = 3
+_BACKOFF = 5  # base seconds: 5s, 10s between attempts
 
 DATASET_ID = "cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i"
 
@@ -71,19 +80,24 @@ def fetch_field(bbox: dict = BBOX) -> xr.Dataset:
     now = datetime.now(timezone.utc)
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "currents.nc"
-        copernicusmarine.subset(
-            dataset_id=DATASET_ID,
-            variables=["uo", "vo"],
-            minimum_longitude=bbox["lon_min"],
-            maximum_longitude=bbox["lon_max"],
-            minimum_latitude=bbox["lat_min"],
-            maximum_latitude=bbox["lat_max"],
-            minimum_depth=0.49,
-            maximum_depth=0.5,
-            start_datetime=now,
-            end_datetime=now,
-            output_filename=str(out),
-            overwrite=True,
+        with_retry(
+            lambda: copernicusmarine.subset(
+                dataset_id=DATASET_ID,
+                variables=["uo", "vo"],
+                minimum_longitude=bbox["lon_min"],
+                maximum_longitude=bbox["lon_max"],
+                minimum_latitude=bbox["lat_min"],
+                maximum_latitude=bbox["lat_max"],
+                minimum_depth=0.49,
+                maximum_depth=0.5,
+                start_datetime=now,
+                end_datetime=now,
+                output_filename=str(out),
+                overwrite=True,
+            ),
+            attempts=_ATTEMPTS,
+            backoff=_BACKOFF,
+            label=f"CMEMS subset of {DATASET_ID}",
         )
         with xr.open_dataset(out) as ds:
             ds = ds.load()
@@ -112,20 +126,25 @@ def fetch_field_window(
     now = datetime.now(timezone.utc)
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "currents_window.nc"
-        copernicusmarine.subset(
-            dataset_id=WINDOW_DATASET_ID,
-            variables=["uo", "vo"],
-            minimum_longitude=bbox["lon_min"],
-            maximum_longitude=bbox["lon_max"],
-            minimum_latitude=bbox["lat_min"],
-            maximum_latitude=bbox["lat_max"],
-            minimum_depth=0.49,
-            maximum_depth=0.5,
-            start_datetime=now - timedelta(hours=back_h),
-            end_datetime=now + timedelta(hours=fwd_h),
-            coordinates_selection_method="outside",
-            output_filename=str(out),
-            overwrite=True,
+        with_retry(
+            lambda: copernicusmarine.subset(
+                dataset_id=WINDOW_DATASET_ID,
+                variables=["uo", "vo"],
+                minimum_longitude=bbox["lon_min"],
+                maximum_longitude=bbox["lon_max"],
+                minimum_latitude=bbox["lat_min"],
+                maximum_latitude=bbox["lat_max"],
+                minimum_depth=0.49,
+                maximum_depth=0.5,
+                start_datetime=now - timedelta(hours=back_h),
+                end_datetime=now + timedelta(hours=fwd_h),
+                coordinates_selection_method="outside",
+                output_filename=str(out),
+                overwrite=True,
+            ),
+            attempts=_ATTEMPTS,
+            backoff=_BACKOFF,
+            label=f"CMEMS subset of {WINDOW_DATASET_ID}",
         )
         with xr.open_dataset(out) as ds:
             ds = ds.load()
