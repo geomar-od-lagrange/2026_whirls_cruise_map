@@ -191,3 +191,12 @@ move to `done/` and gain a `docs/` counterpart.
     advects it; the inverse — backward-advect an ideal `t0` configuration through the
     field to each drop's deploy time (a fixed point: drop time ↔ ship track ↔ drop
     positions) so deployment *lands* the array in that configuration — is ours to add.
+24. [Forecast time slider](done/024-forecast-time-slider.md) — a bottom-centre
+    **time slider** scrubs the speed and ζ/f shadings through the CMEMS forecast at
+    12 h steps (−12 … now … +72 h, 8 frames). All frames slice **one** 6-hourly
+    window (no extra download) on **one shared colour scale**; to keep an 8-frame
+    slider affordable at full pixel detail on the at-sea link, each frame is a
+    **lossless WebP** (~85 kB, half a PNG) and the client loads only the now frame
+    up front (lighter than the old single raster), prefetching the rest lazily — ζ/f
+    frames only once selected. Flow trails / near-inertial stay the now snapshot.
+    **Done** ([docs/currents.md](../docs/currents.md)).

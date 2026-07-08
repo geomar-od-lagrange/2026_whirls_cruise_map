@@ -15,6 +15,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.image as mpimg  # noqa: E402
 import numpy as np  # noqa: E402
+from PIL import Image  # noqa: E402
 
 
 def _mercator_y(lat_deg: np.ndarray) -> np.ndarray:
@@ -54,6 +55,23 @@ def _warp_to_mercator(values: np.ndarray, lats: np.ndarray) -> np.ndarray:
     return warped
 
 
+def _warp_north_up(values, lats, lons):
+    """Warp ``values`` to Mercator and return ``(north_up_2d, bounds)``.
+
+    ``north_up_2d`` has PNG row order (north → south, top → bottom); ``bounds``
+    is ``[[lat_min, lon_min], [lat_max, lon_max]]`` (SW, NE) at the outer cell
+    *edges*, since ``L.imageOverlay`` places the bitmap's outer edges (not its
+    pixel centres) on the rectangle. Shared by the PNG and WebP writers.
+    """
+    lats = np.asarray(lats, dtype=float)
+    lons = np.asarray(lons, dtype=float)
+    warped = _warp_to_mercator(np.asarray(values, dtype=float), lats)
+    lon_w, lon_e = _edges(lons)
+    lat_s, lat_n = _edges(lats)
+    bounds = [[lat_s, lon_w], [lat_n, lon_e]]
+    return warped[::-1, :], bounds
+
+
 def mercator_rgba_png(values, lats, lons, to_rgba):
     """Warp ``values`` (shape ``(nlat, nlon)``, ``lats``/``lons`` ascending cell
     centres) to Web Mercator, colour-map it with ``to_rgba`` and return
@@ -61,18 +79,33 @@ def mercator_rgba_png(values, lats, lons, to_rgba):
 
     ``to_rgba`` receives the north-up warped 2-D array and returns an
     ``(ny, nx, 4)`` float RGBA array (it owns the colour map and the alpha /
-    NaN handling). ``bounds`` is ``[[lat_min, lon_min], [lat_max, lon_max]]``
-    (SW, NE) — the outer cell *edges*, since ``L.imageOverlay`` places the
-    bitmap's outer edges (not its pixel centres) on the rectangle.
+    NaN handling). ``bounds`` is the outer cell edges (see :func:`_warp_north_up`).
     """
-    lats = np.asarray(lats, dtype=float)
-    lons = np.asarray(lons, dtype=float)
-    warped = _warp_to_mercator(np.asarray(values, dtype=float), lats)
-    rgba = to_rgba(warped[::-1, :])  # PNG rows north -> south (top -> bottom)
-
+    north_up, bounds = _warp_north_up(values, lats, lons)
     buf = io.BytesIO()
-    mpimg.imsave(buf, rgba, format="png")
-    lon_w, lon_e = _edges(lons)
-    lat_s, lat_n = _edges(lats)
-    bounds = [[lat_s, lon_w], [lat_n, lon_e]]
+    mpimg.imsave(buf, to_rgba(north_up), format="png")
+    return buf.getvalue(), bounds
+
+
+def mercator_rgba_webp(values, lats, lons, to_rgba):
+    """Warp ``values`` to Web Mercator, colour-map it with ``to_rgba`` and write a
+    **lossless WebP** — same pixels as :func:`mercator_rgba_png` at roughly *half*
+    the bytes (measured ~85 kB vs ~150 kB and ~310 kB for indexed-PNG / RGBA-PNG on
+    the cruise-bbox speed field), which is what makes an 8-frame time slider
+    affordable on the at-sea link.
+
+    ``to_rgba`` owns the colour map and the alpha / NaN (land → transparent)
+    handling, exactly as for the PNG writer, and returns an ``(ny, nx, 4)`` float
+    RGBA array; WebP lossless keeps the alpha plane, so land stays transparent.
+    ``lossless`` + ``method=6`` picks the smallest encoding (slower, but this is a
+    build step). The client renders the file directly (``L.imageOverlay``); WebP is
+    universally supported and honours ``image-rendering: pixelated`` like any image.
+    Returns ``(webp_bytes, bounds)``.
+    """
+    north_up, bounds = _warp_north_up(values, lats, lons)
+    rgba = (np.clip(to_rgba(north_up), 0.0, 1.0) * 255).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(rgba, mode="RGBA").save(
+        buf, format="WEBP", lossless=True, quality=100, method=6
+    )
     return buf.getvalue(), bounds

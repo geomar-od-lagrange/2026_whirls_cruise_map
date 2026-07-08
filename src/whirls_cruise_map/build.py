@@ -9,8 +9,9 @@ Dufresne, R/V S.A. Agulhas II), cleans and unifies them, and writes the download
 
 - *fast* (no secrets, no egress): ``latest.geojson``, ``tracks.geojson``,
   ``awaiting.json``, ``gliders.geojson``, ``agulhas.json``, ``build.json``.
-- *slow* (CMEMS, needs a Copernicus login): ``currents.json`` + ``speed.png``
-  (+meta), ``vorticity.png`` (+meta), ``forecast.geojson``, ``hindcast.geojson``,
+- *slow* (CMEMS, needs a Copernicus login): ``currents.json`` + the time-slider
+  ``speed_±NNh.webp`` frames (+``currents_meta.json``) and ``vorticity_±NNh.webp``
+  frames (+meta), ``forecast.geojson``, ``hindcast.geojson``,
   ``inertial_field.json``.
 
 The two stages write disjoint trees, every write is atomic (``*.tmp`` +
@@ -299,34 +300,41 @@ def _derive_slow(data_dir: Path, map_dir: Path) -> None:
     """CMEMS-derived overlays (needs a Copernicus login). Each render is
     independent; forecast/hindcast advect the fresh drifter & glider positions
     read from /data (read only where needed, so a bad CSV can't skip currents)."""
-    # One single-time field feeds the coarse vector grid (trails), the speed
-    # raster, and the ζ/f raster — each independent, and none needs the tracks.
-    field = None
+    # One 6-hourly forecast window (now-12h … now+72h) feeds the coarse vector grid
+    # (trails, from the now slice), the speed raster and the ζ/f raster — the latter
+    # two as one lossless WebP per slider frame (-12 … +72 h). Each layer is
+    # independent, and none needs the tracks.
+    shading = None
     try:
-        field = _currents.fetch_field()
+        shading = _currents.fetch_shading_window()
     except Exception as exc:
         print(f"WARNING: CMEMS field fetch failed, skipping currents overlays: {exc}")
 
-    if field is not None:
+    if shading is not None:
         try:
-            _write_json(map_dir / "currents.json", _currents.to_velocity_json(field))
-            png, meta = _currents.to_speed_png(field)
-            _data.atomic_write_bytes(map_dir / "speed.png", png)
+            _write_json(
+                map_dir / "currents.json",
+                _currents.to_velocity_json(_currents.now_field(shading)),
+            )
+            frames, meta = _currents.to_speed_frames(shading)
+            for fr in frames:
+                _data.atomic_write_bytes(map_dir / fr["file"], fr["image"])
             _write_json(map_dir / "currents_meta.json", meta)
             print(
-                f"wrote currents.json + speed.png "
-                f"(valid {meta['valid_time']}, vmax {meta['vmax']:.2f} {meta['units']})"
+                f"wrote currents.json + {len(frames)} speed frames "
+                f"(now {meta['valid_time']}, vmax {meta['vmax']:.2f} {meta['units']})"
             )
         except Exception as exc:
             print(f"WARNING: currents render failed: {exc}")
 
         try:
-            vpng, vmeta = _vorticity.to_vorticity_png(field)
-            _data.atomic_write_bytes(map_dir / "vorticity.png", vpng)
+            vframes, vmeta = _vorticity.to_vorticity_frames(shading)
+            for fr in vframes:
+                _data.atomic_write_bytes(map_dir / fr["file"], fr["image"])
             _write_json(map_dir / "vorticity_meta.json", vmeta)
             print(
-                f"wrote vorticity.png (valid {vmeta['valid_time']}, "
-                f"|ζ/f| clip {vmeta['vmax']:.2f})"
+                f"wrote {len(vframes)} vorticity frames "
+                f"(now {vmeta['valid_time']}, |ζ/f| clip {vmeta['vmax']:.2f})"
             )
         except Exception as exc:
             print(f"WARNING: vorticity render failed: {exc}")

@@ -87,9 +87,10 @@ currents update ~6-hourly, while the drifter share and ship API refresh ~5–10 
 
 ## Secrets: CMEMS credentials
 
-The currents/speed/forecast layers need a Copernicus Marine login. `fetch_field`
-in `_currents.py` calls `copernicusmarine.subset(...)` with no explicit
-credentials — the client reads them from the environment. Supply them as **masked
+The currents/speed/forecast layers need a Copernicus Marine login. The fetches in
+`_currents.py` (`fetch_shading_window`, `fetch_field_window`) call
+`copernicusmarine.subset(...)` with no explicit credentials — the client reads
+them from the environment. Supply them as **masked
 CI/CD variables** (Settings → CI/CD → Variables):
 
 - `COPERNICUSMARINE_SERVICE_USERNAME`

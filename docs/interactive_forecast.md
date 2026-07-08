@@ -56,14 +56,20 @@ what needs the field — the advected tracks.
 `:8001`) are **separate processes**. The split is intentional: the static half is
 byte-for-byte what GitLab Pages serves, so it can fall back to Pages with no
 backend, and only the deploy tool's fetch needs the live service. Under the
-plan-017 gateway the two become sibling backends under **one origin** (`/map` and
-`/api`), so a same-origin fetch works in production — the only real deployment.
+plan-017 gateway the two become sibling backends under **one origin** — the map at
+`…/map/` and its API at `…/api/`, and the gateway may mount each instance under a
+subpath (`…/live-test/map/`, `…/live/map/`), so a same-origin fetch works in
+production — the only real deployment.
 
 The client resolves the API base rather than hardcoding it (`resolveApi` in
 `app.js`), with no client-controlled override: in the two-port dev flow (page on
-`:8000`) it auto-targets `:8001`, and otherwise it uses the same-origin
-`/api/forecast`. Dropping the former `?api=`/`window.WHIRLS_FORECAST_API` override
-means a crafted link can't retarget the seed `POST` at a hostile host.
+`:8000`) it auto-targets `:8001`, and otherwise it derives the API **relative to
+the map's own served base** — it strips the trailing `map/…` from the page path
+and re-roots the API alongside it (`…/live-test/map/` → `…/live-test/api/forecast`,
+origin-root `/map/` → `/api/forecast`), so a gateway subpath resolves correctly
+without an origin-root assumption. Dropping the former
+`?api=`/`window.WHIRLS_FORECAST_API` override means a crafted link can't retarget
+the seed `POST` at a hostile host.
 
 ## The engine: the build's RK4, seeded by each drop
 
@@ -185,10 +191,14 @@ backward-advecting each node to its drop time is the inverse step, not yet built
 
 ## Start time, locked to the displayed field; staggered entry
 
-The run start is the **displayed CMEMS snapshot's time** (`currents_meta.json`'s
-`valid_time`), which the client passes as drop #1's `start`, so a placed deployment
-begins at the same instant as the current field shown on the map (and the first
-segment aligns with the displayed currents — see below). Each later drop enters the
+The run start is the **displayed CMEMS field's time**, which the client passes as
+drop #1's `start`, so a placed deployment begins at the same instant as the field
+shown on the map (and the first segment aligns with the displayed currents — see
+below). At load this is the now frame (`currents_meta.json`'s `valid_time`); moving
+the **time slider** ([currents.md](currents.md)) re-locks it to the selected
+forecast step, so a deployment placed while the slider shows +24 h starts its drift
+there. The API validates every seed's start against its loaded window and skips any
+it can't cover, so a start out past the window is handled gracefully. Each later drop enters the
 water at `run_start + cum_km / (ship_speed · 1.852)` — the ship-speed knob turned
 into a staggered water-entry time, baked into that seed's `start` client-side. The
 API validates each start against the loaded window and skips any it can't cover.

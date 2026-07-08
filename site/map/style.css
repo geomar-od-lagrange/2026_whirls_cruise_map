@@ -182,6 +182,68 @@ body {
   image-rendering: pixelated; /* Chrome/Safari/Edge */
 }
 
+/* Time slider (bottom-centre): scrubs the speed / ζ/f shadings through the CMEMS
+   forecast at 12 h steps. A plain positioned element inside the map container (not
+   an L.control) so it can centre and cap its width; shares the .map-control look.
+   z-index 1000 matches Leaflet's own controls so the handle is reliably clickable
+   where it might overlap one. */
+.time-slider-control {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 1000;
+  width: min(92vw, 560px);
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: 4px;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.4);
+  padding: 8px 12px 6px;
+  font-size: 0.8rem;
+}
+
+.time-slider-control .ts-label {
+  margin-bottom: 4px;
+  text-align: center;
+  color: var(--ink);
+}
+
+.time-slider-control .ts-title {
+  color: var(--muted);
+}
+
+.time-slider-control .ts-range {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent); /* tint the track/handle in supporting browsers */
+  cursor: pointer;
+}
+
+.time-slider-control .ts-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+  font-size: 0.66rem;
+  color: var(--muted);
+}
+
+.time-slider-control .ts-tick.ts-now {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* On a narrow phone the slider would crowd the sidebar-less single column; keep it
+   readable by shrinking the tick text and letting it hug the map width. */
+@media (max-width: 640px) {
+  .time-slider-control {
+    width: 94vw;
+    bottom: 10px;
+  }
+  .time-slider-control .ts-ticks {
+    font-size: 0.6rem;
+  }
+}
+
 /* The three top-right map controls — Instruments (custom .batch-control), Currents
    and Ships (Leaflet overlay controls) — share one box style via .map-control, so
    they read as one titled set. app.js adds .map-control to every control container
