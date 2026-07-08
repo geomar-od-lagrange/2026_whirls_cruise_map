@@ -86,8 +86,12 @@ move to `done/` and gain a `docs/` counterpart.
     animated ±6 h dot were built and then **dropped by decision after review**.
     The amplitude gain resolved to **no gain** (see 16), exposed as a parameter
     defaulting to 1.0; the wind slab was tested and dropped
-    ([done/inertial_slab_model.md](done/inertial_slab_model.md)). **Open:**
-    Phase 3 (slow-tier cadence + artifact cache).
+    ([done/inertial_slab_model.md](done/inertial_slab_model.md)). **Phase 3
+    (slow-tier field cache) landed** for the forecast API
+    ([plans/018](done/018-forecast-window-pvc-cache.md)): the slow cron persists the
+    hourly window to `data/_cache/` and the forecast API serves it (reload on
+    mtime, no per-process CMEMS fetch). **Open:** re-advecting the fast tier's live
+    positions off that cache for a fast-fresh forecast origin.
 16. [Inertial-gain generalization](done/013-inertial-gain-generalization.md) —
     does one scalar amplitude gain hold across deployments (D1 has corners too),
     space, and time, or does it need parameterizing / dropping? **Resolved
@@ -157,8 +161,10 @@ move to `done/` and gain a `docs/` counterpart.
     parcels the oracle). **Done** ([docs/interactive_forecast.md](../docs/interactive_forecast.md));
     a **dev PoC, not in the deployed Pages build**. The single-click +12 h tool this
     started as is **superseded by the one polyline Deploy tool + batch API in 23**.
-    **Open:** productionization on OpenShift `/analysis` (slow-tier field-cache;
-    ties to [017](017-whirlsview-openshift.md)).
+    **Field-cache productionization landed** ([plans/018](done/018-forecast-window-pvc-cache.md)):
+    the API serves the slow cron's persisted window (reload on mtime, no CMEMS
+    fetch/creds/egress). **Open:** the remaining `oc_gateway` wiring (PVC mount,
+    drop creds, unroute `data/_cache/`), tied to [017](017-whirlsview-openshift.md).
 23. [Deploy tool: one polyline + batch API](done/023-simplify-deploy-polyline.md) —
     **one** multi-click Deploy tool supersedes both the single-click forecast (22)
     and the jet-fence / Z deployment patterns

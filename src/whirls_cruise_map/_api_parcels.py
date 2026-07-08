@@ -12,10 +12,11 @@ cite it as an independent reference when reasoning about the RK4 engine's time-s
 and correctness. ``tmp_parcels_compare/compare.py`` runs both over the same field and
 reports their agreement and cost.
 
-It reuses the RK4 service's disk cache verbatim (:func:`._api._load_window`,
-``tmp_forecast_cache/forecast_window.nc``) so both engines integrate the exact
-same field, and it anchors ``t0`` with the same helper (:func:`._forecast._anchor_t0`)
-so a click resolves to the same start instant on either backend.
+It reads the same window the RK4 service does (:func:`._api._load_window`, the
+slow cron's ``site/map/data/_cache/forecast_window.nc``) so both engines integrate
+the exact same field, and it anchors ``t0`` with the same helper
+(:func:`._forecast._anchor_t0`) so a click resolves to the same start instant on
+either backend. Build it once with a ``derive --tier slow`` run before comparing.
 
 Parcels v4 mapping (this is the reference we cite for time-stepping):
 

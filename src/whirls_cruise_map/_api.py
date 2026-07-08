@@ -30,24 +30,26 @@ the reference time a deformation / flow-map estimate is anchored to (Haller). A
 drop that enters the water after mark k simply carries no dot at k, and later
 drops carry shorter tracks (they all stop at the same end).
 
-This is a laptop PoC, **not** the production service — that is a FastAPI
-``Deployment`` reading the field from a shared PVC cache
-(``plans/017-whirlsview-openshift.md``, the ``/analysis`` path). The field
-handling here (fetch, disk cache, :class:`._forecast._Field`) carries forward
-unchanged; only where the app runs and where the field comes from differ.
+This is a laptop PoC, but its field handling is already the production shape:
+the API reads the current window from a **shared cache the slow build cron
+writes** (``plans/017-whirlsview-openshift.md``, the ``/analysis`` path), never
+fetching CMEMS itself — so the pod needs **no credentials and no egress**.
 
-Field lifecycle: the hourly window is fetched once from CMEMS
-(:func:`._currents.fetch_field_window`) on the first forecast request, disk-cached
-under ``tmp_forecast_cache/`` (git-ignored) so a server restart is instant, and
-held in memory as a :class:`._forecast._Field` for the process lifetime. The forward
-window is sized to the horizon plus the cache max-age (+60 h) so a several-hour-old
-cache still spans the full 48 h run. Needs the local ``copernicusmarine`` login on the
-first fetch; on failure the static map still serves and ``/api/forecast`` returns 503.
+Field lifecycle: the slow build cron persists one hourly window to
+``site/map/data/_cache/forecast_window.nc`` (an unserved ``_cache/`` subtree; the
+same window it already fetches for ``forecast.geojson``/``hindcast.geojson``, sized
+forward to ``horizon + slow-cadence`` so a cadence-old cache still spans a full 48 h
+run — see :data:`._currents.FORECAST_WINDOW_FWD_H`). The API loads that file into a
+:class:`._forecast._Field` and **rebuilds it whenever the file's mtime changes**
+(one ``stat`` per request; a rebuild only on a fresh cron write), so a long-lived
+pod picks up each new window within one request, no restart. The path is overridable
+via ``WHIRLS_FORECAST_WINDOW``. A missing or unreadable file → 503; the static map
+still serves.
 """
 from __future__ import annotations
 
+import os
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -62,28 +64,21 @@ from . import _currents, _forecast
 # --- config ------------------------------------------------------------------
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_CACHE_DIR = _REPO_ROOT / "tmp_forecast_cache"  # git-ignored (tmp_*/ and *.nc)
 _PORT = 8001  # separate from the static map's :8000 (see module docstring)
-_CACHE_PATH = _CACHE_DIR / "forecast_window.nc"
-_CACHE_MAX_AGE_S = 12 * 3600  # refetch a window older than this
+
+# The slow build cron writes the hourly window here (an unserved _cache/ subtree
+# under the map's data dir); the API reads it and never fetches CMEMS itself.
+# WHIRLS_FORECAST_WINDOW points it at the shared PVC path in the deployment.
+_DEFAULT_WINDOW_PATH = _REPO_ROOT / "site" / "map" / "data" / "_cache" / "forecast_window.nc"
+_WINDOW_PATH = Path(os.environ.get("WHIRLS_FORECAST_WINDOW", str(_DEFAULT_WINDOW_PATH)))
 
 # Batch-forecast cadence: integrate every seed +48 h from the run start, dotting
 # each at absolute run-relative 3 h steps (see the module docstring's synced-t0
-# note). These are the request defaults; the client passes its own knobs.
-_DEFAULT_HORIZON_H = 48.0
+# note). These are the request defaults; the client passes its own knobs. The
+# horizon is shared with the cron's window sizing (a single source, so a bump here
+# can't outrun the persisted window — see :data:`._currents.FORECAST_WINDOW_FWD_H`).
+_DEFAULT_HORIZON_H = float(_currents.FORECAST_HORIZON_H)
 _DEFAULT_MARK_STEP_H = 3.0
-
-# The fetched field window must span run_start .. run_start + horizon, or every track
-# truncates at the window edge before the horizon — leaving the whole late/warm half of
-# the synced-t0 ramp unrendered. run_start is the *displayed* field's time (the static
-# build's currents snapshot, which lags wall-clock by the build cadence), and the window
-# itself may be a disk cache up to _CACHE_MAX_AGE_S old. So reach back far enough to cover
-# a stale displayed field, and forward far enough that the full horizon still fits past a
-# stale cache: fwd >= horizon + cache age. (Tie both to their drivers so a horizon bump
-# can't silently outrun the window again.)
-_CACHE_MAX_AGE_H = int(_CACHE_MAX_AGE_S / 3600)
-_FETCH_BACK_H = _CACHE_MAX_AGE_H                          # 12 h back
-_FETCH_FWD_H = int(_DEFAULT_HORIZON_H) + _CACHE_MAX_AGE_H  # 60 h forward
 
 # The parcels validation oracle (:mod:`._api_parcels`) imports these for its own
 # single-point +12 h forecast — its cadence, kept here so the two engines compare
@@ -91,35 +86,32 @@ _FETCH_FWD_H = int(_DEFAULT_HORIZON_H) + _CACHE_MAX_AGE_H  # 60 h forward
 _HORIZON_H = 12.0
 _MARK_HOURS = (3, 6, 9, 12)
 
-# --- field (fetch once, disk-cache, hold in memory) --------------------------
+# --- field (load from the PVC cache, reload on mtime change) ------------------
 
 _field_lock = threading.Lock()
 _sampler: _forecast._Field | None = None
+_sampler_mtime: float | None = None
 
 
 def _load_window() -> xr.Dataset:
-    """The hourly CMEMS current window, from the disk cache if fresh, else fetched
-    (and cached). Raises if neither a usable cache nor a live fetch is available."""
-    if _CACHE_PATH.exists() and (time.time() - _CACHE_PATH.stat().st_mtime) < _CACHE_MAX_AGE_S:
-        with xr.open_dataset(_CACHE_PATH) as ds:
-            return ds.load()
-    window = _currents.fetch_field_window(back_h=_FETCH_BACK_H, fwd_h=_FETCH_FWD_H)
-    try:
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        window.to_netcdf(_CACHE_PATH)
-    except Exception as exc:  # caching is best-effort; a fetched window still works
-        print(f"WARNING: could not cache the forecast window: {exc}")
-    return window
+    """The hourly current window the slow cron persisted to the PVC. Raises
+    :class:`FileNotFoundError` if the cron has not written it yet (→ 503 upstream).
+    The API never fetches CMEMS — the cron owns the credentials and egress."""
+    with xr.open_dataset(_WINDOW_PATH) as ds:
+        return ds.load()
 
 
 def _get_sampler() -> _forecast._Field:
-    """The in-memory field sampler, built once (thread-safe) from the window."""
-    global _sampler
+    """The in-memory field sampler, rebuilt from the persisted window whenever its
+    mtime changes (thread-safe). One ``stat`` per request; a rebuild only on a fresh
+    cron write — so a pod picks up a new window within one request, no restart. A
+    missing/unreadable file raises (→ 503), the current field-unavailable contract."""
+    global _sampler, _sampler_mtime
     with _field_lock:
-        if _sampler is None:
-            print("fetching CMEMS forecast window (first request; ~a few s)…")
+        mtime = _WINDOW_PATH.stat().st_mtime  # FileNotFoundError -> 503 upstream
+        if _sampler is None or mtime != _sampler_mtime:
             _sampler = _forecast._Field(_load_window())
-            print("forecast window ready")
+            _sampler_mtime = mtime
         return _sampler
 
 
@@ -283,13 +275,13 @@ def forecast(req: ForecastRequest) -> dict:
     """Batch current-advection forecast: a sequence of ``(lon, lat, start)`` seeds
     in, one ``+horizon_h`` GeoJSON ``LineString`` per in-window seed out (synced-t0
     dots; see :func:`_batch_forecast`). A sync endpoint, so FastAPI runs it in the
-    threadpool — the one-off CMEMS fetch on the first call can block without stalling
-    the static map."""
+    threadpool — reloading the window on a fresh cron write can block one request
+    without stalling the static map."""
     try:
         return _batch_forecast(req.seeds, req.horizon_h, req.mark_step_h)
     except ValueError as exc:  # no seeds / unparseable start time
         raise HTTPException(status_code=422, detail=str(exc))
-    except Exception as exc:  # field fetch/login failure — the static map still serves
+    except Exception as exc:  # window missing/unreadable — the static map still serves
         raise HTTPException(status_code=503, detail=f"forecast field unavailable: {exc}")
 
 
@@ -298,7 +290,7 @@ def main() -> None:
 
     print(f"forecast API on http://localhost:{_PORT}/api/forecast")
     print("serve the map separately: `pixi run serve` (static, :8000)")
-    print("the first request fetches + caches the CMEMS window (~a few s)")
+    print(f"reads the window from {_WINDOW_PATH} (write it with a `derive` --tier slow run)")
     uvicorn.run(app, host="0.0.0.0", port=_PORT)
 
 

@@ -9,6 +9,8 @@ its remaining dots (the bug a position-based ``zip`` relabel had).
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -24,19 +26,23 @@ T0 = np.datetime64("2026-07-03T00:00:00", "s")
 U_EAST = 0.5
 
 
-def _constant_field() -> _forecast._Field:
+def _constant_window(u_east: float = U_EAST) -> xr.Dataset:
+    """A land-free hourly window (-6 .. +60 h) of constant eastward current."""
     lats = -35.0 + 0.25 * np.arange(12)  # ~ -35 .. -32.25
     lons = 10.0 + 0.25 * np.arange(24)   # ~ 10 .. 15.75, room for 48 h of drift
     times = T0 + (np.arange(-6, 61)).astype("timedelta64[h]")  # -6 .. +60 h
     shape = (times.size, lats.size, lons.size)
-    window = xr.Dataset(
+    return xr.Dataset(
         {
-            "uo": (("time", "latitude", "longitude"), np.full(shape, U_EAST)),
+            "uo": (("time", "latitude", "longitude"), np.full(shape, u_east)),
             "vo": (("time", "latitude", "longitude"), np.zeros(shape)),
         },
         coords={"time": times, "latitude": lats, "longitude": lons},
     )
-    return _forecast._Field(window)
+
+
+def _constant_field() -> _forecast._Field:
+    return _forecast._Field(_constant_window())
 
 
 def _iso(offset_h: float) -> str:
@@ -135,3 +141,47 @@ def test_out_of_window_seeds_are_skipped_not_errored(monkeypatch):
     assert out["properties"]["forecasts"] == 1
     assert out["properties"]["skipped"] == 1
     assert out["properties"]["n_seeds"] == 2
+
+
+# --- window loading: PVC file + reload-on-mtime ------------------------------
+
+
+@pytest.fixture
+def _fresh_sampler():
+    """Reset the module-level cached sampler around a test (it persists globally)."""
+    _api._sampler = None
+    _api._sampler_mtime = None
+    yield
+    _api._sampler = None
+    _api._sampler_mtime = None
+
+
+def test_get_sampler_reloads_only_when_the_window_mtime_changes(
+    tmp_path, monkeypatch, _fresh_sampler
+):
+    """The production shape: the API reads the cron-written window and rebuilds the
+    sampler only when the file's mtime changes — so a fresh cron write is picked up
+    within one request (no restart), while repeated requests reuse the cached field."""
+    path = tmp_path / "forecast_window.nc"
+    _constant_window(u_east=0.5).to_netcdf(path)
+    monkeypatch.setattr(_api, "_WINDOW_PATH", path)
+
+    s1 = _api._get_sampler()
+    assert s1.u[0, 0, 0] == approx(0.5)
+    assert _api._get_sampler() is s1  # unchanged mtime → no rebuild, same instance
+
+    # A fresh cron write (new field, newer mtime) is reloaded without a restart.
+    _constant_window(u_east=0.9).to_netcdf(path)
+    bumped = path.stat().st_mtime + 10
+    os.utime(path, (bumped, bumped))
+    s2 = _api._get_sampler()
+    assert s2 is not s1
+    assert s2.u[0, 0, 0] == approx(0.9)
+
+
+def test_get_sampler_raises_when_the_window_is_missing(tmp_path, monkeypatch, _fresh_sampler):
+    """A missing window file → the 503 the endpoint maps field-unavailable to; the
+    API never falls back to a CMEMS fetch (it has no credentials in the deployment)."""
+    monkeypatch.setattr(_api, "_WINDOW_PATH", tmp_path / "not_written_yet.nc")
+    with pytest.raises(FileNotFoundError):
+        _api._get_sampler()

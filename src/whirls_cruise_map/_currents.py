@@ -55,6 +55,19 @@ WINDOW_DATASET_ID = "cmems_mod_glo_phy_anfc_0.083deg_PT1H-m"
 WINDOW_BACK_H = 12  # hours of hourly field to fetch behind now (hindcast + bracket)
 WINDOW_FWD_H = 12   # ... and ahead of now (forecast + bracket); +/-6 h advection
 
+# Forecast-API window reach. The slow cron persists one window to the PVC that the
+# forecast API (whirls_cruise_map._api) serves from; a served window may be up to
+# one slow-cron cadence stale, so its forward reach must cover a full run started
+# at "now" even at that age: fwd >= FORECAST_HORIZON_H + SLOW_CADENCE_H. Deriving
+# the reach from those two drivers (not a bare 60) keeps a horizon bump from
+# silently outrunning the window. Back-reach covers the displayed-field lag, same
+# as the inertial/advection window above. FORECAST_HORIZON_H is the single source
+# for the API's default run length (_api._DEFAULT_HORIZON_H reads it).
+FORECAST_HORIZON_H = 48  # forecast-API default run length (hours)
+SLOW_CADENCE_H = 12      # slow-cron period; a served window may be this stale
+FORECAST_WINDOW_BACK_H = WINDOW_BACK_H                       # 12 h back
+FORECAST_WINDOW_FWD_H = FORECAST_HORIZON_H + SLOW_CADENCE_H  # 60 h forward
+
 # Coarsen the native 1/12-deg grid for the animated trails only. The speed raster
 # stays near-native (it is a small image either way and looks markedly sharper).
 COARSEN_STRIDE = 3

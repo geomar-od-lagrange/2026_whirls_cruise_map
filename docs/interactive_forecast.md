@@ -88,16 +88,33 @@ literally the same integrator over the same field.
 `_api_parcels.py` is a second, independent engine (see *Validation* below); `_api.py`
 (RK4) is the one the client uses.
 
-## The field: one window, cached, held in memory
+## The field: one window, cron-written, reloaded on change
 
-On the first request the API fetches one hourly window
-(`_currents.fetch_field_window(back_h=12, fwd_h=60)`), disk-caches it under
-`tmp_forecast_cache/forecast_window.nc` (git-ignored) so a restart is instant, and
-holds it as a `_forecast._Field`. Every forecast after that is pure CPU on the
-in-memory array. The forward span is sized to the horizon plus the cache max-age
-(+60 h) so a several-hour-old cache still spans the full 48 h run rather than
-truncating every track at the window edge; the back span (12 h) covers a displayed
-field that lags wall-clock by the build cadence.
+The API does **not** fetch CMEMS. The slow build cron already fetches one hourly
+window to build `forecast.geojson`/`hindcast.geojson`; it now **persists that same
+window** to an unserved `site/map/data/_cache/forecast_window.nc` (`*.tmp` +
+`os.replace`, atomic). The API loads that file into a `_forecast._Field` and
+**rebuilds it whenever the file's mtime changes** — one `stat` per request, a
+rebuild only on a fresh cron write. Every forecast is then pure CPU on the
+in-memory array. Because the sampler tracks the file rather than being built once,
+a long-lived single-replica pod **picks up each new window within one request, no
+restart** — the failure the process-lifetime cache had, where a pod's forward
+window edge was consumed by uptime until "now"-seeded runs truncated and then died.
+
+The cron sizes the window forward to `FORECAST_HORIZON_H + SLOW_CADENCE_H`
+(48 + 12 = 60 h), so a window up to one slow-cron cadence old still spans a full
+48 h run from "now" rather than truncating every track at the window edge; the back
+span (12 h) covers a displayed field that lags wall-clock by the build cadence. The
+horizon is one shared constant (`_currents.FORECAST_HORIZON_H`, read by both the
+cron's window sizing and the API's request default), so a horizon bump can't
+silently outrun the persisted window. The window is fetched **once** and reused for
+forecast/hindcast, the persisted API cache, and — sliced back to its narrow ~24 h
+span, which the near-inertial fit needs — the inertial decomposition.
+
+Because it holds no `cmems-creds` and makes no CMEMS request, the API pod needs
+**no credentials and no internet egress** — the field arrives entirely over the
+shared volume. The path is overridable via `WHIRLS_FORECAST_WINDOW` (the shared PVC
+path in the plan-017 deployment).
 
 The consequence for **arbitrary start times**: t0 is *not* a cache key. One window
 serves every drop start (and every clicked position) that falls inside it, at no
@@ -108,11 +125,14 @@ window bounds so the client can say so. Widening the window to cover a longer
 horizon or a longer deployment run is a **server-memory** cost (~4 MB/h in float64),
 *not* a wire cost — which is the whole point of keeping the field server-side.
 
-The current lazy-fetch-with-TTL is a laptop stand-in for the production shape
-([plans/017](../plans/017-whirlsview-openshift.md) field-cache): a slow CronJob
-writes the window to a shared volume, and the API drops all fetch logic to "load
-latest, reload on mtime change" — the API pod then needs no CMEMS credentials and no
-egress.
+This load-latest-reload-on-mtime shape *is* the production field-cache
+([plans/017](../plans/017-whirlsview-openshift.md), option B): the same locally as
+on the cluster, differing only in where the shared volume lives (a repo dir under
+`pixi run serve` vs a PVC mounted into both the cron and the API pod). What remains
+deployment-side is the `oc_gateway` coordination — mount the shared PVC into the
+`*-api` Deployment, drop its `cmems-creds` `secretRef` and CMEMS egress
+`NetworkPolicy`, and keep the gateway nginx from serving `data/_cache/` — tracked in
+that repo so the two sides land together.
 
 ## The batch endpoint: seeds in, one track per drop out
 

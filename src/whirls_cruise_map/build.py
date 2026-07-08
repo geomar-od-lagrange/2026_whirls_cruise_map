@@ -37,6 +37,8 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
+
 from . import (
     _agulhas,
     _clean,
@@ -64,6 +66,23 @@ def _stamp() -> str:
 
 def _write_json(path: Path, obj) -> None:
     _data.atomic_write_text(path, json.dumps(obj))
+
+
+def _write_window_cache(window, path: Path) -> None:
+    """Persist the hourly current ``window`` atomically for the forecast API to
+    read (``*.tmp`` + :func:`os.replace`, the same convention as the served
+    artifacts), so a concurrent API reader never opens a half-written netCDF. The
+    API loads this instead of doing its own CMEMS fetch (see ``_api._get_sampler``);
+    the file lives under an **unserved** ``_cache/`` subtree, not among the map's
+    layers."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        window.to_netcdf(tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 # --------------------------------------------------------------------------- #
@@ -313,15 +332,30 @@ def _derive_slow(data_dir: Path, map_dir: Path) -> None:
             print(f"WARNING: vorticity render failed: {exc}")
 
     # A separate hourly window advects the forecast/hindcast particle through the
-    # current at its own clock time (so the path traces the inertial loop), and
-    # feeds the near-inertial animation decomposition.
+    # current at its own clock time (so the path traces the inertial loop), feeds
+    # the near-inertial animation decomposition, and is persisted for the forecast
+    # API to serve. Fetch it once at the API's forward reach (fwd >= horizon +
+    # slow-cadence) and reuse it for all three — the wider forward span is inert for
+    # the +/-6 h forecast/hindcast advection, and the width-sensitive inertial
+    # decomposition gets the narrow slice below.
     window = None
     try:
-        window = _currents.fetch_field_window()
+        window = _currents.fetch_field_window(
+            back_h=_currents.FORECAST_WINDOW_BACK_H, fwd_h=_currents.FORECAST_WINDOW_FWD_H
+        )
     except Exception as exc:
         print(f"WARNING: CMEMS window fetch failed, skipping forecast/hindcast: {exc}")
 
     if window is not None:
+        # Persist the raw window for the forecast API (it reloads on mtime change,
+        # so this is picked up without a pod restart). Best-effort: a cache-write
+        # failure must not sink the served forecast/hindcast/inertial layers below.
+        try:
+            _write_window_cache(window, map_dir / "_cache" / "forecast_window.nc")
+            print("cached forecast_window.nc for the API")
+        except Exception as exc:
+            print(f"WARNING: forecast-window cache write failed: {exc}")
+
         tracks = _data.read_drifters(data_dir)
         gliders = _data.read_gliders(data_dir)
         try:
@@ -339,7 +373,18 @@ def _derive_slow(data_dir: Path, map_dir: Path) -> None:
             print(f"WARNING: hindcast step failed: {exc}")
 
         try:
-            decomp = _inertial.decompose(window)
+            # The decomposition relies on the window spanning under an inertial
+            # period (so the joint least-squares keeps mean vs NI separated — see
+            # _inertial.decompose); the API's wide forward reach would blur that.
+            # Slice back to the narrow inertial span the standalone fetch produced.
+            # Its low edge is the wide window's (same back_h + "outside" bracket), so
+            # t_ref-nearest-now is unchanged; the +1 h keeps the top "outside" bracket
+            # step (fetch_field_window rounds the high edge *up* to the next grid
+            # hour), reproducing the old back_h=12/fwd_h=12 window off the hour.
+            span_h = _currents.WINDOW_BACK_H + _currents.WINDOW_FWD_H
+            hi = window["time"].values[0] + np.timedelta64(span_h + 1, "h")
+            narrow = window.sel(time=slice(None, hi))
+            decomp = _inertial.decompose(narrow)
             _write_json(map_dir / "inertial_field.json", _inertial.to_inertial_field_json(decomp))
             print(f"wrote inertial_field.json (valid {decomp.attrs['t_ref']})")
         except Exception as exc:
