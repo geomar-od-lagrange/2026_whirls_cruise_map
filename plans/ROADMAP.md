@@ -198,7 +198,8 @@ move to `done/` and gain a `docs/` counterpart.
     slider affordable at full pixel detail on the at-sea link, each frame is a
     **lossless WebP** (~85 kB, half a PNG) and the client loads only the now frame
     up front (lighter than the old single raster), prefetching the rest lazily — ζ/f
-    frames only once selected. Flow trails / near-inertial stay the now snapshot.
+    frames only once selected. Flow trails / near-inertial stay the now snapshot
+    (**superseded by 27** — they now scrub too).
     **Done** ([docs/currents.md](../docs/currents.md)).
 25. [Deploy tool: waypoint CSV export](done/025-deploy-waypoint-csv.md) — a
     **Download CSV** button on the Deploy tool exports the placed drops as a flat
@@ -217,3 +218,13 @@ move to `done/` and gain a `docs/` counterpart.
     sections; speed / ζ/f legends shown only while their shading is active), and
     made the sidebar responsive (beside → bottom strip → dropped as the window
     narrows and shortens). **Done** ([docs/controls.md](../docs/controls.md)).
+27. [Time-aware flow & near-inertial](done/027-time-aware-flow-and-inertial.md) —
+    closes the slider gap left by 24: the **flow trails** and the **near-inertial
+    animation** now share `displayedFieldTime` with the shadings, so scrubbing to
+    +48 h moves the whole map, not just the two scalar rasters. Flow ships one
+    leaflet-velocity grid per offset (`currents_±NNh.json` from the same window,
+    values rounded to 4 dp so the now frame is *lighter* than the old single grid;
+    the rest lazy-load); the near-inertial animation needs no new data — it anchors
+    its analytic phase `amp·exp(i(phase − f·(T − t_ref)))` to the displayed instant,
+    read live from the slider. **Done** ([docs/currents.md](../docs/currents.md),
+    [docs/forecast.md](../docs/forecast.md)).

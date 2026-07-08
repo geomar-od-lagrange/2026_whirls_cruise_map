@@ -206,10 +206,11 @@ API validates each start against the loaded window and skips any it can't cover.
 ## Why the track peels away from the animated currents
 
 A placed forecast and the animated flow overlay do **not** trace the same curve, and
-shouldn't. The "Current flow" trails are built from a **frozen 6-hourly snapshot**
-(`currents.json`; see [forecast.md](forecast.md)), so they are **streamlines** of one
-instant. The forecast advects through the **time-dependent hourly window** with the
-clock running, so it is a **pathline** — and because the field rings at the inertial
+shouldn't. The "Current flow" trails are built from a **frozen 6-hourly snapshot** —
+the displayed slider frame (`currents_±NNh.json`; see [forecast.md](forecast.md)), so
+they are **streamlines** of one instant. The forecast advects through the
+**time-dependent hourly window** with the clock running, so it is a **pathline** — and
+because the field rings at the inertial
 period, the pathline **curls** away from the instantaneous streamline (the same
 reason the drifters show inertial loops; [plans/012](../plans/012-near-inertial-forecast.md)).
 Locking the run start to the snapshot time aligns them at t = 0; the downstream

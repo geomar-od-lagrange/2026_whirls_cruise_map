@@ -8,7 +8,8 @@
  *   hindcast.geojson               -> per-drifter current-advection back-track (off)
  *   speed_±NNh.webp + currents_meta.json -> surface-speed shading, one lossless
  *                                           WebP frame per slider offset (imageOverlay)
- *   currents.json                  -> leaflet-velocity flow trails (optional)
+ *   currents_±NNh.json             -> leaflet-velocity flow trails, one grid per
+ *                                     slider offset (meta.flow_frames; optional)
  *   inertial_field.json            -> animated near-inertial particle tracks (off)
  *   awaiting.json                  -> sidebar list, no map geometry
  *   build.json                     -> sidebar "data freshness" build time
@@ -20,9 +21,9 @@ const DATA = {
   forecast: "./data/forecast.geojson",
   hindcast: "./data/hindcast.geojson",
   awaiting: "./data/awaiting.json",
-  currents: "./data/currents.json",
-  // Shading rasters are per-frame files named in the metas' `frames` manifest
-  // (speed_±NNh.webp / vorticity_±NNh.webp), resolved under this base.
+  // Shading rasters and flow-trail grids are per-frame files named in the metas'
+  // `frames` / `flow_frames` manifests (speed_±NNh.webp / vorticity_±NNh.webp /
+  // currents_±NNh.json), resolved under this base.
   dataBase: "./data/",
   meta: "./data/currents_meta.json",
   vorticityMeta: "./data/vorticity_meta.json",
@@ -1437,11 +1438,14 @@ function drawDeployForecastLines(features, deployLayer, markStepH, runStart, dep
 //   f = 2·Ω·sin(lat)     (Ω = omega, from the header; f < 0 in the SH)
 // but advection uses the NI term ALONE — u = amp·cos(phase−f·dt),
 // v = amp·sin(phase−f·dt) — so a particle circles in place at the inertial
-// frequency instead of being swept away by the background current. A single
-// wall clock sweeps dt over [0, 24h) every INERTIAL_LOOP_S seconds; a canvas
-// in the "inertial" pane redraws every frame. This is *not* the dropped
-// animated drift dot (a marker walking the forecast/hindcast polylines,
-// removed in e9b339c) — it animates a standalone particle field.
+// frequency instead of being swept away by the background current. dt =
+// (displayedFieldTime − t_ref) + a wall-clock loop over [0, 24h): the offset
+// anchors the field to the slider's instant (so it scrubs with the shadings),
+// the loop sweeps INERTIAL_SPAN_S every INERTIAL_LOOP_S seconds for visual life
+// (see startInertialClock). A canvas in the "inertial" pane redraws every frame.
+// This is *not* the dropped animated drift dot (a marker walking the
+// forecast/hindcast polylines, removed in e9b339c) — it animates a standalone
+// particle field.
 //
 // Excluding the mean is deliberate: it isolates the pure inertial rotation.
 // The true orbit is only ~350 m across (sub-pixel), so INERTIAL_ADVECT_SCALE
@@ -1606,9 +1610,23 @@ class InertialLayer extends L.Layer {
 // fixed pool always populates what you're looking at, so it packs denser as
 // you zoom in instead of thinning to a handful of particles. Initial ages are
 // randomized so the whole pool doesn't restart in lockstep.
-function startInertialClock(map, grid, layer) {
+function startInertialClock(map, grid, layer, displayedFieldTime) {
   if (!grid) return;
   const { lo1, lo2, la1, la2 } = grid.header;
+
+  // Anchor the reconstruction's phase to the *displayed* field time rather than
+  // free-running from now. The field at absolute time T is amp·exp(i(phase − f·(T −
+  // t_ref))); the loop below sweeps its own dt on top for visual life, so the total
+  // phase argument uses dt = (displayed − t_ref) + loop. `displayedFieldTime` is a
+  // getter read every frame (the slider mutates it); at the now frame the offset is
+  // ~0 (unchanged look), and a +NNh slider step rotates every arrow by f·NNh to that
+  // instant. With no field time (no slider/meta) the offset is 0.
+  const tRefMs = Date.parse(grid.header.t_ref);
+  const refOffsetS = () => {
+    const displayed = displayedFieldTime?.();
+    const ms = displayed ? Date.parse(displayed) : NaN;
+    return Number.isFinite(ms) && Number.isFinite(tRefMs) ? (ms - tRefMs) / 1000 : 0;
+  };
   const fieldLonMin = Math.min(lo1, lo2);
   const fieldLonMax = Math.max(lo1, lo2);
   const fieldLatMin = Math.min(la1, la2);
@@ -1669,7 +1687,7 @@ function startInertialClock(map, grid, layer) {
     }
 
     const tau01 = ((performance.now() / 1000) % INERTIAL_LOOP_S) / INERTIAL_LOOP_S;
-    const dt = tau01 * INERTIAL_SPAN_S;
+    const dt = refOffsetS() + tau01 * INERTIAL_SPAN_S;
 
     ctx.strokeStyle = INERTIAL_COLOR;
     ctx.lineWidth = INERTIAL_LINE_WIDTH;
@@ -2311,15 +2329,14 @@ async function main() {
     map.fitBounds(bounds, { padding: [40, 40], maxZoom: 9 });
   }
 
-  // Surface currents, from one CMEMS forecast window: speed + ζ/f shadings — one
-  // lossless-WebP frame per 12 h slider offset (-12 … +72 h) sharing one colour
-  // scale — plus the flow trails (the now slice; a one-instant texture the slider
-  // does not scrub).
+  // Surface currents, from one CMEMS forecast window: speed + ζ/f shadings and the
+  // flow trails — one frame each per 12 h slider offset (-12 … +72 h), the shadings
+  // as lossless-WebP rasters sharing one colour scale, the flow as leaflet-velocity
+  // grids (meta.flow_frames). All scrub together.
   const meta = await fetchJSON(DATA.meta, { optional: true });
   // Lock the interactive forecast's start time to the displayed field's instant
   // (the now frame at load; the slider updates it as the displayed field changes).
   displayedFieldTime = meta?.valid_time ?? null;
-  const currents = await fetchJSON(DATA.currents, { optional: true });
   const vorticityMeta = await fetchJSON(DATA.vorticityMeta, { optional: true });
   const inertialField = await fetchJSON(DATA.inertialField, { optional: true });
 
@@ -2372,11 +2389,18 @@ async function main() {
   }
   renderVorticityInfo(vorticityMeta);
 
-  // Time slider: scrub both shadings through the forecast together. It drives the
-  // speed frames' offsets/times (vorticity shares the same offsets); moving it
-  // re-points every registered shading overlay, updates the sidebar displayed-time
-  // line, and re-locks the deploy tool's start to the displayed field. Only built
-  // when there is more than one frame to move between.
+  // Re-point the flow trails to the slider's frame `i`; assigned by the flow block
+  // below (null until then, and if there is no flow data). Declared here so the
+  // slider's onChange can call it even though the flow layer is built further down.
+  let scrubFlow = null;
+
+  // Time slider: scrub the shadings *and* the flow trails through the forecast
+  // together. It drives the speed frames' offsets/times (vorticity and flow share
+  // the same offsets); moving it re-points every registered shading overlay and the
+  // flow trails, updates the sidebar displayed-time line, and re-locks the deploy
+  // tool's start to the displayed field. The near-inertial animation follows too —
+  // it reads displayedFieldTime live (see startInertialClock). Only built when there
+  // is more than one frame to move between.
   if (meta?.frames?.length > 1) {
     const frames = meta.frames;
     buildTimeSlider(map, frames, nowIndex(meta), (i) => {
@@ -2387,6 +2411,7 @@ async function main() {
       const f = frames[i];
       displayedFieldTime = f.valid_time;
       renderCurrentsInfo(meta, f);
+      scrubFlow?.(i);
     });
     // Prefetch the speed frames once the map is idle (the now frame is already
     // loaded); prefetch the ζ/f frames only once vorticity is first selected, so an
@@ -2398,28 +2423,68 @@ async function main() {
   // Flow trails: dark->white ramp keyed to speed, so the bright jet pops over the
   // shading. The magnitude is sqrt-compressed server-side so slow eddies animate,
   // which means the readout would show scaled m/s — so displayValues is off and
-  // true speed is read from the shading legend instead.
-  if (currents && currents.length && typeof L.velocityLayer === "function") {
-    const flowLayer = L.velocityLayer({
-      displayValues: false,
-      data: currents,
-      colorScale: FLOW_COLORS,
-      maxVelocity: meta?.vmax ?? 1.5,
-      velocityScale: 0.1,
-      lineWidth: 1.2,
-    });
-    flowLayer.addTo(map);
-    currentOverlays["Current flow"] = flowLayer;
+  // true speed is read from the shading legend instead. One leaflet-velocity grid
+  // per slider offset (meta.flow_frames): the now frame loads on the critical path,
+  // the rest prefetch on idle, and scrubbing to an un-prefetched frame fetches it on
+  // demand — the same lazy pattern as the shading frames.
+  const flowFrames = meta?.flow_frames ?? [];
+  if (flowFrames.length && typeof L.velocityLayer === "function") {
+    const flowCache = new Map(); // offset_h -> velocity data (fetched once, reused)
+    const loadFlow = (frame) => {
+      if (flowCache.has(frame.offset_h)) return Promise.resolve(flowCache.get(frame.offset_h));
+      return fetchJSON(frameUrl(frame.file), { optional: true }).then((d) => {
+        if (d) flowCache.set(frame.offset_h, d);
+        return d;
+      });
+    };
+    const nowData = await loadFlow(flowFrames[nowIndex(meta)]);
+    if (nowData) {
+      // The frame currently on the layer — read back by the pan/zoom re-seed so it
+      // redraws the *displayed* frame, not always the now slice.
+      let currentFlowData = nowData;
+      const flowLayer = L.velocityLayer({
+        displayValues: false,
+        data: nowData,
+        colorScale: FLOW_COLORS,
+        maxVelocity: meta?.vmax ?? 1.5,
+        velocityScale: 0.1,
+        lineWidth: 1.2,
+      });
+      flowLayer.addTo(map);
+      currentOverlays["Current flow"] = flowLayer;
 
-    // leaflet-velocity paints faded trails in screen space and does not
-    // reproject the existing frame on pan/zoom, so old trails ghost in place.
-    // Clear its canvas when interaction starts, and re-seed the field for the
-    // new view when it ends, so the flow tracks the map.
-    map.on("movestart zoomstart", () => {
-      const cv = flowLayer._canvasLayer?._canvas;
-      if (cv) cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
-    });
-    map.on("moveend zoomend", () => flowLayer.setData(currents));
+      // leaflet-velocity paints faded trails in screen space and does not
+      // reproject the existing frame on pan/zoom, so old trails ghost in place.
+      // Clear its canvas when interaction starts, and re-seed the field for the
+      // new view when it ends, so the flow tracks the map.
+      map.on("movestart zoomstart", () => {
+        const cv = flowLayer._canvasLayer?._canvas;
+        if (cv) cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
+      });
+      map.on("moveend zoomend", () => flowLayer.setData(currentFlowData));
+
+      // Slider hook: load frame `i` (cached or on-demand) and swap it in. A request
+      // token drops a slow earlier fetch that resolves after a later one, so rapid
+      // scrubbing never lands on a stale frame.
+      let flowReq = 0;
+      scrubFlow = (i) => {
+        const frame = flowFrames[i];
+        if (!frame) return;
+        const token = ++flowReq;
+        loadFlow(frame).then((d) => {
+          if (d && token === flowReq) {
+            currentFlowData = d;
+            flowLayer.setData(d);
+          }
+        });
+      };
+
+      // Prefetch the remaining frames once the map is idle (the now frame is loaded),
+      // so scrubbing is smooth without inflating the critical-path load.
+      (window.requestIdleCallback || ((cb) => setTimeout(cb, 1500)))(() =>
+        flowFrames.forEach(loadFlow)
+      );
+    }
   }
 
   // Near-inertial animation: flowing particle tracks reconstructed client-side
@@ -2430,7 +2495,9 @@ async function main() {
   if (inertialField) {
     const { layer: inertialLayer, grid: inertialGrid } = buildInertialField(inertialField);
     currentOverlays["Near-inertial animation"] = inertialLayer;
-    startInertialClock(map, inertialGrid, inertialLayer);
+    // Follow the slider: the animation anchors its phase to the displayed field time
+    // (read live) instead of free-running from "now" — see startInertialClock.
+    startInertialClock(map, inertialGrid, inertialLayer, () => displayedFieldTime);
   }
 
   // Trajectories and the current-advection forecast/hindcast, each grouped by
