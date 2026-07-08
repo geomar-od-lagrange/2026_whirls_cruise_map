@@ -15,21 +15,17 @@
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <div id="wip-banner" role="alert">
-    ⚠ Unofficial, work in progress — not an official cruise product. Positions may be incomplete or inaccurate; do not use for navigation or operational decisions.
-  </div>
-
   <header id="app-header">
     <h1>2026 Whirls Cruise — drifter map</h1>
-    <p class="subtitle">R/V Marion Dufresne &amp; R/V Agulhas II — latest drifter positions, tracks, ship track, and surface currents</p>
+    <span class="wip-tag" role="note" title="Unofficial, work in progress — not an official cruise product. Do not use for navigation or operational decisions.">⚠ Unofficial</span>
   </header>
 
   <div id="layout">
     <div id="map"></div>
 
     <aside id="sidebar">
-      <section id="status-panel">
-        <h2>Data freshness</h2>
+      <details class="panel" id="status-panel" open>
+        <summary>Data freshness</summary>
         <div class="status-row">
           <span class="status-label">Build time (UTC)</span>
           <span class="status-value" id="build-time">—</span>
@@ -38,52 +34,52 @@
           <span class="status-label">Current time (UTC)</span>
           <span class="status-value" id="now-time">—</span>
         </div>
-      </section>
+      </details>
 
-      <section class="ship-panel">
-        <h2>R/V Marion Dufresne</h2>
+      <details class="panel ship-panel" open>
+        <summary>R/V Marion Dufresne</summary>
         <p class="hint" id="md-ship-time"></p>
         <div id="md-ship-readout"></div>
-      </section>
+      </details>
 
-      <section class="ship-panel">
-        <h2>R/V S.A. Agulhas II</h2>
+      <details class="panel ship-panel" open>
+        <summary>R/V S.A. Agulhas II</summary>
         <p class="hint" id="agulhas-ship-time"></p>
         <div id="agulhas-ship-readout"></div>
-      </section>
+      </details>
 
-      <section id="currents-panel">
-        <h2>Surface currents</h2>
+      <details class="panel" id="currents-panel" open>
+        <summary>Surface currents</summary>
         <p class="hint" id="currents-time"></p>
         <p class="hint">Scrub the shading (speed or &zeta;/f) through the CMEMS
           forecast with the time slider at the bottom of the map — 12&nbsp;h steps
           from &minus;12&nbsp;h to +72&nbsp;h. The flow trails stay the
           &ldquo;now&rdquo; snapshot.</p>
         <div id="speed-legend"></div>
-      </section>
+      </details>
 
-      <section id="vorticity-panel">
-        <h2>Relative vorticity (&zeta;/f)</h2>
+      <details class="panel" id="vorticity-panel">
+        <summary>Relative vorticity (&zeta;/f)</summary>
         <p class="hint">Surface vorticity normalized by the Coriolis parameter,
           from the same field. <strong>Cyclonic&nbsp;(+)</strong> and
           <strong>anticyclonic&nbsp;(&minus;)</strong> eddies read as
-          opposite-signed lobes. Off by default; toggle it in the layer list.</p>
+          opposite-signed lobes. Off by default; toggle it in the Layers tab.</p>
         <div id="vorticity-legend"></div>
-      </section>
+      </details>
 
-      <section id="drift-panel">
-        <h2>Drift forecast &amp; hindcast (1/3/6 h)</h2>
+      <details class="panel" id="drift-panel">
+        <summary>Drift forecast &amp; hindcast (1/3/6 h)</summary>
         <p class="hint" id="drift-time"></p>
         <p class="hint">Each line advects a surface point particle by the
           currents only — no wind, waves, or the instrument's own motion. The
           hindcast is a current back-track, not the observed track.</p>
-      </section>
+      </details>
 
-      <section id="awaiting-panel">
-        <h2>Awaiting first fix <span id="awaiting-count" class="count"></span></h2>
+      <details class="panel" id="awaiting-panel">
+        <summary>Awaiting first fix <span id="awaiting-count" class="count"></span></summary>
         <p class="hint">Drifters staged but not yet transmitting a position.</p>
         <ul id="awaiting-list"></ul>
-      </section>
+      </details>
     </aside>
   </div>
 

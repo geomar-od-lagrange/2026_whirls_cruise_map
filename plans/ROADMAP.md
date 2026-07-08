@@ -209,3 +209,11 @@ move to `done/` and gain a `docs/` counterpart.
     artifact, wiped by **Clear**. **Done**
     ([docs/interactive_forecast.md](../docs/interactive_forecast.md)); dev PoC, like
     the rest of the Deploy tool.
+26. [Controls dock + tidy sidebar](done/026-controls-dock.md) — on a 13" laptop the
+    four top-right controls (Instruments, Currents, Ships, Deploy) stacked ~800 px,
+    past the ~706 px of map height, overflowing into the time slider. Consolidated
+    into **one collapsible tabbed dock** (Instruments / Currents / Ships / Deploy —
+    one body open at a time, bounded footprint), tidied the sidebar (collapsible
+    sections; speed / ζ/f legends shown only while their shading is active), and
+    made the sidebar responsive (beside → bottom strip → dropped as the window
+    narrows and shortens). **Done** ([docs/controls.md](../docs/controls.md)).
