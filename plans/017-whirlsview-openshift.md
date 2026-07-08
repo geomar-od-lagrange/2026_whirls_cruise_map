@@ -96,7 +96,12 @@ two CronJobs on two cadences is the point of the exercise.
     (under an unserved `data/_cache/`), and the fast job, if a fresh-enough cache
     exists, re-advects live positions cheaply with no CMEMS pull. Keeps the
     forecast origin fast-fresh. This is exactly **ROADMAP #15 Phase 3
-    ("slow-tier cadence + artifact cache")** — do it there, not now.
+    ("slow-tier cadence + artifact cache")**. **The forecast-API half is done**
+    ([plans/018](done/018-forecast-window-pvc-cache.md)): the slow job writes
+    `data/_cache/forecast_window.nc` and the API serves it (reload-on-mtime, no
+    CMEMS fetch), so the API pod drops its creds + egress. Re-advecting the fast
+    job's positions off the same cache (the fast-fresh forecast origin) is the
+    remaining piece.
 
 The two jobs write **disjoint files**, so they can share the `data/` dir without
 coordination beyond per-file atomic writes (write `*.tmp`, `os.replace`) so
@@ -359,8 +364,12 @@ of the same work — the pieces this repo contributes — not a competing order.
    own basic-auth).
 4. **Slow CronJob + CMEMS Secret** — the currents/vorticity/forecast overlays.
 5. **`/data` exports** — dataset-export build step + static-`index.html` backend.
-6. **Field cache** (forecast option B / ROADMAP #15 Phase 3), if the origin lag
-   proves annoying.
+6. **Field cache** (forecast option B / ROADMAP #15 Phase 3). Map-repo half done
+   ([plans/018](done/018-forecast-window-pvc-cache.md)): the forecast API reads the
+   cron-written `data/_cache/forecast_window.nc` instead of fetching. Gateway side:
+   mount the shared PVC into the `*-api` Deployment, drop its `cmems-creds` +
+   CMEMS egress, and keep nginx from serving `data/_cache/`. (The fast-job
+   re-advection for a fast-fresh origin is still optional, if the lag annoys.)
 7. **Analysis app** (`/analysis`) when scoped.
 
 ## Non-goals (inherit the prep repo's)
