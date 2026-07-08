@@ -56,14 +56,20 @@ what needs the field — the advected tracks.
 `:8001`) are **separate processes**. The split is intentional: the static half is
 byte-for-byte what GitLab Pages serves, so it can fall back to Pages with no
 backend, and only the deploy tool's fetch needs the live service. Under the
-plan-017 gateway the two become sibling backends under **one origin** (`/map` and
-`/api`), so a same-origin fetch works in production — the only real deployment.
+plan-017 gateway the two become sibling backends under **one origin** — the map at
+`…/map/` and its API at `…/api/`, and the gateway may mount each instance under a
+subpath (`…/live-test/map/`, `…/live/map/`), so a same-origin fetch works in
+production — the only real deployment.
 
 The client resolves the API base rather than hardcoding it (`resolveApi` in
 `app.js`), with no client-controlled override: in the two-port dev flow (page on
-`:8000`) it auto-targets `:8001`, and otherwise it uses the same-origin
-`/api/forecast`. Dropping the former `?api=`/`window.WHIRLS_FORECAST_API` override
-means a crafted link can't retarget the seed `POST` at a hostile host.
+`:8000`) it auto-targets `:8001`, and otherwise it derives the API **relative to
+the map's own served base** — it strips the trailing `map/…` from the page path
+and re-roots the API alongside it (`…/live-test/map/` → `…/live-test/api/forecast`,
+origin-root `/map/` → `/api/forecast`), so a gateway subpath resolves correctly
+without an origin-root assumption. Dropping the former
+`?api=`/`window.WHIRLS_FORECAST_API` override means a crafted link can't retarget
+the seed `POST` at a hostile host.
 
 ## The engine: the build's RK4, seeded by each drop
 

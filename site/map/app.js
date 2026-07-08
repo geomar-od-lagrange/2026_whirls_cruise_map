@@ -509,11 +509,16 @@ const HINDCAST_COLOR = "#d81b8c";
 // so a crafted `?api=` link can't retarget the seed POST at a hostile host:
 //   - in the two-port dev flow (static on :8000), auto-target the API on :8001, so
 //     `pixi run serve` + `pixi run serve-api` needs no configuration;
-//   - else same-origin `/api/forecast` — the only real deployment.
+//   - else same-origin, relative to where the map is served. A gateway may mount
+//     the instance under a subpath (…/live-test/map/ → …/live-test/api/), so strip
+//     the trailing "map/…" and re-root the API alongside it — no origin-root
+//     assumption, still crafted-`?api`-proof.
 function resolveApi(path) {
   if (location.port === "8000")
     return `${location.protocol}//${location.hostname}:8001${path}`;
-  return path;
+  const m = location.pathname.match(/^(.*\/)map\//);
+  const prefix = m ? m[1].replace(/\/$/, "") : "";
+  return `${prefix}${path}`;
 }
 const FORECAST_API = resolveApi("/api/forecast");
 
