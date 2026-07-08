@@ -452,18 +452,14 @@ const HINDCAST_COLOR = "#d81b8c";
 // sequence of (lon, lat, start) seeds — the equally-spaced drops the client lays
 // along a clicked path, each with its staggered water-entry time — and advects
 // every one through the CMEMS window server-side (one GeoJSON LineString per seed,
-// synced-t0 dots). The map (static, Pages-able) and this API are separate
-// endpoints, so the base is resolved (not hardcoded) by the same rule:
-//   - `?api=<base>` (or window.WHIRLS_FORECAST_API) wins — the cross-origin case
-//     (static on Pages, API elsewhere);
-//   - else, in the two-port dev flow (static on :8000), auto-target the API on
-//     :8001, so `pixi run serve` + `pixi run serve-api` needs no query param;
-//   - else same-origin — what the plan-017 gateway serves (one host, /map and
-//     /api as sibling backends).
+// synced-t0 dots). The map and this API are separate endpoints served under one
+// origin (the plan-017 gateway: /map and /api as sibling backends), so the base is
+// resolved (not hardcoded) by two same-origin rules — no client-controlled override,
+// so a crafted `?api=` link can't retarget the seed POST at a hostile host:
+//   - in the two-port dev flow (static on :8000), auto-target the API on :8001, so
+//     `pixi run serve` + `pixi run serve-api` needs no configuration;
+//   - else same-origin `/api/forecast` — the only real deployment.
 function resolveApi(path) {
-  const override =
-    new URLSearchParams(location.search).get("api") ?? window.WHIRLS_FORECAST_API;
-  if (override) return `${override.replace(/\/+$/, "")}${path}`;
   if (location.port === "8000")
     return `${location.protocol}//${location.hostname}:8001${path}`;
   return path;

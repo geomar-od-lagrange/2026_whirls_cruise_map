@@ -57,14 +57,13 @@ what needs the field — the advected tracks.
 byte-for-byte what GitLab Pages serves, so it can fall back to Pages with no
 backend, and only the deploy tool's fetch needs the live service. Under the
 plan-017 gateway the two become sibling backends under **one origin** (`/map` and
-`/api`), so a same-origin fetch works in production; the *cross-origin* case (static
-on Pages, API elsewhere) is the only one needing configuration.
+`/api`), so a same-origin fetch works in production — the only real deployment.
 
 The client resolves the API base rather than hardcoding it (`resolveApi` in
-`app.js`): a `?api=<base>` query param (or `window.WHIRLS_FORECAST_API`) wins; else,
-in the two-port dev flow (page on `:8000`) it auto-targets `:8001`; else same-origin
-`/api/forecast`. CORS is open on the API — including `POST` — so the cross-origin
-dev fetch (and the JSON body's preflight) works.
+`app.js`), with no client-controlled override: in the two-port dev flow (page on
+`:8000`) it auto-targets `:8001`, and otherwise it uses the same-origin
+`/api/forecast`. Dropping the former `?api=`/`window.WHIRLS_FORECAST_API` override
+means a crafted link can't retarget the seed `POST` at a hostile host.
 
 ## The engine: the build's RK4, seeded by each drop
 
