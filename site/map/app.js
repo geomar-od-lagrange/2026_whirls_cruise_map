@@ -204,6 +204,19 @@ const fmtDir = (deg) => {
   return `${Math.round(d) % 360}° ${compassPoint(d)}`;
 };
 
+// Single source of truth for how a coordinate is written for humans, shared by
+// every popup, the ship readouts, and the cursor readout so all locations match.
+// Latitude first, then longitude — the geographic/nautical convention (charts,
+// GPS, Google Maps all lead with latitude) — with N/S and E/W hemisphere letters
+// instead of signed degrees, at 4-decimal precision (~11 m). Longitude is wrapped
+// to (-180, 180] so a pan across the antimeridian still reads as a normal
+// coordinate rather than an accumulating one.
+function formatLatLon(lat, lon) {
+  const hemi = (v, pos, neg) => `${Math.abs(v).toFixed(4)}° ${v >= 0 ? pos : neg}`;
+  const lonWrapped = L.Util.wrapNum(lon, [-180, 180], true);
+  return `${hemi(lat, "N", "S")}, ${hemi(lonWrapped, "E", "W")}`;
+}
+
 function popupHtml(props, latlng) {
   const p = props || {};
   return `
@@ -216,7 +229,7 @@ function popupHtml(props, latlng) {
       <span class="popup-label">Speed (reported):</span> ${fmtSpeedMps(p.U_speed_mps)}<br/>
       <span class="popup-label">Heading (reported):</span> ${fmtDir(p.U_Dir_deg)}<br/>
       <span class="popup-label">Position:</span>
-      ${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}
+      ${formatLatLon(latlng.lat, latlng.lng)}
     </div>`;
 }
 
@@ -624,17 +637,14 @@ function buildTimeSlider(map, frames, nowIdx, onChange) {
 }
 
 // Cursor coordinate readout (lower-left): a plain-text chip showing the
-// pointer's lon/lat in decimal degrees, updated on mousemove. Like the time
-// slider it's a positioned element inside the map container (not an L.control),
-// so it hugs the corner. Hidden until the pointer enters the map and again on
-// leave. Longitude is wrapped to (−180, 180] so panning across the antimeridian
-// still reads as a normal geographic coordinate rather than an accumulating one.
+// pointer's position in the shared formatLatLon style (lat first, N/S · E/W),
+// updated on mousemove. Like the time slider it's a positioned element inside
+// the map container (not an L.control), so it hugs the corner. Hidden until the
+// pointer enters the map and again on leave.
 function buildCursorReadout(map) {
   const el = L.DomUtil.create("div", "cursor-readout hidden");
-  const fmt = (deg) => (deg >= 0 ? "+" : "−") + Math.abs(deg).toFixed(4) + "°";
   map.on("mousemove", (e) => {
-    const lon = L.Util.wrapNum(e.latlng.lng, [-180, 180], true);
-    el.textContent = `lon ${fmt(lon)}  lat ${fmt(e.latlng.lat)}`;
+    el.textContent = formatLatLon(e.latlng.lat, e.latlng.lng);
     el.classList.remove("hidden");
   });
   map.on("mouseout", () => el.classList.add("hidden"));
@@ -1849,7 +1859,7 @@ function gliderPopupHtml(props, latlng) {
       <span class="popup-label">Speed (derived):</span> ${fmtSpeedMps(p.derived_speed_mps)}<br/>
       <span class="popup-label">Heading (derived):</span> ${fmtDir(p.derived_heading_deg)}<br/>
       <span class="popup-label">Position:</span>
-      ${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}
+      ${formatLatLon(latlng.lat, latlng.lng)}
     </div>`;
 }
 
@@ -2124,7 +2134,7 @@ function mdRows(p, motion) {
       : null;
   return [
     ["Last fix", formatFixTime(p.date)],
-    ["Position", `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`],
+    ["Position", formatLatLon(p.lat, p.lon)],
     ["Speed (derived)", fmtSpeed(motion)],
     // Heading is always shown; "NA" stands in when it is unavailable (speed
     // below MIN_HEADING_KN, or no prior fix to derive a bearing from).
@@ -2146,7 +2156,7 @@ function agulhasRows(p) {
   const course = p.course_deg != null ? fmtDir(p.course_deg) : null;
   return [
     ["Last fix", formatFixTime(p.date)],
-    ["Position", `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`],
+    ["Position", formatLatLon(p.lat, p.lon)],
     ["Speed (reported)", speed],
     ["Course (reported)", course],
     ["Status", p.status],
