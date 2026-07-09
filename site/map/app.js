@@ -623,6 +623,25 @@ function buildTimeSlider(map, frames, nowIdx, onChange) {
   return { el, setTime };
 }
 
+// Cursor coordinate readout (lower-left): a plain-text chip showing the
+// pointer's lon/lat in decimal degrees, updated on mousemove. Like the time
+// slider it's a positioned element inside the map container (not an L.control),
+// so it hugs the corner. Hidden until the pointer enters the map and again on
+// leave. Longitude is wrapped to (−180, 180] so panning across the antimeridian
+// still reads as a normal geographic coordinate rather than an accumulating one.
+function buildCursorReadout(map) {
+  const el = L.DomUtil.create("div", "cursor-readout hidden");
+  const fmt = (deg) => (deg >= 0 ? "+" : "−") + Math.abs(deg).toFixed(4) + "°";
+  map.on("mousemove", (e) => {
+    const lon = L.Util.wrapNum(e.latlng.lng, [-180, 180], true);
+    el.textContent = `lon ${fmt(lon)}  lat ${fmt(e.latlng.lat)}`;
+    el.classList.remove("hidden");
+  });
+  map.on("mouseout", () => el.classList.add("hidden"));
+  map.getContainer().appendChild(el);
+  return el;
+}
+
 // Track colour for the trajectory lines and the intermediate-fix dots that ride
 // them — distinct from the blue latest-position markers, so the dots read as
 // part of the trajectory rather than as separate platforms.
@@ -2321,6 +2340,9 @@ async function main() {
   const deployLayer = L.featureGroup().addTo(map);
   const deployTool = buildDeployTool(deployLayer);
   let displayedFieldTime = null;
+
+  // Lower-left cursor lon/lat readout (decimal degrees), independent of any data.
+  buildCursorReadout(map);
 
   // Background map clicks: in Deploy mode a click adds a vertex to the path and a
   // double-click finishes it (committing the deployment, its drift locked to
