@@ -6,11 +6,16 @@ synced-t0 dot schedule and the absolute-hour relabel that colours the array. In
 particular they guard the relabel-by-value invariant — a drop whose staggered
 water-entry lands just before a mark multiple must NOT shift the colour/label of
 its remaining dots (the bug a position-based ``zip`` relabel had).
+
+The whole batch advects through the **vectorized** RK4
+(:func:`whirls_cruise_map._forecast._batch_advect`, all seeds in lockstep). A
+dedicated test pins it **bit-identical** to advecting each seed with the scalar
+integrator over a non-trivial field with land — so the fast path can never drift
+from the reference physics without failing CI.
 """
 from __future__ import annotations
 
 import os
-import threading
 
 import numpy as np
 import pytest
@@ -160,6 +165,132 @@ def test_out_of_window_seeds_are_skipped_not_errored(monkeypatch):
     assert out["properties"]["n_seeds"] == 2
 
 
+# --- vectorized == scalar (the bit-identity guard) ---------------------------
+#
+# The batch endpoint advects the whole request in one vectorized RK4 pass
+# (_forecast._batch_advect). That is a performance rewrite of the per-seed scalar
+# integrator the build still uses; the two MUST produce identical output or a
+# deployment forecast silently diverges from the reference physics. This section
+# pins them together over a non-trivial field (spatially + temporally varying, with
+# a land patch that forces coast truncation) and staggered starts (incl. an
+# out-of-window skip). A future change to _Field.velocity that isn't mirrored in
+# _vec_deriv fails here.
+
+
+def _varying_window_with_land() -> xr.Dataset:
+    """A non-constant hourly window with a rectangular NaN land patch. The velocity
+    varies in space, lat, and time so bilinear-space + linear-time + RK4 are all
+    exercised (not the trivial constant-flow case); the land patch makes seeds that
+    drift into it truncate at the coast, exactly as the real field does."""
+    lats = -35.0 + 0.1 * np.arange(40)   # -35 .. -31.1
+    lons = 10.0 + 0.1 * np.arange(60)    # 10 .. 15.9
+    times = T0 + np.arange(-6, 61).astype("timedelta64[h]")
+    lon2d, lat2d = np.meshgrid(lons, lats)  # (lat, lon)
+    u = np.empty((times.size, lats.size, lons.size))
+    v = np.empty_like(u)
+    for it in range(times.size):
+        ph = it * 0.15
+        u[it] = 0.4 * np.sin(np.radians((lon2d - 10.0) * 20.0) + ph) + 0.25
+        v[it] = 0.3 * np.cos(np.radians((lat2d + 35.0) * 20.0) - ph)
+    # A land block seeds drift east into (u is net-eastward), forcing truncation.
+    u[:, 15:25, 40:50] = np.nan
+    v[:, 15:25, 40:50] = np.nan
+    return xr.Dataset(
+        {
+            "uo": (("time", "latitude", "longitude"), u),
+            "vo": (("time", "latitude", "longitude"), v),
+        },
+        coords={"time": times, "latitude": lats, "longitude": lons},
+    )
+
+
+def _scalar_reference(seeds, horizon_h, mark_step_h, sampler) -> dict:
+    """The pre-vectorization per-seed algorithm: loop the scalar integrator via
+    ``_advection_feature`` and relabel each mark by value. Kept here (not in the
+    product) as the oracle the vectorized ``_batch_forecast`` is pinned against."""
+    lo, hi = float(sampler.times[0]), float(sampler.times[-1])
+    starts = [_api._parse_start(s.start) for s in seeds]
+    run_start = min(starts)
+    features, n_forecasts, n_skipped = [], 0, 0
+    for i, (seed, entry) in enumerate(zip(seeds, starts)):
+        offset_h = (entry - run_start) / 3600.0
+        horizon_i = horizon_h - offset_h
+        if not (lo <= entry <= hi) or horizon_i <= 0:
+            n_skipped += 1
+            continue
+        rel_marks = _api._seed_marks(offset_h, horizon_h, mark_step_h)
+        t0, valid = _forecast._anchor_t0(sampler, entry)
+        feature = _forecast._advection_feature(
+            sampler, {"role": "forecast", "index": i}, seed.lon, seed.lat, t0, valid,
+            1, horizon_h=horizon_i, mark_hours=rel_marks,
+        )
+        if feature is None:
+            n_skipped += 1
+            continue
+        for mark in feature["properties"]["marks"]:
+            mark["hours"] = round(mark["hours"] + offset_h, 3)
+        features.append(feature)
+        n_forecasts += 1
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "properties": {
+            "run_start": _api._iso(run_start),
+            "horizon_h": horizon_h,
+            "mark_step_h": mark_step_h,
+            "n_seeds": len(seeds),
+            "forecasts": n_forecasts,
+            "skipped": n_skipped,
+            "window": [_api._iso(lo), _api._iso(hi)],
+        },
+    }
+
+
+def _guard_seeds(field: _forecast._Field, n: int, seed: int) -> list[_api.Seed]:
+    """Staggered-start seeds: ocean cells (drift freely) + coast-adjacent cells
+    (drift into the land patch and truncate) + one out-of-window start (skipped)."""
+    mid = field.u.shape[0] // 2
+    ocean = np.isfinite(field.u[mid])
+    cell_ok = ocean[:-1, :-1] & ocean[:-1, 1:] & ocean[1:, :-1] & ocean[1:, 1:]
+    idx = np.argwhere(cell_ok)
+    rng = np.random.default_rng(seed)
+    base = np.datetime64(int(field.times[0]), "s") + np.timedelta64(1, "h")
+    seeds = []
+    for j in range(n):
+        iy, ix = idx[rng.integers(len(idx))]
+        fx, fy = rng.uniform(0.2, 0.8), rng.uniform(0.2, 0.8)
+        lon = field.lons[ix] + fx * (field.lons[ix + 1] - field.lons[ix])
+        lat = field.lats[iy] + fy * (field.lats[iy + 1] - field.lats[iy])
+        start = str(base + np.timedelta64(37 * j, "s")) + "Z"
+        seeds.append(_api.Seed(lon=float(lon), lat=float(lat), start=start))
+    # one start before the window → must be skipped, not errored
+    seeds.append(_api.Seed(lon=11.0, lat=-34.0, start=str(base - np.timedelta64(3, "h")) + "Z"))
+    return seeds
+
+
+@pytest.mark.parametrize("horizon_h, mark_step_h", [(48.0, 3.0), (72.0, 1.5), (24.0, 0.5)])
+def test_vectorized_batch_matches_the_scalar_reference(monkeypatch, horizon_h, mark_step_h):
+    """The whole vectorized FeatureCollection must equal the scalar per-seed reference
+    to the last decimal — same forecast/skip counts, same truncated coords, same marks —
+    over a varying field with land and staggered starts. This is what lets the build
+    keep the scalar integrator while the API uses the fast batch path."""
+    field = _forecast._Field(_varying_window_with_land())
+    monkeypatch.setattr(_api, "_get_sampler", lambda: field)
+    seeds = _guard_seeds(field, 80, seed=7)
+
+    fast = _api._batch_forecast(seeds, horizon_h, mark_step_h)
+    ref = _scalar_reference(seeds, horizon_h, mark_step_h, field)
+
+    # Some seeds must actually truncate at the land patch (else the guard is vacuous),
+    # and at least the one out-of-window seed must be skipped.
+    assert ref["properties"]["skipped"] >= 1
+    assert any(
+        len(f["geometry"]["coordinates"]) < 1 + horizon_h * 60 // _forecast.VERTEX_MIN
+        for f in ref["features"]
+    )
+    assert fast == ref  # deep equality: properties, coords, and marks all identical
+
+
 # --- window loading: PVC file + reload-on-mtime ------------------------------
 
 
@@ -202,203 +333,3 @@ def test_get_sampler_raises_when_the_window_is_missing(tmp_path, monkeypatch, _f
     monkeypatch.setattr(_api, "_WINDOW_PATH", tmp_path / "not_written_yet.nc")
     with pytest.raises(FileNotFoundError):
         _api._get_sampler()
-
-
-# --- result cache + single-flight (survive the 60 s gateway timeout) ---------
-
-
-@pytest.fixture
-def _fresh_cache():
-    """Clear the process-local result cache around a test (it persists globally)."""
-    with _api._cache_lock:
-        _api._cache.clear()
-    yield
-    with _api._cache_lock:
-        _api._cache.clear()
-
-
-def _seed(offset_h: float = 0.0) -> _api.Seed:
-    return _api.Seed(lon=10.5, lat=-34.0, start=_iso(offset_h))
-
-
-def test_cached_forecast_computes_once_then_serves_the_cache(monkeypatch, _fresh_cache):
-    """The retry-after-timeout contract: an identical request re-POSTed (same seeds,
-    knobs, and field version) computes once and replays the cached FeatureCollection —
-    it does not re-run the GIL-bound advection."""
-    monkeypatch.setattr(_api, "_field_version", lambda: 1.0)
-    calls = []
-    monkeypatch.setattr(
-        _api, "_batch_forecast", lambda *a: calls.append(a) or {"n": len(calls)}
-    )
-    seeds = [_seed()]
-
-    first = _api._cached_forecast(seeds, 48.0, 3.0)
-    second = _api._cached_forecast(seeds, 48.0, 3.0)
-    assert len(calls) == 1  # computed once
-    assert first is second  # the very same cached object, not a recompute
-
-
-def test_cached_forecast_recomputes_when_the_field_version_changes(monkeypatch, _fresh_cache):
-    """A fresh cron write bumps the window mtime, so the same seeds key differently and
-    are recomputed — a new field never serves the old field's forecast."""
-    version = [1.0]
-    monkeypatch.setattr(_api, "_field_version", lambda: version[0])
-    calls = []
-    monkeypatch.setattr(_api, "_batch_forecast", lambda *a: calls.append(a) or {})
-    seeds = [_seed()]
-
-    _api._cached_forecast(seeds, 48.0, 3.0)
-    version[0] = 2.0  # cron wrote a new window
-    _api._cached_forecast(seeds, 48.0, 3.0)
-    assert len(calls) == 2
-
-
-def test_cached_forecast_recomputes_for_a_different_request(monkeypatch, _fresh_cache):
-    """Different seeds (or knobs) key differently — the cache only replays an *identical*
-    request, which is exactly what a client retry re-sends."""
-    monkeypatch.setattr(_api, "_field_version", lambda: 1.0)
-    calls = []
-    monkeypatch.setattr(_api, "_batch_forecast", lambda *a: calls.append(a) or {})
-
-    _api._cached_forecast([_seed(0.0)], 48.0, 3.0)
-    _api._cached_forecast([_seed(1.0)], 48.0, 3.0)  # different seed time
-    _api._cached_forecast([_seed(0.0)], 24.0, 3.0)  # different horizon
-    assert len(calls) == 3
-
-
-def test_cached_forecast_does_not_cache_failures(monkeypatch, _fresh_cache):
-    """A transient failure (e.g. a 503 field-unavailable) must not be cached, or a retry
-    would replay the error instead of recomputing once the field is back."""
-    monkeypatch.setattr(_api, "_field_version", lambda: 1.0)
-    boom = [True]
-
-    def flaky(*_a):
-        if boom[0]:
-            raise ValueError("no field yet")
-        return {"ok": True}
-
-    monkeypatch.setattr(_api, "_batch_forecast", flaky)
-    seeds = [_seed()]
-
-    with pytest.raises(ValueError):
-        _api._cached_forecast(seeds, 48.0, 3.0)
-    assert not _api._cache  # the failed slot was removed, not cached
-
-    boom[0] = False  # field is back
-    assert _api._cached_forecast(seeds, 48.0, 3.0) == {"ok": True}  # retry recomputes
-
-
-def test_cached_forecast_coalesces_concurrent_identical_requests(monkeypatch, _fresh_cache):
-    """Single-flight: a retry that arrives while the first compute is still running waits
-    on the leader rather than firing a second GIL-contending advection — the work runs
-    once and both callers get the same result."""
-    monkeypatch.setattr(_api, "_field_version", lambda: 1.0)
-    calls = []
-    entered = threading.Event()
-    release = threading.Event()
-
-    def slow(*_a):
-        calls.append(1)
-        entered.set()
-        release.wait(5)
-        return {"shared": True}
-
-    monkeypatch.setattr(_api, "_batch_forecast", slow)
-    seeds = [_seed()]
-    results: dict[str, dict] = {}
-
-    def call(tag):
-        results[tag] = _api._cached_forecast(seeds, 48.0, 3.0)
-
-    leader = threading.Thread(target=call, args=("leader",))
-    leader.start()
-    assert entered.wait(5)  # leader is now inside the (blocked) compute, holding the slot
-
-    follower = threading.Thread(target=call, args=("follower",))
-    follower.start()
-    follower.join(0.2)
-    assert follower.is_alive()  # coalesced onto the leader — waiting, not recomputing
-
-    release.set()
-    leader.join(5)
-    follower.join(5)
-    assert len(calls) == 1  # advected once despite the concurrent retry
-    assert results["leader"] is results["follower"]
-
-
-def test_cache_is_bounded(monkeypatch, _fresh_cache):
-    """Memory is bounded: distinct requests past the cap evict the oldest results (the
-    field-version key also rotates stale entries out on each cron write)."""
-    monkeypatch.setattr(_api, "_field_version", lambda: 1.0)
-    monkeypatch.setattr(_api, "_batch_forecast", lambda *a: {})
-    for i in range(_api._CACHE_MAX_ENTRIES + 5):
-        _api._cached_forecast([_seed(float(i))], 48.0, 3.0)
-    assert len(_api._cache) == _api._CACHE_MAX_ENTRIES
-
-
-def test_evict_locked_keeps_pending_slots(_fresh_cache):
-    """Eviction never sheds an in-flight (not-``done``) slot, even the oldest one: evicting
-    a still-computing leader's slot would let its own retry miss and start a redundant
-    second advection. Only completed results are shed to the cap."""
-    with _api._cache_lock:
-        pending = _api._Slot()  # oldest → the first popitem(last=False) would take
-        _api._cache["pending"] = pending
-        for i in range(_api._CACHE_MAX_ENTRIES + 3):
-            done = _api._Slot()
-            done.done.set()
-            done.result = {}
-            _api._cache[f"done-{i}"] = done
-        _api._evict_locked()
-    assert "pending" in _api._cache  # kept despite being the oldest entry
-    assert len(_api._cache) == _api._CACHE_MAX_ENTRIES  # completed results shed to the cap
-
-
-def test_follower_recomputes_when_leader_fails(monkeypatch, _fresh_cache):
-    """A follower that coalesced onto a leader which then *fails* must recompute on its own
-    — not inherit (and re-raise) the leader's exception. The leader's error was never the
-    follower's; a transient field blip that cleared should let the follower succeed."""
-    monkeypatch.setattr(_api, "_field_version", lambda: 1.0)
-    calls = []
-    entered = threading.Event()
-    release = threading.Event()
-
-    def flaky(*_a):
-        first = not calls
-        calls.append(1)
-        if first:  # the leader: block until released, then fail transiently
-            entered.set()
-            release.wait(5)
-            raise ValueError("leader transient failure")
-        return {"ok": True}  # the follower's own recompute succeeds
-
-    monkeypatch.setattr(_api, "_batch_forecast", flaky)
-    seeds = [_seed()]
-    out: dict[str, object] = {}
-
-    def leader():
-        try:
-            _api._cached_forecast(seeds, 48.0, 3.0)
-        except Exception as exc:  # the leader propagates its OWN failure
-            out["leader_error"] = exc
-
-    def follower():
-        out["follower"] = _api._cached_forecast(seeds, 48.0, 3.0)
-
-    lt = threading.Thread(target=leader)
-    lt.start()
-    assert entered.wait(5)  # leader is inside the (blocked) compute, holding the slot
-
-    ft = threading.Thread(target=follower)
-    ft.start()
-    ft.join(0.2)
-    assert ft.is_alive()  # follower coalesced onto the leader — waiting, not recomputing
-
-    release.set()  # leader now fails
-    lt.join(5)
-    ft.join(5)
-    assert isinstance(out["leader_error"], ValueError)  # leader saw its own error
-    assert out["follower"] == {"ok": True}  # follower recomputed, did not inherit the error
-    assert len(calls) == 2  # one failed leader + one independent follower recompute
-    # The failed leader's slot was removed; the follower's own success replaced it (and is
-    # now cached for any further retry) — so exactly one, successful, entry remains.
-    assert [s.result for s in _api._cache.values()] == [{"ok": True}]
