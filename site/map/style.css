@@ -59,6 +59,23 @@ body {
   cursor: default;
 }
 
+/* Imprint link, right-aligned in the title bar. Same size as the caution tag
+   but plain white-on-black — no pill, no highlight (margin-left:auto pushes it
+   to the far right of the flex header). */
+.imprint-link {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  color: #fff;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.imprint-link:hover,
+.imprint-link:focus {
+  text-decoration: underline;
+}
+
 #layout {
   display: flex;
   flex: 1 1 auto;
