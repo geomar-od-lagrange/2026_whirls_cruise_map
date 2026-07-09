@@ -52,6 +52,13 @@ the result. This catches both conceptual mistakes and quality issues.
 committing to architecture changes. Once validated, clean up or move to
 permanent locations.
 
+**No git worktrees:** Work in the single primary workdir and switch branches
+there; branch in place for isolated work rather than spawning worktrees. Stray
+worktrees checking out `main` block the primary checkout and pile up as stale
+entries (`.claude/worktrees/wf_*`, a `scratchpad/preview-wt`). To reset the
+workdir: `git worktree remove <path>` / `git worktree prune`, then
+`git checkout main && git merge --ff-only origin/main`.
+
 ## Conventions
 
 ### Documentation
