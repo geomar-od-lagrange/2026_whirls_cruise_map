@@ -48,8 +48,11 @@ still serves.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import threading
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,10 +85,13 @@ _DEFAULT_MARK_STEP_H = 3.0
 
 # Per-request seed cap: how many drops the batch endpoint advects in one POST. The
 # advection is GIL-bound and serialises on the single sync worker, so an unbounded
-# list lets one request pin the pod (see :class:`ForecastRequest`). This constant is
-# the **single source of truth** for the cap: the request model enforces it and the
-# ``GET /api/forecast/limits`` endpoint advertises it, so the deploy-tool client
-# fetches the number to pre-validate against rather than hardcoding its own copy.
+# list lets one request pin the pod (see :class:`ForecastRequest`). The cap only bounds
+# that worst case — it is deliberately *not* sized down to what fits in the gateway's
+# 60 s network timeout (~1000 drops), because a placement that advects longer is
+# **recovered** by the result cache + client retry below, not forbidden. This constant
+# is the **single source of truth** for the cap: the request model enforces it and the
+# ``GET /api/forecast/limits`` endpoint advertises it, so the deploy-tool client fetches
+# the number to pre-validate against rather than hardcoding its own copy.
 _MAX_SEEDS = 2000
 
 # The parcels validation oracle (:mod:`._api_parcels`) imports these for its own
@@ -260,6 +266,133 @@ def _batch_forecast(seeds: list[Seed], horizon_h: float, mark_step_h: float) -> 
     }
 
 
+# --- result cache + single-flight (survive the 60 s gateway timeout) ---------
+#
+# The deployment gateway (plan 017) fronts this API behind an OpenShift Route with a
+# **60 s** network timeout, but a large batch (up to :data:`_MAX_SEEDS` drops) can
+# advect longer on the single GIL-bound sync worker. When the router cuts the request,
+# the browser's ``fetch`` fails — yet a FastAPI *sync* endpoint runs in the threadpool,
+# and a sync task keeps running to completion after the client disconnects (sync work is
+# not cancellable). So we finish the advection past the cut, cache the FeatureCollection
+# keyed by ``(request, field version)``, and the client simply re-POSTs the identical
+# body: the retry finds the result already computed (a fast hit) or, if the first compute
+# is still running, coalesces onto it (single-flight) rather than firing a second
+# GIL-contending advection that would only miss the next timeout too. Same POST, retried,
+# is the whole protocol — no job IDs, no polling.
+#
+# The cache is bounded to a handful of recent results (each entry is a whole placement's
+# forecast, so the working set is a few, not thousands) and keyed on the window mtime so
+# a fresh cron write rotates keys — a new field never serves a stale forecast. Failures
+# are not cached: a follower whose leader fails recomputes rather than replaying an error
+# it never hit.
+#
+# **Single-pod assumption.** The cache is process-local, so it only survives a retry when
+# that retry lands on the same pod+worker that ran the first compute. The deployment this
+# module targets is exactly that — one pod (RWO PVC, ``strategy: Recreate``), one sync
+# worker — so a client's retries always hit the same warm process. Scaling to >1 replica
+# or >1 worker would silently defeat retry-after-timeout (a retry could hit a cold pod and
+# re-time-out); that step must come with a shared cache (Redis/PVC) or sticky sessions.
+
+_CACHE_MAX_ENTRIES = 8
+_FOLLOWER_WAIT_S = 300.0  # liveness backstop: a follower re-checks, never parks forever
+
+
+class _Slot:
+    """One cache slot: an in-flight or completed forecast. The **leader** (first request
+    for a key) computes, fills ``result``/``error``, then sets ``done``; every
+    **follower** (a retry, or a concurrent identical request) waits on ``done`` and, on
+    success, returns the same result — so the GIL-bound advection runs once even while a
+    retry is in flight."""
+
+    __slots__ = ("done", "result", "error")
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result: dict | None = None
+        self.error: BaseException | None = None
+
+
+_cache_lock = threading.Lock()
+_cache: OrderedDict[str, _Slot] = OrderedDict()
+
+
+def _field_version() -> float:
+    """The current window's mtime — the field identity folded into the cache key so a
+    fresh cron write rotates keys. A missing file raises :class:`FileNotFoundError`
+    (→ 503) here, before anything touches the cache."""
+    return _WINDOW_PATH.stat().st_mtime
+
+
+def _cache_key(
+    seeds: list[Seed], horizon_h: float, mark_step_h: float, version: float
+) -> str:
+    """A stable digest of everything a forecast depends on: the seed array, the two
+    cadence knobs, and the field version. A retry re-POSTs the byte-identical body, so it
+    hashes to the same key and hits the cached result."""
+    payload = {
+        "v": version,
+        "h": horizon_h,
+        "m": mark_step_h,
+        "s": [(s.lon, s.lat, s.start) for s in seeds],
+    }
+    blob = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def _evict_locked() -> None:
+    """Drop the oldest *completed* slots until the cache is back under the cap (the caller
+    holds ``_cache_lock``). A still-pending slot is **never** evicted, whatever its age:
+    dropping an in-flight leader's slot would let that leader's own retry miss and start a
+    redundant second advection. In practice one placement is in flight at a time, well
+    under the cap, so only finished results are shed; if concurrent placements ever exceed
+    the cap the cache rides briefly over it and self-corrects as they complete."""
+    for k in list(_cache):
+        if len(_cache) <= _CACHE_MAX_ENTRIES:
+            break
+        if _cache[k].done.is_set():
+            del _cache[k]
+
+
+def _cached_forecast(seeds: list[Seed], horizon_h: float, mark_step_h: float) -> dict:
+    """:func:`_batch_forecast` behind the result cache + single-flight (see the section
+    note): serve a cached FeatureCollection when one exists for this request+field,
+    compute and cache it once otherwise, and coalesce a concurrent identical request (a
+    retry mid-compute) onto the one in-flight computation."""
+    key = _cache_key(seeds, horizon_h, mark_step_h, _field_version())
+    while True:
+        with _cache_lock:
+            slot = _cache.get(key)
+            if slot is not None:
+                _cache.move_to_end(key)  # LRU: touch on hit / on a still-pending slot
+                leader = False
+            else:
+                slot = _cache[key] = _Slot()
+                _evict_locked()
+                leader = True
+
+        if leader:
+            try:
+                slot.result = _batch_forecast(seeds, horizon_h, mark_step_h)
+            except BaseException as exc:
+                slot.error = exc
+                with _cache_lock:
+                    if _cache.get(key) is slot:  # drop only our own slot, never a newer one
+                        del _cache[key]
+                raise  # don't cache a failure — the next request recomputes
+            finally:
+                slot.done.set()  # wake followers (with the result, or the error above)
+            return slot.result
+
+        # Follower: wait for the leader rather than recompute. On success, share its
+        # result; on the leader's *failure* (its slot is now gone), loop and become a fresh
+        # leader — recompute independently instead of replaying an error we never hit. The
+        # timeout is only a liveness backstop: if it lapses with the leader still running,
+        # loop and re-coalesce onto the same still-pending slot, never parking forever.
+        if slot.done.wait(_FOLLOWER_WAIT_S) and slot.error is None:
+            assert slot.result is not None  # a set `done` without error carries a result
+            return slot.result
+
+
 # --- app ---------------------------------------------------------------------
 
 app = FastAPI(title="WHIRLS interactive forecast (PoC)")
@@ -284,9 +417,10 @@ def forecast(req: ForecastRequest) -> dict:
     in, one ``+horizon_h`` GeoJSON ``LineString`` per in-window seed out (synced-t0
     dots; see :func:`_batch_forecast`). A sync endpoint, so FastAPI runs it in the
     threadpool — reloading the window on a fresh cron write can block one request
-    without stalling the static map."""
+    without stalling the static map, and a compute keeps running past a client
+    timeout so its result lands in the cache for the retry (see :func:`_cached_forecast`)."""
     try:
-        return _batch_forecast(req.seeds, req.horizon_h, req.mark_step_h)
+        return _cached_forecast(req.seeds, req.horizon_h, req.mark_step_h)
     except ValueError as exc:  # no seeds / unparseable start time
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:  # window missing/unreadable — the static map still serves

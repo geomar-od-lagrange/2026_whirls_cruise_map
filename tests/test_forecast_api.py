@@ -10,6 +10,7 @@ its remaining dots (the bug a position-based ``zip`` relabel had).
 from __future__ import annotations
 
 import os
+import threading
 
 import numpy as np
 import pytest
@@ -201,3 +202,203 @@ def test_get_sampler_raises_when_the_window_is_missing(tmp_path, monkeypatch, _f
     monkeypatch.setattr(_api, "_WINDOW_PATH", tmp_path / "not_written_yet.nc")
     with pytest.raises(FileNotFoundError):
         _api._get_sampler()
+
+
+# --- result cache + single-flight (survive the 60 s gateway timeout) ---------
+
+
+@pytest.fixture
+def _fresh_cache():
+    """Clear the process-local result cache around a test (it persists globally)."""
+    with _api._cache_lock:
+        _api._cache.clear()
+    yield
+    with _api._cache_lock:
+        _api._cache.clear()
+
+
+def _seed(offset_h: float = 0.0) -> _api.Seed:
+    return _api.Seed(lon=10.5, lat=-34.0, start=_iso(offset_h))
+
+
+def test_cached_forecast_computes_once_then_serves_the_cache(monkeypatch, _fresh_cache):
+    """The retry-after-timeout contract: an identical request re-POSTed (same seeds,
+    knobs, and field version) computes once and replays the cached FeatureCollection —
+    it does not re-run the GIL-bound advection."""
+    monkeypatch.setattr(_api, "_field_version", lambda: 1.0)
+    calls = []
+    monkeypatch.setattr(
+        _api, "_batch_forecast", lambda *a: calls.append(a) or {"n": len(calls)}
+    )
+    seeds = [_seed()]
+
+    first = _api._cached_forecast(seeds, 48.0, 3.0)
+    second = _api._cached_forecast(seeds, 48.0, 3.0)
+    assert len(calls) == 1  # computed once
+    assert first is second  # the very same cached object, not a recompute
+
+
+def test_cached_forecast_recomputes_when_the_field_version_changes(monkeypatch, _fresh_cache):
+    """A fresh cron write bumps the window mtime, so the same seeds key differently and
+    are recomputed — a new field never serves the old field's forecast."""
+    version = [1.0]
+    monkeypatch.setattr(_api, "_field_version", lambda: version[0])
+    calls = []
+    monkeypatch.setattr(_api, "_batch_forecast", lambda *a: calls.append(a) or {})
+    seeds = [_seed()]
+
+    _api._cached_forecast(seeds, 48.0, 3.0)
+    version[0] = 2.0  # cron wrote a new window
+    _api._cached_forecast(seeds, 48.0, 3.0)
+    assert len(calls) == 2
+
+
+def test_cached_forecast_recomputes_for_a_different_request(monkeypatch, _fresh_cache):
+    """Different seeds (or knobs) key differently — the cache only replays an *identical*
+    request, which is exactly what a client retry re-sends."""
+    monkeypatch.setattr(_api, "_field_version", lambda: 1.0)
+    calls = []
+    monkeypatch.setattr(_api, "_batch_forecast", lambda *a: calls.append(a) or {})
+
+    _api._cached_forecast([_seed(0.0)], 48.0, 3.0)
+    _api._cached_forecast([_seed(1.0)], 48.0, 3.0)  # different seed time
+    _api._cached_forecast([_seed(0.0)], 24.0, 3.0)  # different horizon
+    assert len(calls) == 3
+
+
+def test_cached_forecast_does_not_cache_failures(monkeypatch, _fresh_cache):
+    """A transient failure (e.g. a 503 field-unavailable) must not be cached, or a retry
+    would replay the error instead of recomputing once the field is back."""
+    monkeypatch.setattr(_api, "_field_version", lambda: 1.0)
+    boom = [True]
+
+    def flaky(*_a):
+        if boom[0]:
+            raise ValueError("no field yet")
+        return {"ok": True}
+
+    monkeypatch.setattr(_api, "_batch_forecast", flaky)
+    seeds = [_seed()]
+
+    with pytest.raises(ValueError):
+        _api._cached_forecast(seeds, 48.0, 3.0)
+    assert not _api._cache  # the failed slot was removed, not cached
+
+    boom[0] = False  # field is back
+    assert _api._cached_forecast(seeds, 48.0, 3.0) == {"ok": True}  # retry recomputes
+
+
+def test_cached_forecast_coalesces_concurrent_identical_requests(monkeypatch, _fresh_cache):
+    """Single-flight: a retry that arrives while the first compute is still running waits
+    on the leader rather than firing a second GIL-contending advection — the work runs
+    once and both callers get the same result."""
+    monkeypatch.setattr(_api, "_field_version", lambda: 1.0)
+    calls = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow(*_a):
+        calls.append(1)
+        entered.set()
+        release.wait(5)
+        return {"shared": True}
+
+    monkeypatch.setattr(_api, "_batch_forecast", slow)
+    seeds = [_seed()]
+    results: dict[str, dict] = {}
+
+    def call(tag):
+        results[tag] = _api._cached_forecast(seeds, 48.0, 3.0)
+
+    leader = threading.Thread(target=call, args=("leader",))
+    leader.start()
+    assert entered.wait(5)  # leader is now inside the (blocked) compute, holding the slot
+
+    follower = threading.Thread(target=call, args=("follower",))
+    follower.start()
+    follower.join(0.2)
+    assert follower.is_alive()  # coalesced onto the leader — waiting, not recomputing
+
+    release.set()
+    leader.join(5)
+    follower.join(5)
+    assert len(calls) == 1  # advected once despite the concurrent retry
+    assert results["leader"] is results["follower"]
+
+
+def test_cache_is_bounded(monkeypatch, _fresh_cache):
+    """Memory is bounded: distinct requests past the cap evict the oldest results (the
+    field-version key also rotates stale entries out on each cron write)."""
+    monkeypatch.setattr(_api, "_field_version", lambda: 1.0)
+    monkeypatch.setattr(_api, "_batch_forecast", lambda *a: {})
+    for i in range(_api._CACHE_MAX_ENTRIES + 5):
+        _api._cached_forecast([_seed(float(i))], 48.0, 3.0)
+    assert len(_api._cache) == _api._CACHE_MAX_ENTRIES
+
+
+def test_evict_locked_keeps_pending_slots(_fresh_cache):
+    """Eviction never sheds an in-flight (not-``done``) slot, even the oldest one: evicting
+    a still-computing leader's slot would let its own retry miss and start a redundant
+    second advection. Only completed results are shed to the cap."""
+    with _api._cache_lock:
+        pending = _api._Slot()  # oldest → the first popitem(last=False) would take
+        _api._cache["pending"] = pending
+        for i in range(_api._CACHE_MAX_ENTRIES + 3):
+            done = _api._Slot()
+            done.done.set()
+            done.result = {}
+            _api._cache[f"done-{i}"] = done
+        _api._evict_locked()
+    assert "pending" in _api._cache  # kept despite being the oldest entry
+    assert len(_api._cache) == _api._CACHE_MAX_ENTRIES  # completed results shed to the cap
+
+
+def test_follower_recomputes_when_leader_fails(monkeypatch, _fresh_cache):
+    """A follower that coalesced onto a leader which then *fails* must recompute on its own
+    — not inherit (and re-raise) the leader's exception. The leader's error was never the
+    follower's; a transient field blip that cleared should let the follower succeed."""
+    monkeypatch.setattr(_api, "_field_version", lambda: 1.0)
+    calls = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    def flaky(*_a):
+        first = not calls
+        calls.append(1)
+        if first:  # the leader: block until released, then fail transiently
+            entered.set()
+            release.wait(5)
+            raise ValueError("leader transient failure")
+        return {"ok": True}  # the follower's own recompute succeeds
+
+    monkeypatch.setattr(_api, "_batch_forecast", flaky)
+    seeds = [_seed()]
+    out: dict[str, object] = {}
+
+    def leader():
+        try:
+            _api._cached_forecast(seeds, 48.0, 3.0)
+        except Exception as exc:  # the leader propagates its OWN failure
+            out["leader_error"] = exc
+
+    def follower():
+        out["follower"] = _api._cached_forecast(seeds, 48.0, 3.0)
+
+    lt = threading.Thread(target=leader)
+    lt.start()
+    assert entered.wait(5)  # leader is inside the (blocked) compute, holding the slot
+
+    ft = threading.Thread(target=follower)
+    ft.start()
+    ft.join(0.2)
+    assert ft.is_alive()  # follower coalesced onto the leader — waiting, not recomputing
+
+    release.set()  # leader now fails
+    lt.join(5)
+    ft.join(5)
+    assert isinstance(out["leader_error"], ValueError)  # leader saw its own error
+    assert out["follower"] == {"ok": True}  # follower recomputed, did not inherit the error
+    assert len(calls) == 2  # one failed leader + one independent follower recompute
+    # The failed leader's slot was removed; the follower's own success replaced it (and is
+    # now cached for any further retry) — so exactly one, successful, entry remains.
+    assert [s.result for s in _api._cache.values()] == [{"ok": True}]

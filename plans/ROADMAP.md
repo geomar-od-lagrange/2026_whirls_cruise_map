@@ -228,3 +228,15 @@ move to `done/` and gain a `docs/` counterpart.
     its analytic phase `amp·exp(i(phase − f·(T − t_ref)))` to the displayed instant,
     read live from the slider. **Done** ([docs/currents.md](../docs/currents.md),
     [docs/forecast.md](../docs/forecast.md)).
+28. [Forecast cache + client retry](done/028-forecast-cache-and-retry.md) — a large
+    placement can advect longer than the deployment gateway's 60 s network timeout,
+    which cut the connection and lost the forecast. A FastAPI *sync* task keeps
+    running past a client disconnect, so the API now caches each completed
+    FeatureCollection keyed by `(request, field version)` with single-flight
+    coalescing, and the deploy-tool client simply re-POSTs the identical body on a
+    timeout signal (502/504/dropped connection) — the retry hits the warm cache or
+    coalesces onto the still-running compute. Same POST, retried; no job IDs, no
+    polling. The seed cap stays at **2000**: the retry/cache — not a lower cap — is
+    what makes an over-timeout placement safe. **Done**
+    ([docs/interactive_forecast.md](../docs/interactive_forecast.md)); dev PoC, like
+    the rest of the Deploy tool.
