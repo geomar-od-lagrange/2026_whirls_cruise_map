@@ -929,8 +929,8 @@ function buildDeployTool(deployLayer, getStartTime) {
   const state = {
     on: false,
     vertices: [],   // LatLng[] — the clicked path, grows per click
-    spacing: 5,     // km between drops along the path
-    shipKn: 10,     // ship transit speed, knots
+    spacing: 2,     // km between drops along the path
+    shipKn: 6.5,    // ship transit speed, knots
     horizonH: 48,   // forecast horizon from the run start, hours
     forecast: true, // request per-drop drift (else draw geometry only)
   };
@@ -2395,23 +2395,21 @@ function renderShipInfo(vessel, p, prev) {
       .join("");
 }
 
-function osmLayer() {
-  return L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
-    attribution: "&copy; OpenStreetMap contributors",
-  });
-}
-
 async function main() {
   // Data-freshness panel: start the live clock immediately, and fill in the
   // build time out of band so a slow/missing build.json can't hold up the map.
   startClock();
   fetchJSON(DATA.build, { optional: true }).then(renderBuildTime);
 
+  // No basemap tiles: the CMEMS current shading covers the ocean the cruise works
+  // in, and a slippy-tile basemap is a substantial repeated transfer over the ship's
+  // at-sea VSAT link (see data.md) for a backdrop we don't need. The map is the data
+  // layers over a plain sea-tone background (styled on #map); maxZoom is bounded so
+  // there's no zooming into empty space past the field's resolution.
   const map = L.map("map", {
     center: FALLBACK_CENTER,
     zoom: FALLBACK_ZOOM,
-    layers: [osmLayer()],
+    maxZoom: 12,
   });
 
   const currentOverlays = {};

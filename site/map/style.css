@@ -68,6 +68,9 @@ body {
 #map {
   flex: 1 1 auto;
   height: 100%;
+  /* No basemap tiles (dropped to save at-sea VSAT transfer — see main()); this
+     sea-tone fills the map where the current field doesn't cover. */
+  background: #dfe7ee;
 }
 
 #sidebar {
@@ -390,13 +393,17 @@ body {
   color: var(--accent);
   border-bottom-color: var(--accent);
 }
-/* Cap a tall tab at the map height and let it scroll, rather than let it grow past
-   the viewport as the old stacked boxes did. The px cap clears the tallest tab (the
-   Deploy tool's three compartments, ~600px) so it doesn't scroll on a roomy screen;
-   the vh guard still bounds it on short viewports and for the long Instruments list. */
+/* Cap a tall tab at the space the dock actually has and let it scroll, rather than
+   grow past the viewport as the old stacked boxes did. The dock sits inside the map
+   (a 100vh − header region) ~10px below its top, under its tab bar, so the body's room
+   is the viewport minus the header and that chrome: calc(100vh − header − 60px) keeps
+   it clear of the map's bottom edge on a short window. The 80px reserves the top margin,
+   the tab bar, and the map's bottom-right Leaflet attribution link so the panel never
+   sits over it. The 720px cap clears the tallest tab (the Deploy tool's three
+   compartments, ~600px) so it doesn't scroll on a roomy screen either. */
 .dock-body {
   padding: 8px 10px;
-  max-height: min(85vh, 720px);
+  max-height: min(calc(100vh - var(--header-h) - 80px), 720px);
   overflow-y: auto;
 }
 /* Small group caption inside a tab (e.g. "Surface shading" above the radios). */
