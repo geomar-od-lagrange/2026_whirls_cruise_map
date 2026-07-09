@@ -662,6 +662,31 @@ function resolveApi(path) {
 }
 const FORECAST_API = resolveApi("/api/forecast");
 
+// The per-request seed cap lives server-side (the /api/forecast request model). The
+// client asks the API for it — GET /api/forecast/limits — rather than hardcoding a
+// copy, so the cap has one source of truth. Memoised: fetched once, lazily, on the
+// first forecasting placement. Any failure resolves to null and the client skips its
+// proactive over-cap check, letting the server's bounded request model reject the
+// POST instead (rendered by placeDeployment's error path via `apiErrorText`).
+let deployLimitsPromise = null;
+function getDeployLimits() {
+  deployLimitsPromise ??= fetch(resolveApi("/api/forecast/limits"))
+    .then((r) => (r.ok ? r.json() : null))
+    .catch(() => null);
+  return deployLimitsPromise;
+}
+
+// Render a failed /api/forecast response as one status string. Our own HTTPExceptions
+// carry a string `detail`; FastAPI's request-validation 422 (e.g. an over-cap seed
+// list that slips past the client check) carries an *array* of {loc, msg, …} error
+// objects — interpolated raw that reads as the useless "[object Object]", so join
+// their messages instead.
+function apiErrorText(data, status) {
+  const d = data.detail;
+  if (Array.isArray(d)) return d.map((e) => e.msg || JSON.stringify(e)).join("; ");
+  return d || data.error || `error ${status}`;
+}
+
 // Green — distinct from the orange track, violet forecast, magenta hindcast, and
 // cyan inertial — because these lines are ad-hoc, user-placed, and never persisted.
 const DEPLOY_COLOR = "#16a34a";
@@ -1084,6 +1109,20 @@ async function placeDeployment(vertices, deployLayer, setStatus, startTime, opts
     return;
   }
 
+  // Reject an over-cap deployment explicitly, before POSTing: the request model caps
+  // seeds server-side, so an over-cap POST would 422. Ask the API for the cap (one
+  // source of truth) and, when it's known, say so up front — the drops are still
+  // placed (drift off) and exportable. If the cap is unknown (the limits probe failed,
+  // e.g. API down), fall through and let the server enforce it via the error path.
+  const limits = await getDeployLimits();
+  if (limits && drops.length > limits.max_seeds) {
+    drawDrops(dropRecords, deployLayer, deploymentId);
+    setStatus(
+      `${geom} · too many drops for one request (${drops.length} > ${limits.max_seeds} max) — increase spacing or shorten the path`,
+    );
+    return;
+  }
+
   setStatus(`${geom} · forecasting…`);
   try {
     const resp = await fetch(FORECAST_API, {
@@ -1094,7 +1133,7 @@ async function placeDeployment(vertices, deployLayer, setStatus, startTime, opts
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
       drawDrops(dropRecords, deployLayer, deploymentId);
-      setStatus(`${geom} · ${data.detail || data.error || `error ${resp.status}`}`);
+      setStatus(`${geom} · ${apiErrorText(data, resp.status)}`);
       return;
     }
     const horizonH = data.properties?.horizon_h ?? opts.horizonH;

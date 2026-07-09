@@ -112,8 +112,9 @@ def test_forecast_request_accepts_a_normal_deployment():
         {"mark_step_h": 0.0},          # also the ZeroDivisionError path
         {"horizon_h": float("inf")},
         {"horizon_h": float("nan")},
-        # High-2: an uncapped seed list pins the single sync worker (CPU exhaustion).
-        {"seeds": _ONE_SEED * 501},
+        # High-2: an uncapped seed list pins the single sync worker (CPU exhaustion);
+        # one past the cap is rejected (the cap is _MAX_SEEDS, not a literal here).
+        {"seeds": _ONE_SEED * (_api._MAX_SEEDS + 1)},
         # extra="forbid": unknown fields are rejected, not silently ignored.
         {"foo": 1},
     ],
@@ -122,6 +123,21 @@ def test_forecast_request_rejects_resource_exhaustion_payloads(kwargs):
     kwargs.setdefault("seeds", _ONE_SEED)
     with pytest.raises(ValidationError):
         _api.ForecastRequest(**kwargs)
+
+
+def test_forecast_request_accepts_up_to_the_seed_cap():
+    # The cap has one source of truth (_MAX_SEEDS): exactly the cap validates, one past
+    # it is rejected. This is the same bound /api/forecast/limits advertises so the
+    # client can pre-reject an over-cap deployment before POSTing.
+    _api.ForecastRequest(seeds=_ONE_SEED * _api._MAX_SEEDS)  # no raise at the cap
+    with pytest.raises(ValidationError):
+        _api.ForecastRequest(seeds=_ONE_SEED * (_api._MAX_SEEDS + 1))
+
+
+def test_limits_endpoint_echoes_the_seed_cap():
+    # The client fetches this instead of hardcoding the cap, so it must report the very
+    # constant the request model enforces (single source of truth).
+    assert _api.limits() == {"max_seeds": _api._MAX_SEEDS}
 
 
 def test_forecast_request_bounds_the_derived_mark_count():

@@ -80,6 +80,14 @@ _WINDOW_PATH = Path(os.environ.get("WHIRLS_FORECAST_WINDOW", str(_DEFAULT_WINDOW
 _DEFAULT_HORIZON_H = float(_currents.FORECAST_HORIZON_H)
 _DEFAULT_MARK_STEP_H = 3.0
 
+# Per-request seed cap: how many drops the batch endpoint advects in one POST. The
+# advection is GIL-bound and serialises on the single sync worker, so an unbounded
+# list lets one request pin the pod (see :class:`ForecastRequest`). This constant is
+# the **single source of truth** for the cap: the request model enforces it and the
+# ``GET /api/forecast/limits`` endpoint advertises it, so the deploy-tool client
+# fetches the number to pre-validate against rather than hardcoding its own copy.
+_MAX_SEEDS = 2000
+
 # The parcels validation oracle (:mod:`._api_parcels`) imports these for its own
 # single-point +12 h forecast — its cadence, kept here so the two engines compare
 # on the same horizon/marks. Not used by the batch endpoint below.
@@ -175,7 +183,7 @@ class ForecastRequest(BaseModel):
     ignored)."""
 
     model_config = {"extra": "forbid"}
-    seeds: list[Seed] = Field(max_length=500)
+    seeds: list[Seed] = Field(max_length=_MAX_SEEDS)
     horizon_h: float = Field(default=_DEFAULT_HORIZON_H, gt=0, le=240, allow_inf_nan=False)
     mark_step_h: float = Field(
         default=_DEFAULT_MARK_STEP_H, ge=0.25, le=48, allow_inf_nan=False
@@ -259,13 +267,13 @@ app = FastAPI(title="WHIRLS interactive forecast (PoC)")
 # under one host), so it exercises no CORS at all. The sole cross-origin caller is the
 # two-port dev flow — the static map on :8000 fetching this API on :8001 (see
 # ``resolveApi`` in app.js) — so scope CORS to those localhost dev origins and to the
-# lone POST + Content-Type the client actually sends, not the wildcard a public
-# endpoint shouldn't advertise.
+# two methods the client uses (the forecast POST + its Content-Type, and the GET the
+# limits probe sends), not the wildcard a public endpoint shouldn't advertise.
 _DEV_ORIGINS = ["http://localhost:8000", "http://127.0.0.1:8000"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_DEV_ORIGINS,
-    allow_methods=["POST"],
+    allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
 )
 
@@ -283,6 +291,17 @@ def forecast(req: ForecastRequest) -> dict:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:  # window missing/unreadable — the static map still serves
         raise HTTPException(status_code=503, detail=f"forecast field unavailable: {exc}")
+
+
+@app.get("/api/forecast/limits")
+def limits() -> dict:
+    """The request bounds the deploy-tool client pre-validates against, so it can
+    reject an over-cap deployment with an explicit message *before* POSTing — without
+    hardcoding its own copy of the cap. Currently the seed cap (:data:`_MAX_SEEDS`),
+    the one value that gates a whole-array placement; the horizon/mark-step bounds
+    stay the request model's ``Field`` constraints. A plain GET, reached under the
+    same CORS as the forecast POST (see the middleware note)."""
+    return {"max_seeds": _MAX_SEEDS}
 
 
 def main() -> None:
