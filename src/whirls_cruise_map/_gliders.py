@@ -10,10 +10,12 @@ time-sorted position tracks. (IPSL also serves the same files from a THREDDS
 ``catalog.xml`` DatasetScan; the portal is preferred as a lighter, more reliable,
 CORS-open static host — see docs/gliders.md.)
 
-The **floats** sit under the same tree but ship a single aggregate CSV with the
-platform identity in a column, not one file per platform, so they get their own
-fetch/split (:func:`fetch_float_source` / :func:`parse_float_source`) — see the
-floats section below. All three types converge on the same :class:`Platform`.
+The **floats** sit under the same tree but need their own fetch/split
+(:func:`fetch_float_sources` / :func:`parse_float_source`): they come one file
+per float in two CSV schemas — identity in a ``filename`` column (``mr_float_*``)
+or in the file name (``uvp_float_*``) — beside an aggregate CSV that is skipped.
+See the floats section below. All three types converge on the same
+:class:`Platform`.
 
 Best-effort throughout: any failure — a dead folder, a bad CSV, an unparseable
 row — is swallowed so the build still produces every other artifact. A total
