@@ -986,45 +986,33 @@ function buildDeployTool(deployLayer, getStartTime) {
     return true;
   };
 
-  // Render the deploy tool's body into the dock's Deploy tab. The dock owns the
-  // box and the click-propagation guard, and the tab label carries the
-  // "Deploy · PoC" heading — so the body starts straight at the arm toggle.
-  // Captures the map and arms the preview layer on first render.
+  // Render the deploy tool's body into the dock's Deploy tab, laid out top-to-bottom
+  // as: the time-colour bar (the synced-t0 dot legend), then three compartments —
+  // **Settings** (the knobs shared by both placement paths), **Click to place** (the
+  // arm toggle + its explanation), and **Waypoints (CSV)** (import a vessel route) —
+  // then a footer of manage actions (Download / Clear) and the status line. Captures
+  // the map and arms the preview layer on first render.
   const renderBody = (div, map) => {
     div.classList.add("deploy-tool");
     mapRef = map;
     previewLayer.addTo(map);
 
-    const toggle = L.DomUtil.create("button", "ft-btn ft-toggle", div);
-    toggle.type = "button";
-    const paint = () => {
-      toggle.textContent = state.on ? "Click-to-place: ON" : "Click-to-place: OFF";
-      toggle.classList.toggle("on", state.on);
-      map.getContainer().classList.toggle("deploy-cursor", state.on);
-      // Suppress double-click zoom while armed, so a finishing dbl-click doesn't
-      // also zoom the map.
-      if (state.on) map.doubleClickZoom.disable();
-      else map.doubleClickZoom.enable();
+    // A captioned compartment (a bordered section) appended to the tab body.
+    const section = (caption) => {
+      const s = L.DomUtil.create("div", "pt-section", div);
+      L.DomUtil.create("span", "pt-section-cap", s).textContent = caption;
+      return s;
     };
-    toggle.addEventListener("click", () => {
-      state.on = !state.on;
-      if (!state.on) {
-        resetPath();
-        setStatus("");
-      }
-      paint();
-    });
-    paint();
 
-    // Compact number rows binding onto state: one labelled decimal <input> per knob;
-    // a change writes the parsed value straight back. Plain type=text (not
-    // type=number) with a beforeinput guard admitting only digits and a single dot,
-    // so the decimal separator is a dot regardless of the browser's locale — a comma
-    // (or a pasted "0,5") is refused whole rather than silently blanked by a
-    // de-locale type=number field or mangled into a wrong value. The change handler
-    // still rejects zero/negatives (spacing 0 would hang the resample).
-    const numRow = (label, key) => {
-      const row = L.DomUtil.create("label", "pt-row", div);
+    // Compact number row binding onto state: a labelled decimal <input> per knob,
+    // appended to `parent`. Plain type=text (not type=number) with a beforeinput guard
+    // admitting only digits and a single dot, so the decimal separator is a dot
+    // regardless of the browser's locale — a comma (or a pasted "0,5") is refused whole
+    // rather than silently blanked by a de-locale type=number field or mangled into a
+    // wrong value. The change handler still rejects zero/negatives (spacing 0 would hang
+    // the resample).
+    const numRow = (parent, label, key) => {
+      const row = L.DomUtil.create("label", "pt-row", parent);
       L.DomUtil.create("span", "pt-label", row).textContent = label;
       const input = L.DomUtil.create("input", "pt-num", row);
       input.type = "text";
@@ -1044,11 +1032,16 @@ function buildDeployTool(deployLayer, getStartTime) {
         if (!Number.isNaN(val) && val > 0) state[key] = val;
       });
     };
-    numRow("Drop spacing (km)", "spacing");
-    numRow("Ship speed (kn)", "shipKn");
-    numRow("Forecast (h)", "horizonH");
 
-    const checkRow = L.DomUtil.create("label", "pt-row", div);
+    // --- time-colour bar (synced-t0 dot legend) at the very top ---
+    buildDeployLegend(div);
+
+    // --- compartment 1: settings (shared by click + CSV placement) ---
+    const settings = section("Settings");
+    numRow(settings, "Forecast (h)", "horizonH");
+    numRow(settings, "Ship speed (kn)", "shipKn");
+    numRow(settings, "Drop spacing (km)", "spacing");
+    const checkRow = L.DomUtil.create("label", "pt-row", settings);
     const check = L.DomUtil.create("input", "pt-check", checkRow);
     check.type = "checkbox";
     check.checked = state.forecast;
@@ -1057,35 +1050,52 @@ function buildDeployTool(deployLayer, getStartTime) {
     });
     L.DomUtil.create("span", "pt-label", checkRow).textContent = "Forecast drift";
 
-    const clear = L.DomUtil.create("button", "ft-btn", div);
-    clear.type = "button";
-    clear.textContent = "Clear";
-    clear.addEventListener("click", () => {
-      deployLayer.clearLayers();
-      resetDeployHighlights(); // drop the highlight registries along with the layers they point at
-      resetPath();
-      setStatus("");
+    // --- compartment 2: click to place ---
+    const clickSec = section("Click to place");
+    const toggle = L.DomUtil.create("button", "ft-btn ft-toggle", clickSec);
+    toggle.type = "button";
+    const paint = () => {
+      toggle.textContent = state.on ? "Click-to-place: ON" : "Click-to-place: OFF";
+      toggle.classList.toggle("on", state.on);
+      map.getContainer().classList.toggle("deploy-cursor", state.on);
+      // Suppress double-click zoom while armed, so a finishing dbl-click doesn't
+      // also zoom the map.
+      if (state.on) map.doubleClickZoom.disable();
+      else map.doubleClickZoom.enable();
+    };
+    toggle.addEventListener("click", () => {
+      state.on = !state.on;
+      if (!state.on) {
+        resetPath();
+        setStatus("");
+      }
+      paint();
     });
+    paint();
+    L.DomUtil.create("p", "ft-hint", clickSec).textContent =
+      "click a path · double-click to finish · right-click / Esc to cancel";
 
-    // Export the placed drops (every deployment) as a flat waypoint CSV. Reads the
-    // live deployWaypoints registry on click; empty = nothing placed, so it just
-    // says so rather than offering an empty file.
-    const download = L.DomUtil.create("button", "ft-btn", div);
-    download.type = "button";
-    download.textContent = "Download CSV";
-    download.addEventListener("click", () => {
-      const n = downloadDeployWaypoints();
-      setStatus(n ? `downloaded ${n} waypoint(s)` : "no drops placed yet");
-    });
+    // --- compartment 3: import a vessel route from a waypoint list ---
+    // The parsed rows are the ship *route* (like a clicked path), so the drops — hence
+    // the number of drifters — follow from the route length and the Drop spacing / Ship
+    // speed knobs, not from the row count. Start time is pulled live from the time
+    // scrubber (getStartTime). The textarea is the source of truth (the input "mask");
+    // "Upload file" only reads a .csv into it, so one parseWaypoints serves paste and
+    // upload alike (see docs/interactive_forecast.md). Order top-to-bottom: upload
+    // button, the paste box, then the place button.
+    const csvSec = section("Waypoints (CSV)");
 
-    // Import the vessel's route from a waypoint list: the parsed rows are the ship
-    // *route* (like a clicked path), so the drops — hence the number of drifters —
-    // follow from the route length and the Drop spacing / Ship speed knobs, not from
-    // the row count. Start time is pulled live from the time scrubber (getStartTime).
-    // The textarea is the source of truth (the input "mask"); "Load file…" only reads
-    // a .csv into it, so one parseWaypoints serves paste and upload alike (see
-    // docs/interactive_forecast.md).
-    const importBox = L.DomUtil.create("textarea", "pt-import", div);
+    const fileInput = L.DomUtil.create("input", "", csvSec);
+    fileInput.type = "file";
+    fileInput.accept = ".csv,.txt,text/csv,text/plain";
+    fileInput.style.display = "none";
+
+    const upload = L.DomUtil.create("button", "ft-btn", csvSec);
+    upload.type = "button";
+    upload.textContent = "Upload file";
+    upload.addEventListener("click", () => fileInput.click());
+
+    const importBox = L.DomUtil.create("textarea", "pt-import", csvSec);
     importBox.rows = 3;
     importBox.placeholder = "vessel waypoints: lon,lat per line (decimal °, negative = S/W) · header optional";
     // Keep keystrokes local: Leaflet would otherwise treat typing over the map as map
@@ -1093,30 +1103,21 @@ function buildDeployTool(deployLayer, getStartTime) {
     L.DomEvent.disableClickPropagation(importBox);
     L.DomEvent.disableScrollPropagation(importBox);
 
-    const fileInput = L.DomUtil.create("input", "", div);
-    fileInput.type = "file";
-    fileInput.accept = ".csv,.txt,text/csv,text/plain";
-    fileInput.style.display = "none";
     fileInput.addEventListener("change", () => {
       const file = fileInput.files && fileInput.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = () => {
         importBox.value = String(reader.result || "");
-        setStatus(`loaded ${file.name} — review, then Place from CSV`);
+        setStatus(`loaded ${file.name} — review, then place`);
       };
       reader.readAsText(file);
       fileInput.value = ""; // let the same file re-trigger change next time
     });
 
-    const loadFile = L.DomUtil.create("button", "ft-btn", div);
-    loadFile.type = "button";
-    loadFile.textContent = "Load file…";
-    loadFile.addEventListener("click", () => fileInput.click());
-
-    const place = L.DomUtil.create("button", "ft-btn", div);
+    const place = L.DomUtil.create("button", "ft-btn", csvSec);
     place.type = "button";
-    place.textContent = "Place from CSV";
+    place.textContent = "Place using these waypoints";
     place.addEventListener("click", () => {
       const { latlngs, skipped, error } = parseWaypoints(importBox.value);
       if (error) {
@@ -1130,11 +1131,31 @@ function buildDeployTool(deployLayer, getStartTime) {
       // into drops (same as a clicked path).
       placeDeployment(latlngs, deployLayer, setStatus, startTime, state);
     });
+    L.DomUtil.create("p", "ft-hint", csvSec).textContent =
+      "rows are the vessel route · drops follow from spacing + speed";
 
-    L.DomUtil.create("p", "ft-hint", div).textContent =
-      "click a path · double-click to finish · right-click / Esc to cancel · " +
-      "or paste / load a lon,lat vessel route and Place from CSV";
-    buildDeployLegend(div);
+    // --- footer: manage the placed deployments + status ---
+    L.DomUtil.create("hr", "pt-hr", div); // rule above the manage actions
+    const download = L.DomUtil.create("button", "ft-btn", div);
+    download.type = "button";
+    download.textContent = "Download CSV";
+    // Export the placed drops (every deployment) as a flat waypoint CSV. Reads the live
+    // deployWaypoints registry on click; empty = nothing placed, so it just says so.
+    download.addEventListener("click", () => {
+      const n = downloadDeployWaypoints();
+      setStatus(n ? `downloaded ${n} waypoint(s)` : "no drops placed yet");
+    });
+
+    const clear = L.DomUtil.create("button", "ft-btn", div);
+    clear.type = "button";
+    clear.textContent = "Clear";
+    clear.addEventListener("click", () => {
+      deployLayer.clearLayers();
+      resetDeployHighlights(); // drop the highlight registries along with the layers they point at
+      resetPath();
+      setStatus("");
+    });
+
     statusEl = L.DomUtil.create("p", "ft-status", div);
   };
   return { state, handleClick, handleDblClick, handleMove, handleAbort, renderBody };

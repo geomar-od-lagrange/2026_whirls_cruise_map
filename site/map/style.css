@@ -390,11 +390,13 @@ body {
   color: var(--accent);
   border-bottom-color: var(--accent);
 }
-/* Cap a tall tab (the full Instruments list) at the map height and let it scroll,
-   rather than let it grow past the viewport as the old stacked boxes did. */
+/* Cap a tall tab at the map height and let it scroll, rather than let it grow past
+   the viewport as the old stacked boxes did. The px cap clears the tallest tab (the
+   Deploy tool's three compartments, ~600px) so it doesn't scroll on a roomy screen;
+   the vh guard still bounds it on short viewports and for the long Instruments list. */
 .dock-body {
   padding: 8px 10px;
-  max-height: min(60vh, 460px);
+  max-height: min(85vh, 720px);
   overflow-y: auto;
 }
 /* Small group caption inside a tab (e.g. "Surface shading" above the radios). */
@@ -494,6 +496,30 @@ body {
   min-height: 1em;
   font-size: 0.7rem;
   color: #0f7a37;
+}
+/* Deploy tool compartments: the tab body is a top color bar + three captioned
+   sections (Settings · Click to place · Waypoints) + a manage/status footer. Each
+   section is set off by a top rule and a small uppercase caption, so the three
+   placement concerns read apart. */
+.deploy-tool .pt-section {
+  margin: 9px 0 0;
+  padding: 9px 0 0;
+  border-top: 1px solid #d7dde4;
+}
+/* Rule setting the manage footer (Download / Clear) off from the CSV compartment. */
+.deploy-tool hr.pt-hr {
+  margin: 9px 0 7px;
+  border: 0;
+  border-top: 1px solid #d7dde4;
+}
+.deploy-tool .pt-section-cap {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
 }
 /* Deploy tool's compact knob inputs — a label + a narrow number field or a
    checkbox per row (drop spacing, ship speed, forecast horizon, drift on/off). */
