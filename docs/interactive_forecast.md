@@ -165,6 +165,17 @@ the field window, or at/after the common run end (no track left to draw), is ski
 and counted rather than aborting the batch — a *plan* still stands even when the
 field doesn't cover its full duration.
 
+The request is bounded so one unauthenticated call can't exhaust the pod: at most
+**2000 seeds** per POST (the RK4 advection is GIL-bound and serialises on the single
+sync worker), plus `horizon_h`/`mark_step_h` ranges that cap the per-seed dot
+schedule. The seed cap has a **single source of truth** in the API and is advertised
+by `GET /api/forecast/limits` (`{"max_seeds": …}`); the deploy-tool client fetches it
+and rejects an over-cap deployment up front — "too many drops … increase spacing or
+shorten the path" — rather than firing a doomed POST or hardcoding its own copy of the
+number. A request that slips past that check (limits probe unavailable) is still
+rejected server-side with a `422`, whose validation message the client renders
+verbatim instead of a bare error.
+
 ## Synced-t0 dots: the whole array at one instant
 
 The dots are the scientific point of a batch, not decoration. Dotting each drop at
@@ -241,7 +252,8 @@ cursor). While armed:
 Knobs: **Drop spacing (km)**, **Ship speed (kn)**, **Forecast (h)** (default 48), and
 a **Forecast drift** checkbox (draw the drops + ship track only, no fetch, when off).
 The status line reports the geometry (`N drops · X km · ~Y h transit`) and then the
-result (`forecasts/n_seeds drift`, or the API's message on an error / no field). The
+result (`forecasts/n_seeds drift`, an over-cap notice when a placement exceeds the
+seed cap, or the API's message on an error / no field). The
 forecasts are ad-hoc and ephemeral — never persisted, never a build artifact — and
 drawn in a distinct **green** so they don't read as the instrument forecast (violet).
 **Clear** wipes them.
