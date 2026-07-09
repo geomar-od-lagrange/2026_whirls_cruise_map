@@ -8,11 +8,12 @@ The CMEMS field is fetched over a **forecast window** (6-hourly ``PT6H-i``, the
 times nearest ``[now-12h, now+72h]``) so the map can scrub it on a time slider at
 12 h steps (``-12 … now … +72 h``). From that window we derive:
 
-- ``to_velocity_json`` — a coarsened leaflet-velocity ``[u, v]`` grid for the
-  animated flow trails, from the **now** slice. Its magnitude is compressed
-  sub-linearly (see ``VELOCITY_GAMMA``) so the slow eddies animate visibly while
-  the Agulhas jet does not run away; direction is preserved. (One-instant texture,
-  not scrubbed by the slider.)
+- ``to_velocity_frames`` — one coarsened leaflet-velocity ``[u, v]`` grid per slider
+  frame for the animated flow trails, so the trails scrub with the shadings instead
+  of staying pinned to the now slice. Each grid's magnitude is compressed sub-linearly
+  (see ``VELOCITY_GAMMA``) so the slow eddies animate visibly while the Agulhas jet
+  does not run away; direction is preserved. (``to_velocity_json`` renders one such
+  grid from a single 2-D slice.)
 - ``to_speed_frames`` — one near-native speed raster per slider frame (cmocean
   ``speed``, Web-Mercator warped, land transparent), as compact **lossless WebP**
   frames sharing one colour scale, plus a small ``frames`` manifest for the client.
@@ -67,7 +68,7 @@ SHADING_OFFSETS_H = list(range(-SHADING_BACK_H, SHADING_FWD_H + 1, SHADING_STEP_
 # > 12 h Nyquist), but only ~3 samples per inertial cycle, so linear-in-time
 # interpolation chords the loop; hourly (~20/cycle) traces it smoothly for a
 # negligible fetch cost (measured +0.8 s over 6-hourly for a +/-12 h window). The
-# shading overlays (currents.json, the speed/ζ/f slider frames) use the 6-hourly
+# shading/flow overlays (the flow-trail grids, the speed/ζ/f slider frames) use the 6-hourly
 # ``DATASET_ID`` window; only the advection field is this hourly one. See
 # docs/forecast.md, docs/currents.md.
 WINDOW_DATASET_ID = "cmems_mod_glo_phy_anfc_0.083deg_PT1H-m"
@@ -153,23 +154,18 @@ def _nearest_now_time(window: xr.Dataset) -> np.datetime64:
     return window["time"].sel(time=now, method="nearest").values
 
 
-def now_field(window: xr.Dataset) -> xr.Dataset:
-    """The single 2-D ``(latitude, longitude)`` slice nearest now — feeds the flow
-    trails, which are a one-instant texture, not a slider frame."""
-    return window.sel(time=_nearest_now_time(window), method="nearest")
-
-
 def _now_valid_time(frames: list[dict]) -> str:
     """The now (offset 0) frame's ``valid_time`` for the meta's top-level key,
     falling back to the first frame if a custom offset list omits 0."""
     return next((f["valid_time"] for f in frames if f["offset_h"] == 0), frames[0]["valid_time"])
 
 
-def frame_filename(kind: str, offset_h: int) -> str:
-    """Slider-frame artifact name, e.g. ``speed_+12h.webp`` /
-    ``vorticity_-12h.webp`` (lossless WebP — half the bytes of PNG at the same
-    pixels). Single source of truth shared by the renderer's meta and the build."""
-    return f"{kind}_{offset_h:+03d}h.webp"
+def frame_filename(kind: str, offset_h: int, ext: str = "webp") -> str:
+    """Slider-frame artifact name, e.g. ``speed_+12h.webp`` / ``vorticity_-12h.webp``
+    (lossless WebP shadings — half the bytes of PNG at the same pixels) or
+    ``currents_+00h.json`` (the flow-trail grid, ``ext="json"``). Single source of
+    truth shared by the renderers' metas and the build."""
+    return f"{kind}_{offset_h:+03d}h.{ext}"
 
 
 def select_frames(
@@ -279,7 +275,10 @@ def _component(field: xr.DataArray, number: int, name: str) -> dict:
     field = field.sortby("latitude", ascending=False).sortby(
         "longitude", ascending=True
     )
-    data = np.nan_to_num(field.values, nan=0.0).astype(float)
+    # Round to 4 dp: the raw solve yields 17-significant-digit floats, ~3x the bytes
+    # for sub-mm/s precision the decorative, gamma-scaled trails never resolve. At 4 dp
+    # a frame is ~0.45 MB (vs ~1 MB), so the 8-frame slider stays affordable.
+    data = np.round(np.nan_to_num(field.values, nan=0.0).astype(float), 4)
     return {
         "header": _component_header(field, number, name),
         "data": data.ravel(order="C").tolist(),
@@ -298,7 +297,8 @@ def _scale_for_animation(coarse: xr.Dataset) -> xr.Dataset:
 
 
 def to_velocity_json(field: xr.Dataset, stride: int = COARSEN_STRIDE) -> list[dict]:
-    """Coarsened, magnitude-compressed leaflet-velocity ``[u, v]`` for the trails."""
+    """Coarsened, magnitude-compressed leaflet-velocity ``[u, v]`` for the trails,
+    from a single 2-D ``(latitude, longitude)`` slice."""
     coarse = field.isel(
         latitude=slice(None, None, stride),
         longitude=slice(None, None, stride),
@@ -308,6 +308,34 @@ def to_velocity_json(field: xr.Dataset, stride: int = COARSEN_STRIDE) -> list[di
         _component(coarse["uo"], number=2, name="Eastward current"),
         _component(coarse["vo"], number=3, name="Northward current"),
     ]
+
+
+def to_velocity_frames(
+    window: xr.Dataset, offsets: list[int] = SHADING_OFFSETS_H
+) -> tuple[list[dict], list[dict]]:
+    """One leaflet-velocity flow grid per slider offset, so the animated trails scrub
+    with the speed/ζ·f shadings instead of staying pinned to the now slice.
+
+    Slices the same window and offsets as :func:`to_speed_frames` (no extra fetch;
+    12 h steps land on the 6-hourly grid exactly), rendering each with
+    :func:`to_velocity_json`. Returns ``(frames, manifest)``: each frame is
+    ``{offset_h, valid_time, file, data}`` with ``data`` the velocity ``[u, v]`` list
+    and ``file`` e.g. ``currents_+00h.json``; ``manifest`` is the compact
+    ``[{offset_h, valid_time, file}]`` the build merges into ``currents_meta.json`` as
+    ``flow_frames`` for the client's slider. Same valid-times as the speed frames; the
+    *now* frame (offset 0) is the slice the map opens on.
+    """
+    frames = [
+        {
+            "offset_h": offset,
+            "valid_time": valid_time(ds),
+            "file": frame_filename("currents", offset, ext="json"),
+            "data": to_velocity_json(ds),
+        }
+        for offset, ds in select_frames(window, offsets)
+    ]
+    manifest = [{k: f[k] for k in ("offset_h", "valid_time", "file")} for f in frames]
+    return frames, manifest
 
 
 # --- speed shading (Mercator-warped PNG) -----------------------------------

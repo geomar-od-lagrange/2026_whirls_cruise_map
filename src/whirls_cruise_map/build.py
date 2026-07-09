@@ -9,9 +9,9 @@ Dufresne, R/V S.A. Agulhas II), cleans and unifies them, and writes the download
 
 - *fast* (no secrets, no egress): ``latest.geojson``, ``tracks.geojson``,
   ``awaiting.json``, ``gliders.geojson``, ``agulhas.json``, ``build.json``.
-- *slow* (CMEMS, needs a Copernicus login): ``currents.json`` + the time-slider
-  ``speed_±NNh.webp`` frames (+``currents_meta.json``) and ``vorticity_±NNh.webp``
-  frames (+meta), ``forecast.geojson``, ``hindcast.geojson``,
+- *slow* (CMEMS, needs a Copernicus login): the time-slider ``speed_±NNh.webp`` and
+  ``currents_±NNh.json`` (flow-trail) frames (+``currents_meta.json``) and
+  ``vorticity_±NNh.webp`` frames (+meta), ``forecast.geojson``, ``hindcast.geojson``,
   ``inertial_field.json``.
 
 The two stages write disjoint trees, every write is atomic (``*.tmp`` +
@@ -312,16 +312,16 @@ def _derive_slow(data_dir: Path, map_dir: Path) -> None:
 
     if shading is not None:
         try:
-            _write_json(
-                map_dir / "currents.json",
-                _currents.to_velocity_json(_currents.now_field(shading)),
-            )
             frames, meta = _currents.to_speed_frames(shading)
             for fr in frames:
                 _data.atomic_write_bytes(map_dir / fr["file"], fr["image"])
+            flow_frames, flow_manifest = _currents.to_velocity_frames(shading)
+            for fr in flow_frames:
+                _write_json(map_dir / fr["file"], fr["data"])
+            meta["flow_frames"] = flow_manifest
             _write_json(map_dir / "currents_meta.json", meta)
             print(
-                f"wrote currents.json + {len(frames)} speed frames "
+                f"wrote {len(frames)} speed + {len(flow_frames)} flow frames "
                 f"(now {meta['valid_time']}, vmax {meta['vmax']:.2f} {meta['units']})"
             )
         except Exception as exc:

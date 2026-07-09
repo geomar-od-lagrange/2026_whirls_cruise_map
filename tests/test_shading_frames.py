@@ -1,8 +1,11 @@
-"""Time-slider speed frames (_currents.to_speed_frames).
+"""Time-slider speed and flow frames (_currents.to_speed_frames /
+to_velocity_frames).
 
 The slider ships one lossless WebP per 12 h offset (-12 … +72 h), all sharing one
-colour scale so a colour means the same speed at every time. These pin the frame
-set, the shared vmax, the compact WebP encoding, and the land mask.
+colour scale so a colour means the same speed at every time, plus one
+leaflet-velocity flow grid per offset so the trails scrub in lockstep. These pin the
+frame set, the shared vmax, the compact WebP encoding, the land mask, and the flow
+frame manifest.
 """
 from __future__ import annotations
 
@@ -14,7 +17,11 @@ import xarray as xr
 from PIL import Image
 
 from whirls_cruise_map import _currents
-from whirls_cruise_map._currents import SHADING_OFFSETS_H, to_speed_frames
+from whirls_cruise_map._currents import (
+    SHADING_OFFSETS_H,
+    to_speed_frames,
+    to_velocity_frames,
+)
 
 
 def _window(with_land: bool = False):
@@ -75,3 +82,31 @@ def test_frames_are_webp_and_masked():
     assert im.format == "WEBP"  # the compact encoding
     alpha = np.array(im.convert("RGBA"))[..., 3]
     assert (alpha == 0).any() and (alpha == 255).any()  # land masked, ocean opaque
+
+
+# --- flow frames --------------------------------------------------------------
+
+def test_flow_frame_set_and_manifest():
+    """One flow grid per slider offset, JSON-named, valid-times matching the speed
+    frames so the two scrub in lockstep. The manifest carries no bulky `data`."""
+    frames, manifest = to_velocity_frames(_window())
+    assert [f["offset_h"] for f in frames] == SHADING_OFFSETS_H
+    assert [f["file"] for f in manifest][:3] == [
+        "currents_-12h.json", "currents_+00h.json", "currents_+12h.json",
+    ]
+    speed_frames, _ = to_speed_frames(_window())
+    assert [f["valid_time"] for f in frames] == [f["valid_time"] for f in speed_frames]
+    # Manifest is the compact client seam: offsets/times/files only, no velocity data.
+    assert all(set(m) == {"offset_h", "valid_time", "file"} for m in manifest)
+
+
+def test_flow_frame_data_is_leaflet_velocity_and_rounded():
+    """Each frame's `data` is the two-component leaflet-velocity list, with values
+    rounded to 4 dp to keep the 8-frame slider affordable on the VSAT link."""
+    frames, _ = to_velocity_frames(_window())
+    data = frames[0]["data"]
+    assert [c["header"]["parameterNumberName"] for c in data] == [
+        "Eastward current", "Northward current",
+    ]
+    for c in data:
+        assert all(v == round(v, 4) for v in c["data"])

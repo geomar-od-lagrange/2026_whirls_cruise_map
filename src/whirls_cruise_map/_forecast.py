@@ -28,7 +28,7 @@ It is **not** a calibrated drifter prediction:
   energy (see ``plans/012-near-inertial-forecast.md``, Phase 0).
 
 We integrate over the raw field — land kept as ``NaN``, not the trails' land-filled,
-magnitude-compressed ``currents.json`` — so the line carries correct speeds and the
+magnitude-compressed ``currents_+NNh.json`` frames — so the line carries correct speeds and the
 integrator *stops* at the coast (or the window edge) instead of being dragged
 across it. See ``docs/forecast.md``.
 """

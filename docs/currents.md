@@ -5,20 +5,20 @@ cmocean `speed`) and **relative vorticity ζ/f** (see [vorticity.md](vorticity.m
 — as mutually-exclusive base rasters in the **Currents** control. Both are
 **time-sliced**: a bottom-centre **time slider** scrubs the shading through the
 CMEMS forecast at **12 h steps, −12 h … now … +72 h** (8 frames). The animated
-flow trails and the near-inertial animation are *not* scrubbed — they are textures
-of one instant (see [forecast.md](forecast.md)); only the two scalar rasters gain
-frames.
+**flow trails** ship the same 8 frames and scrub in lockstep; the **near-inertial
+animation** follows too, anchoring its analytic phase to the displayed field time
+(see [forecast.md](forecast.md)). So every time-dependent layer shares one clock —
+scrub to +48 h and the whole map shows +48 h.
 
 ## One window, one clock
 
-All eight frames — and the flow-trail grid — come from a **single** CMEMS fetch:
-the 6-hourly `PT6H-i` product over `[now−12 h, now+72 h]`
+All eight frames — speed, ζ/f **and** the flow-trail grids — come from a **single**
+CMEMS fetch: the 6-hourly `PT6H-i` product over `[now−12 h, now+72 h]`
 (`_currents.fetch_shading_window`). 12 h is a multiple of the 6 h grid, so every
 slider target lands on a real step; the **now** frame (offset 0) is identical to
-the single-time speed raster the map shipped before. The flow trails are the
-window's **now** slice. This replaces the previous per-overlay single-time fetch,
-so the whole overlay set shares one clock and there is no second download for the
-slider.
+the single-time speed raster the map shipped before. The flow trails slice the same
+window per frame (`to_velocity_frames`), so they share the shadings' clock without a
+second download.
 
 The near-inertial *advection* field is a **separate** finer hourly window
 (`fetch_field_window`, `PT1H-m`, ±12 h) that feeds forecast/hindcast and the
@@ -62,13 +62,24 @@ cruise's at-sea VSAT link ([data.md](data.md)):
    untouched layer costs zero bytes. Sliding to an un-prefetched frame just fetches
    it on demand.
 
-Net: the naïve 8× (~6 MB for both fields) becomes ~0.7 MB of speed frames + ~0.9 MB
-of ζ/f frames, and only ~85 kB on the initial load.
+Net: the naïve 8× (~6 MB for both raster fields) becomes ~0.7 MB of speed frames +
+~0.9 MB of ζ/f frames, and only ~85 kB on the initial load.
+
+The **flow-trail** grids are JSON, not rasters, so the same lazy-transfer discipline
+applies with a different codec: values round to **4 dp** (the raw solve emits
+17-significant-digit floats — ~3× the bytes for sub-mm/s precision the decorative,
+gamma-scaled trails never resolve), which roughly halves each frame to ~0.45 MB. The
+now frame loads first (actually *lighter* than the single ~1 MB grid the map shipped
+before), the other seven prefetch once the map is idle, and scrubbing to an
+un-prefetched frame fetches it on demand — so the 8-frame flow set is ~3.6 MB total
+(~0.94 MB gzipped, comparable to one shading field) but only ~0.45 MB on load.
 
 ## Artifacts
 
 - `speed_-12h.webp … speed_+72h.webp` and `vorticity_-12h.webp …` — 8 lossless
   WebP frames each (filename label `f"{offset:+03d}h"`).
+- `currents_-12h.json … currents_+72h.json` — 8 flow-trail leaflet-velocity grids,
+  one per slider offset (`to_velocity_frames`), values rounded to 4 dp.
 - `currents_meta.json` / `vorticity_meta.json` — shared `bounds`, `vmax`
   (+ `vmin` for ζ/f), `units`, `colorbar`, plus:
   - `frames`: `[{offset_h, valid_time, file}]` — the slider manifest, one entry per
@@ -76,8 +87,8 @@ of ζ/f frames, and only ~85 kB on the initial load.
   - `now_offset_h`: `0` — which frame the slider opens on;
   - top-level `valid_time`: the now frame's time, kept for now-only readers (the
     deploy tool seeds its run start from it — see [interactive_forecast.md](interactive_forecast.md)).
-- `currents.json` — the flow-trail leaflet-velocity grid, from the now slice
-  (unchanged shape).
+  - `currents_meta.json` additionally carries `flow_frames`: the flow trails' own
+    `[{offset_h, valid_time, file}]` manifest (same offsets/times as `frames`).
 
 ## Client
 
@@ -86,7 +97,12 @@ of ζ/f frames, and only ~85 kB on the initial load.
 centre and span the map width; Leaflet mouse propagation disabled so dragging the
 handle never pans the map). Moving the slider `setUrl`s **every** registered
 shading overlay to that offset's frame (so speed and ζ/f stay in lockstep even
-while one is hidden), updates the sidebar displayed-time line
+while one is hidden), swaps the flow trails to that frame's grid
+(`flowLayer.setData`, loaded lazily and cached; a request token drops a stale
+late-arriving fetch), updates the sidebar displayed-time line
 (`renderCurrentsInfo(meta, frame)`), and re-locks the deploy tool's start to the
-displayed field. The slider is built only when the meta carries more than one
-frame; with CMEMS down (no meta) there is no slider and no shading, as before.
+displayed field. It also mutates `displayedFieldTime`, which the near-inertial
+animation reads live to anchor its phase (see [forecast.md](forecast.md)), so that
+overlay follows without any per-frame data. The slider is built only when the meta
+carries more than one frame; with CMEMS down (no meta) there is no slider and no
+shading, as before.

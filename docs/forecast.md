@@ -55,9 +55,9 @@ hourly current window (`_currents.fetch_field_window()`) for the advection, so
 This:
 
 - uses the **true** `uo`/`vo` (m/s, native grid), not the animation's
-  magnitude-compressed, coarsened `currents.json` — correct distances, while
-  direction still matches the visible trails;
-- avoids the coastal **bleed**: `currents.json` fills land with zero velocity so
+  magnitude-compressed, coarsened flow grids (`currents_±NNh.json`) — correct
+  distances, while direction still matches the visible trails;
+- avoids the coastal **bleed**: those flow grids fill land with zero velocity so
   the trails smear ashore (a known flow-trail limitation; see `plans/BACKLOG.md`),
   but the raw field keeps land as `NaN`, so the integrator can *stop* at the coast
   instead of being dragged across it;
@@ -90,8 +90,8 @@ markers use, all refreshed together each run.
   validated amplitude gain or a compressed advection artifact would plug into
   (`plans/012-near-inertial-forecast.md`, Phase 3). The advection reads the
   raw hourly window.
-- **Client-side integration over `currents.json`.** Rejected: that grid is
-  magnitude-compressed (wrong speeds), coarsened, and land-bled.
+- **Client-side integration over the flow grids (`currents_±NNh.json`).** Rejected:
+  those grids are magnitude-compressed (wrong speeds), coarsened, and land-bled.
 
 ## The integration
 
