@@ -296,6 +296,31 @@ body {
   }
 }
 
+/* Cursor coordinate readout (lower-left): plain text on a translucent white
+   chip showing the pointer's lon/lat in decimal degrees. A positioned element
+   inside the map container (like the time slider), not an L.control, so it hugs
+   the corner without joining the attribution flow. Sits low in the z-stack
+   (above panes, below the control dock/slider) and ignores pointer events so it
+   never blocks a click or hover on the map beneath it. Hidden until the pointer
+   is over the map (toggled from JS). */
+.cursor-readout {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 700;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ink);
+  border-radius: 3px;
+  padding: 2px 7px;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.cursor-readout.hidden {
+  display: none;
+}
+
 /* Shared box style for the top-right chrome — the control dock and the time
    slider — so they read as one set: white card, soft shadow, small type. */
 .map-control {
