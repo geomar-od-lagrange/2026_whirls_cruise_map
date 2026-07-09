@@ -168,13 +168,45 @@ field doesn't cover its full duration.
 The request is bounded so one unauthenticated call can't exhaust the pod: at most
 **2000 seeds** per POST (the RK4 advection is GIL-bound and serialises on the single
 sync worker), plus `horizon_h`/`mark_step_h` ranges that cap the per-seed dot
-schedule. The seed cap has a **single source of truth** in the API and is advertised
+schedule. The cap bounds that worst case only — it is *not* sized down to what fits in
+the 60 s gateway timeout (~1000 drops), because a larger placement that advects longer
+is recovered by the retry/cache described below, not forbidden. The seed cap has a **single source of truth** in the API and is advertised
 by `GET /api/forecast/limits` (`{"max_seeds": …}`); the deploy-tool client fetches it
 and rejects an over-cap deployment up front — "too many drops … increase spacing or
 shorten the path" — rather than firing a doomed POST or hardcoding its own copy of the
 number. A request that slips past that check (limits probe unavailable) is still
 rejected server-side with a `422`, whose validation message the client renders
 verbatim instead of a bare error.
+
+## Surviving the 60 s gateway timeout: result cache + client retry
+
+The deployment gateway (plan 017) fronts the API behind an OpenShift Route with a
+**60 s** network timeout, but a large placement (up to the seed cap) can advect longer
+than that on the single sync worker. When the router cuts the connection the browser's
+`fetch` fails — yet a FastAPI *sync* endpoint runs in the threadpool, and a sync task
+**keeps running to completion after the client disconnects** (sync work is not
+cancellable). The API turns that into a recoverable timeout instead of a lost forecast:
+
+- **Result cache.** Each completed `FeatureCollection` is cached keyed by
+  `(seeds, horizon_h, mark_step_h, field version)`, where the field version is the
+  window file's mtime — so a fresh cron write rotates keys and a new field never serves
+  a stale forecast. The cache is process-local (one pod, one worker, so a client's
+  retries hit the same warm pod) and bounded to a handful of recent results.
+- **Single-flight.** The first request for a key computes (the *leader*); a concurrent
+  identical request — a retry that arrives while the first is still advecting — waits on
+  the leader (a *follower*) and returns the same result. So the GIL-bound advection runs
+  **once** even under retry, never stacking a second contending compute on the worker.
+  Failures aren't cached: a retry recomputes rather than replaying a transient error.
+- **Client retry.** The deploy-tool re-POSTs the **identical** body on a timeout signal
+  — a `502`/`504` gateway status, or an aborted/dropped connection — up to a few times,
+  each attempt bounded a touch under the router's 60 s by an `AbortController`. The retry
+  hits the cache (a fast answer) or coalesces onto the still-running compute. The status
+  line reports it ("still forecasting… (retry k/n)"). A real `4xx`/`5xx` from the app
+  (e.g. the `503` field-unavailable) is *not* retried — it surfaces at once.
+
+So the whole protocol is just **the same POST, retried** — no job IDs, no polling, no
+`202`/`Location` handshake. A placement that can't finish in one 60 s window finishes in
+a later one, and the retry that spans that window collects the cached answer.
 
 ## Synced-t0 dots: the whole array at one instant
 

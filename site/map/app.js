@@ -687,6 +687,55 @@ function apiErrorText(data, status) {
   return d || data.error || `error ${status}`;
 }
 
+// The deployment gateway fronts the API behind an OpenShift Route with a ~60 s network
+// timeout, but a large placement (up to the seed cap) can advect longer on the single
+// sync worker. The server keeps computing past the timeout and caches the result keyed
+// by the request body (see `_cached_forecast` in `_api.py`), so we just re-POST the
+// *identical* body: the retry hits the warm cache, or coalesces onto the still-running
+// compute. The primary retry trigger is the router's own timeout — a 502/504 status or
+// a dropped connection — so a compute finishing just under 60 s still returns on the
+// first attempt rather than being preempted; the AbortController is a backstop set a
+// little ABOVE the router's 60 s, only for a silent hang where the router never answers.
+// A real 4xx/5xx from our own app (e.g. a 503 "field unavailable", a 422) returns at once.
+const FORECAST_ATTEMPT_MS = 65_000; // > the router's ~60 s, so the router cuts first
+const FORECAST_MAX_ATTEMPTS = 4; // 1 initial + 3 retries ≈ up to ~4 min of compute
+const FORECAST_RETRY_STATUS = new Set([502, 504]);
+// Backoff before a retry. A *timeout* retry is already ~60 s apart (the router holds the
+// connection open until it cuts it), so this only bites when a failure returns instantly
+// — a crash-looping pod flooding 502s — where it spaces the burst and gives a transient
+// blip a moment to recover, instead of firing all attempts in milliseconds.
+const FORECAST_BACKOFF_MS = [1000, 2000, 4000];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function postForecastRetrying(body, onRetry) {
+  for (let attempt = 1; ; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FORECAST_ATTEMPT_MS);
+    try {
+      const resp = await fetch(FORECAST_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        signal: controller.signal,
+      });
+      if (!FORECAST_RETRY_STATUS.has(resp.status) || attempt >= FORECAST_MAX_ATTEMPTS) {
+        return resp; // ok, a non-retryable status, or the last attempt
+      }
+    } catch (err) {
+      // AbortError (our per-attempt timeout) or a network drop (the router closing the
+      // long connection) — no answer yet. Retry the identical body so the cache can catch
+      // up; out of attempts, rethrow to the caller's catch (the "request failed" path).
+      if (attempt >= FORECAST_MAX_ATTEMPTS) throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+    // Retry the identical body. Back off first — negligible against a ~60 s timeout
+    // attempt, but it spaces an instant-502 flood and lets a transient blip recover.
+    onRetry(attempt);
+    await sleep(FORECAST_BACKOFF_MS[attempt - 1] ?? 0);
+  }
+}
+
 // Green — distinct from the orange track, violet forecast, magenta hindcast, and
 // cyan inertial — because these lines are ad-hoc, user-placed, and never persisted.
 const DEPLOY_COLOR = "#16a34a";
@@ -1124,12 +1173,15 @@ async function placeDeployment(vertices, deployLayer, setStatus, startTime, opts
   }
 
   setStatus(`${geom} · forecasting…`);
+  // One body string, reused across retries so the server's cache key stays identical
+  // (see postForecastRetrying): a retry after a gateway timeout hits the cached result.
+  const body = JSON.stringify({ seeds, horizon_h: opts.horizonH });
   try {
-    const resp = await fetch(FORECAST_API, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ seeds, horizon_h: opts.horizonH }),
-    });
+    const resp = await postForecastRetrying(body, (attempt) =>
+      setStatus(
+        `${geom} · still forecasting… (retry ${attempt}/${FORECAST_MAX_ATTEMPTS - 1})`,
+      ),
+    );
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
       drawDrops(dropRecords, deployLayer, deploymentId);
