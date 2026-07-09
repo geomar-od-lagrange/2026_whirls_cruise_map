@@ -1618,9 +1618,12 @@ function startInertialClock(map, grid, layer, displayedFieldTime) {
   // free-running from now. The field at absolute time T is amp·exp(i(phase − f·(T −
   // t_ref))); the loop below sweeps its own dt on top for visual life, so the total
   // phase argument uses dt = (displayed − t_ref) + loop. `displayedFieldTime` is a
-  // getter read every frame (the slider mutates it); at the now frame the offset is
-  // ~0 (unchanged look), and a +NNh slider step rotates every arrow by f·NNh to that
-  // instant. With no field time (no slider/meta) the offset is 0.
+  // getter read every frame (the slider mutates it), and a +NNh slider step rotates
+  // every arrow by f·NNh to that instant. At the now frame the offset is small but
+  // not exactly 0: `t_ref` is the hourly (PT1H-m) nearest-now while the displayed
+  // now instant is the 6-hourly (PT6H-i) nearest-now, so they can differ by up to
+  // ~3 h — a fixed f·Δ rotation vs the old free-run-from-t_ref, not a moving look.
+  // With no field time (no slider/meta) the offset is 0.
   const tRefMs = Date.parse(grid.header.t_ref);
   const refOffsetS = () => {
     const displayed = displayedFieldTime?.();
@@ -2393,6 +2396,10 @@ async function main() {
   // below (null until then, and if there is no flow data). Declared here so the
   // slider's onChange can call it even though the flow layer is built further down.
   let scrubFlow = null;
+  // The slider's current frame index, tracked live so the flow block can re-sync to
+  // it once `scrubFlow` is assigned — the initial now-frame fetch is awaited, and a
+  // scrub during that window would otherwise leave the flow pinned to now.
+  let displayedFrameIndex = nowIndex(meta);
 
   // Time slider: scrub the shadings *and* the flow trails through the forecast
   // together. It drives the speed frames' offsets/times (vorticity and flow share
@@ -2410,6 +2417,7 @@ async function main() {
       }
       const f = frames[i];
       displayedFieldTime = f.valid_time;
+      displayedFrameIndex = i;
       renderCurrentsInfo(meta, f);
       scrubFlow?.(i);
     });
@@ -2437,7 +2445,8 @@ async function main() {
         return d;
       });
     };
-    const nowData = await loadFlow(flowFrames[nowIndex(meta)]);
+    const nowFrame = flowFrames[nowIndex(meta)];
+    const nowData = nowFrame && (await loadFlow(nowFrame));
     if (nowData) {
       // The frame currently on the layer — read back by the pan/zoom re-seed so it
       // redraws the *displayed* frame, not always the now slice.
@@ -2478,6 +2487,11 @@ async function main() {
           }
         });
       };
+
+      // Re-sync to the slider in case the user scrubbed while the now frame was still
+      // fetching (interactive since the slider block above; `scrubFlow` only exists
+      // now). A no-op when untouched — `displayedFrameIndex` is still the now index.
+      if (displayedFrameIndex !== nowIndex(meta)) scrubFlow(displayedFrameIndex);
 
       // Prefetch the remaining frames once the map is idle (the now frame is loaded),
       // so scrubbing is smooth without inflating the critical-path load.
