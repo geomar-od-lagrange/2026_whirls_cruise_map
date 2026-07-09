@@ -59,6 +59,23 @@ body {
   cursor: default;
 }
 
+/* Imprint link, right-aligned in the title bar. Same size as the caution tag
+   but plain white-on-black — no pill, no highlight (margin-left:auto pushes it
+   to the far right of the flex header). */
+.imprint-link {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  color: #fff;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.imprint-link:hover,
+.imprint-link:focus {
+  text-decoration: underline;
+}
+
 #layout {
   display: flex;
   flex: 1 1 auto;
@@ -280,6 +297,31 @@ body {
   .time-slider-control .ts-ticks {
     font-size: 0.6rem;
   }
+}
+
+/* Cursor coordinate readout (lower-left): plain text on a translucent white
+   chip showing the pointer's lon/lat in decimal degrees. A positioned element
+   inside the map container (like the time slider), not an L.control, so it hugs
+   the corner without joining the attribution flow. Sits low in the z-stack
+   (above panes, below the control dock/slider) and ignores pointer events so it
+   never blocks a click or hover on the map beneath it. Hidden until the pointer
+   is over the map (toggled from JS). */
+.cursor-readout {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 700;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ink);
+  border-radius: 3px;
+  padding: 2px 7px;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.cursor-readout.hidden {
+  display: none;
 }
 
 /* Shared box style for the top-right chrome — the control dock and the time

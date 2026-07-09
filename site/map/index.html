@@ -5,12 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>2026 Whirls Cruise — drifter map</title>
 
-  <!-- Leaflet 1.9.4 -->
-  <link
-    rel="stylesheet"
-    href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
-    crossorigin="anonymous"
-  />
+  <!-- Leaflet 1.9.4 (vendored — served same-origin for offline / flaky ship internet) -->
+  <link rel="stylesheet" href="./vendor/leaflet-1.9.4/leaflet.css" />
 
   <link rel="stylesheet" href="./style.css" />
 </head>
@@ -18,6 +14,7 @@
   <header id="app-header">
     <h1>2026 Whirls Cruise — drifter map</h1>
     <span class="wip-tag" role="note" title="Unofficial, work in progress — not an official cruise product. Do not use for navigation or operational decisions.">⚠ Unofficial</span>
+    <a class="imprint-link" href="https://www.geomar.de/en/impressum" target="_blank" rel="noopener noreferrer">imprint</a>
   </header>
 
   <div id="layout">
@@ -80,21 +77,31 @@
         <p class="hint">Drifters staged but not yet transmitting a position.</p>
         <ul id="awaiting-list"></ul>
       </details>
+
+      <details class="panel" id="credits-panel">
+        <summary>Credits &amp; licences</summary>
+        <p class="hint">Map rendering by
+          <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a>
+          1.9.4 (<a href="./vendor/leaflet-1.9.4/LICENSE" target="_blank" rel="noopener noreferrer">BSD&#8209;2&#8209;Clause</a>);
+          animated surface&#8209;current overlay by
+          <a href="https://github.com/onaci/leaflet-velocity" target="_blank" rel="noopener noreferrer">leaflet&#8209;velocity</a>
+          1.7.0 (<a href="./vendor/leaflet-velocity-1.7.0/LICENSE" target="_blank" rel="noopener noreferrer">MIT</a>).
+          Both are vendored and served same&#8209;origin.</p>
+        <p class="hint">Currents &amp; vorticity from the
+          <a href="https://data.marine.copernicus.eu/" target="_blank" rel="noopener noreferrer">Copernicus Marine Service</a>
+          (CMEMS). Basemap tiles &copy;
+          <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>
+          contributors.</p>
+      </details>
     </aside>
   </div>
 
-  <!-- Leaflet 1.9.4 -->
-  <script
-    src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
-    crossorigin="anonymous"
-  ></script>
+  <!-- Leaflet 1.9.4 (vendored) -->
+  <script src="./vendor/leaflet-1.9.4/leaflet.js"></script>
 
-  <!-- leaflet-velocity 1.7.0 (animated current overlay) -->
-  <link
-    rel="stylesheet"
-    href="https://cdn.jsdelivr.net/npm/leaflet-velocity@1.7.0/dist/leaflet-velocity.min.css"
-  />
-  <script src="https://cdn.jsdelivr.net/npm/leaflet-velocity@1.7.0/dist/leaflet-velocity.min.js"></script>
+  <!-- leaflet-velocity 1.7.0 — animated current overlay (vendored) -->
+  <link rel="stylesheet" href="./vendor/leaflet-velocity-1.7.0/leaflet-velocity.min.css" />
+  <script src="./vendor/leaflet-velocity-1.7.0/leaflet-velocity.min.js"></script>
 
   <script src="./app.js"></script>
 </body>
