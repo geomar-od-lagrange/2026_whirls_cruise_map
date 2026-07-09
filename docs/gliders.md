@@ -42,30 +42,42 @@ header (`403`), which `urllib` omits by default, so the fetcher sends
 `Accept: */*`. A sibling `WAVEGLIDERS/` folder exists but is empty and would need
 a client marker type, so it is not wired in yet.
 
-### Floats: per-institution files, and identity in a column
+### Floats: per-float files, two schemas, identity off the column or the name
 
-The floats sit under the same tree (`…/GLIDERS/FLOATS/`), whose folder holds two
-kinds of CSV: one **`mr_float_<institution>_positions.csv` per float**, and a
-single **aggregate `floats_track.csv`** that interleaves *every* float's fixes
-(its rows are the union of the per-institution siblings). We read the
-**per-institution files and skip the aggregate**: they carry the same fixes but
-are **fresher** — the aggregate lags them (fewer, older fixes were observed on
-it) — and skipping it avoids counting a float twice. `fetch_float_sources()`
-discovers them from the FLOATS folder listing (like the gliders) and drops
-`floats_track.csv` by name, so a new institution's float file appears with **no
-code change**.
+The floats sit under the same tree (`…/GLIDERS/FLOATS/`), whose folder holds a
+**per-float position file** for each float *beside* a single **aggregate
+`floats_track.csv`** that interleaves *every* float's fixes (its rows are the
+union of the per-float siblings). We read the **per-float files and skip the
+aggregate**: they carry the same fixes but are **fresher** — the aggregate lags
+them (fewer, older fixes were observed on it) — and skipping it avoids counting a
+float twice. `fetch_float_sources()` discovers them from the FLOATS folder
+listing (like the gliders) and drops `floats_track.csv` by name, so a new float
+file appears with **no code change**.
 
-Floats still **break the one-CSV-per-platform identity** the glider parser
-assumes: the platform is not the file name but the **`filename` column**
-(`65a0_015_01_technical.txt`), so `parse_float_source` groups each file's rows by
-that column's leading `_`-token (`65a0`, `6594`) — mirroring the WHIRLS
-operational map's own rule — and maps that id to a label: `65a0 → UGOT`
-(U. Gothenburg), `6594 → SOTON` (Southampton). An **unmapped id falls back to
-itself**, so a third float appears labelled by its raw id. Grouping by the column
-(rather than assuming one-float-per-file) also stays correct if a file ever
-carries more than one float. Each float becomes one `Platform(type="float")`, so
-from here on floats are indistinguishable from gliders to the rest of the
-pipeline.
+The per-float files come in **two CSV schemas**, and both **break the
+one-CSV-per-platform identity** the glider parser assumes — differently:
+
+| | `mr_float_*` | `uvp_float_*` |
+|---|---|---|
+| File | `mr_float_<institution>_positions.csv` | `uvp_float_<id>_locations.csv` |
+| Header | `time,latitude,longitude,filename` | `profile,utc_time,latitude,longitude` |
+| Time column | `time` | `utc_time` (offset-aware) |
+| Identity | leading `_`-token of the **`filename` column** (`65a0_015_01_technical.txt` → `65a0`) | the **`<id>` in the file name** (`uvp_float_6596_locations` → `6596`); no `filename` column |
+
+`parse_float_source` reads either. It takes the time column as `time` or its
+`utc_time` alias, and derives identity from the `filename` column when present —
+grouping each file's rows by that column's leading `_`-token, mirroring the WHIRLS
+operational map's own rule — else from a `uvp_float_<id>_locations` source name
+(one float per file). The id maps to a label: `65a0 → UGOT` (U. Gothenburg),
+`6594 → SOTON` (Southampton); an **unmapped id falls back to itself**, so the UVP
+`6596` / `6597` (whose institution isn't established from the file) appear
+labelled by their raw id, and any further float does too — with **no code
+change**. Grouping by the `filename` column (rather than assuming
+one-float-per-file) also stays correct if such a file ever carries more than one
+float. A source with **neither** a `filename` column **nor** a UVP file name —
+the aggregate `floats_track` — yields nothing: its interleaved floats can't be
+separated. Each float becomes one `Platform(type="float")`, so from here on
+floats are indistinguishable from gliders to the rest of the pipeline.
 
 ### CSV quirks — parsed by header name, sniffed delimiter, detected time format
 

@@ -139,7 +139,12 @@ move to `done/` and gain a `docs/` counterpart.
     identity isn't in the file name. Floats then ride the whole glider-group
     pipeline unchanged as `platform_type` `float` (purple **Floats** instrument
     row). **Done** ([docs/gliders.md](../docs/gliders.md),
-    [docs/data.md](../docs/data.md)).
+    [docs/data.md](../docs/data.md)). The portal later added two **UVP floats**
+    (`6596`, `6597`) in a **second CSV schema**
+    (`uvp_float_<id>_locations.csv`: `utc_time` time column, no `filename` column
+    — identity in the file name), which `parse_float_source` now also reads
+    ([025](done/025-uvp-float-schema.md), same docs); unmapped, they render under
+    their raw id.
 21. [Observations-portal CSV source](done/020-observations-portal-csv-source.md)
     — moved all IPSL CSV ingest (Agulhas ship + XSPAR/seagliders/floats) off the
     heavy, intermittently failing THREDDS server onto the operational centre's

@@ -1,10 +1,13 @@
 """Parsing a WHIRLS float CSV into one Platform per float
 (_gliders.parse_float_source).
 
-The float's identity lives in the `filename` column (not the file name), so the
-parser groups by the filename's leading id, maps it to a label, and time-sorts
-each float's fixes. A per-institution file is normally one float, but grouping
-stays correct even if a file interleaves several — the property exercised here.
+The floats come in two CSV schemas. In `mr_float_*` files the identity lives in a
+`filename` column (not the file name), so the parser groups by the filename's
+leading id, maps it to a label, and time-sorts each float's fixes — a
+per-institution file is normally one float, but grouping stays correct even if a
+file interleaves several. In `uvp_float_<id>_locations` files there is no
+`filename` column and the time column is `utc_time`; identity comes from the file
+name instead. Both schemas are exercised here.
 """
 from __future__ import annotations
 
@@ -61,8 +64,9 @@ def test_unmapped_float_id_falls_back_to_itself():
     assert platform.type == "float"
 
 
-def test_missing_filename_column_yields_nothing():
-    # Without the identity column there is no way to separate floats; skip rather
+def test_aggregate_without_filename_or_uvp_name_yields_nothing():
+    # The aggregate floats_track has neither a `filename` column nor a UVP file
+    # name, so there is no way to separate its interleaved floats; skip rather
     # than emit one merged zig-zag track.
     src = Source(
         "floats_track",
@@ -70,6 +74,34 @@ def test_missing_filename_column_yields_nothing():
         "time,latitude,longitude\n2026-07-01 14:11:33,-37.43,11.62\n",
     )
     assert parse_float_source(src) == []
+
+
+# A UVP float file: no `filename` column, `utc_time` (offset-aware) time column,
+# and identity in the file name (`uvp_float_6596_locations` -> `6596`).
+UVP = Source(
+    "uvp_float_6596_locations",
+    "float",
+    "profile,utc_time,latitude,longitude\n"
+    "1,2026-07-02 08:15:00+00:00,-37.10,11.80\n"
+    "3,2026-07-01 08:15:00+00:00,-37.20,11.75\n"
+    "2,2026-07-03 08:15:00+00:00,-37.05,11.83\n",
+)
+
+
+def test_uvp_float_identity_from_file_name():
+    (platform,) = parse_float_source(UVP)
+    # No mapping for 6596, so it falls back to its raw id.
+    assert platform.id == "6596"
+    assert platform.type == "float"
+    assert len(platform.fixes) == 3
+
+
+def test_uvp_utc_time_column_parsed_and_sorted():
+    (platform,) = parse_float_source(UVP)
+    times = [t for (t, _lat, _lon) in platform.fixes]
+    assert times == sorted(times)
+    # utc_time carries an explicit +00:00 offset, normalised to tz-aware UTC.
+    assert times[0] == datetime(2026, 7, 1, 8, 15, tzinfo=timezone.utc)
 
 
 def test_empty_or_headerless_input_is_empty():
