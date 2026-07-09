@@ -75,15 +75,28 @@ off the latest fix, which is post-deployment.
 using the R/V Marion Dufresne track fetched at build time (`_ship`, the same
 source the client polls live; see [ship.md](ship.md)). For each fix it takes the
 great-circle distance to the vessel (position interpolated to the fix time) and
-places the cut **after the last fix within 1 km of the vessel** — so nothing kept
-was still alongside. The rule is deliberately conservative: the exact deployment
-instant does not matter, but not leaking a vessel-following fix into the free
-track does. A drifter still within 1 km at its latest fix has no free track yet
-(drawn as nothing); one never seen near the vessel keeps its full track; and if
-the vessel fetch fails, no track is truncated (full tracks, as before). Because
-the cut discards each track's pre-deployment predecessor, the first free fix
-derives its velocity from nothing and shows a blank derived row — correctly, as
-its real predecessor was a vessel-following fix.
+walks the fixes in time order. A fix within 1 km (`NEAR_SHIP_KM`) marks the
+drifter **attached** (on deck / alongside); the scan stops at the drifter's
+first **clear departure** — consecutive fixes beyond 5 km (`DETACHED_KM`) after
+it has been attached. Once that far out it is deployed for good and the cut is
+frozen — the ship works among its own drifters routinely (station-keeping,
+recovery, deploying the next batch nearby), and a later close pass must not
+blank an established free track. Two kinds of distance noise are inert: far
+fixes *before* the first near one (drifters sit in the staging port days before
+the vessel arrives, so a far pre-history does not mean deployed), and a lone
+far fix amid near ones (a GPS outlier must not end the attached leg early and
+leak the remaining transit into the free track — hence *consecutive*). The cut
+sits **after the last attached fix** before the departure — conservative on
+purpose: the exact deployment instant does not matter, but not leaking a
+vessel-following fix into the free track does. Everything kept up to the freeze
+is beyond 1 km of the vessel; after the freeze, fixes are kept regardless of
+distance (a later close pass is part of the free drift). A drifter that has
+never cleanly departed and is within 1 km at its latest fix has no free track
+yet (drawn as nothing); one never within 1 km keeps its full track; and if the
+vessel fetch fails, no track is truncated (full tracks). Because the cut
+discards each track's pre-deployment predecessor, the first free fix derives its
+velocity from nothing and shows a blank derived row — correctly, as its real
+predecessor was a vessel-following fix.
 
 Detection itself is purely geometric (distance to the vessel, batch-agnostic),
 but whether a drifter is *truncated* depends on its deployment batch: only

@@ -153,13 +153,19 @@ section points at the modules rather than duplicating their docstrings.
   whole app is UTC. `speed_kn` is blank (empty, not zero) when the vessel is
   reported stopped.
 - **Deployment detection** (`_deploy.py`). `deployment_starts` compares each
-  drifter's fixes against the Marion Dufresne track by distance
-  (`NEAR_SHIP_KM`, conservative: the cut sits after the *last* fix within range,
-  so nothing vessel-attached leaks into the free track) and surfaces the first
-  free-drift fix time as `deployed_at` in `platforms.csv`. A drifter never seen
-  near the vessel is left untruncated (full track, no `deployed_at`); this
-  detection runs in ingest because it needs the MD track anyway, which ingest
-  already fetches.
+  drifter's fixes against the Marion Dufresne track by distance and surfaces
+  the first free-drift fix time as `deployed_at` in `platforms.csv`. The scan
+  runs in time order and stops at the drifter's first clear departure —
+  consecutive fixes beyond `DETACHED_KM` after it has been within
+  `NEAR_SHIP_KM` — which freezes the cut: once clearly away it is deployed
+  for good, and a later close pass by the vessel cannot re-truncate the
+  track. Far fixes before the first near one (port staging before the vessel
+  arrives) and lone far outliers amid near fixes are inert. The cut sits
+  after the *last* near fix before the departure (conservative: nothing
+  vessel-attached leaks into the free track). A drifter never seen near the
+  vessel is left untruncated (full track, no `deployed_at`); this detection
+  runs in ingest because it needs the MD track anyway, which ingest already
+  fetches.
 
 ## The boundary: what's in `/data`, what's map-only
 
