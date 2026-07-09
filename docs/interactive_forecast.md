@@ -271,6 +271,12 @@ cursor). While armed:
 
 Knobs: **Drop spacing (km)**, **Ship speed (kn)**, **Forecast (h)** (default 48), and
 a **Forecast drift** checkbox (draw the drops + ship track only, no fetch, when off).
+The three numeric knobs are plain text inputs guarded to admit only digits and a
+single dot — the decimal separator is a dot regardless of the browser's locale. This
+avoids the `type=number` trap where a de-locale browser blanks a comma-typed value and
+silently drops the edit; here a comma (or a pasted `0,5`) is simply refused as an
+invalid keystroke rather than being blanked or mangled into a wrong number. The trade
+is the loss of the native spinner arrows, which the knobs don't need.
 The status line reports the geometry (`N drops · X km · ~Y h transit`) and then the
 result (`forecasts/n_seeds drift`, an over-cap notice when a placement exceeds the
 seed cap, or the API's message on an error / no field). The

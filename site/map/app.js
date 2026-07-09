@@ -1016,24 +1016,37 @@ function buildDeployTool(deployLayer) {
     });
     paint();
 
-    // Compact number rows binding onto state: one labelled <input type=number> per
-    // knob; a change writes the parsed value straight back.
-    const numRow = (label, key, step) => {
+    // Compact number rows binding onto state: one labelled decimal <input> per knob;
+    // a change writes the parsed value straight back. Plain type=text (not
+    // type=number) with a beforeinput guard admitting only digits and a single dot,
+    // so the decimal separator is a dot regardless of the browser's locale — a comma
+    // (or a pasted "0,5") is refused whole rather than silently blanked by a
+    // de-locale type=number field or mangled into a wrong value. The change handler
+    // still rejects zero/negatives (spacing 0 would hang the resample).
+    const numRow = (label, key) => {
       const row = L.DomUtil.create("label", "pt-row", div);
       L.DomUtil.create("span", "pt-label", row).textContent = label;
       const input = L.DomUtil.create("input", "pt-num", row);
-      input.type = "number";
-      input.step = step;
-      input.min = step; // all three knobs must be positive (spacing 0 would hang)
+      input.type = "text";
+      input.inputMode = "decimal"; // mobile keypad; the guard is what enforces dot-only
+      input.autocomplete = "off";
       input.value = state[key];
+      input.addEventListener("beforeinput", (e) => {
+        if (e.data == null) return; // deletions, cut, and the like always pass
+        const next =
+          input.value.slice(0, input.selectionStart) +
+          e.data +
+          input.value.slice(input.selectionEnd);
+        if (!/^\d*\.?\d*$/.test(next)) e.preventDefault();
+      });
       input.addEventListener("change", () => {
         const val = parseFloat(input.value);
         if (!Number.isNaN(val) && val > 0) state[key] = val;
       });
     };
-    numRow("Drop spacing (km)", "spacing", "0.5");
-    numRow("Ship speed (kn)", "shipKn", "0.5");
-    numRow("Forecast (h)", "horizonH", "6");
+    numRow("Drop spacing (km)", "spacing");
+    numRow("Ship speed (kn)", "shipKn");
+    numRow("Forecast (h)", "horizonH");
 
     const checkRow = L.DomUtil.create("label", "pt-row", div);
     const check = L.DomUtil.create("input", "pt-check", checkRow);
