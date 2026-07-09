@@ -244,4 +244,21 @@ move to `done/` and gain a `docs/` counterpart.
     polling. The seed cap stays at **2000**: the retry/cache — not a lower cap — is
     what makes an over-timeout placement safe. **Done**
     ([docs/interactive_forecast.md](../docs/interactive_forecast.md)); dev PoC, like
+    the rest of the Deploy tool. **Superseded by 29:** vectorizing the advection
+    removed the 60 s timeout this worked around, so the cache + single-flight +
+    client retry were **removed**.
+29. [Vectorize the batch forecast](done/029-forecast-vectorize.md) — the batch
+    endpoint advected each seed with a pure-Python **scalar** RK4 loop
+    (~23 ms/seed, linear → ~46 s at the 2000-seed cap, against the gateway's 60 s
+    timeout). Replaced with a **vectorized numpy** RK4 that advances all seeds in
+    step-index lockstep (`_forecast._batch_advect`): **bit-identical** to the scalar
+    path (same arithmetic order, same land-`NaN`/window truncation, pinned by a
+    test) but **~40× faster** — 2000 drops in ~1.2 s. Chosen over numba (87× but a
+    new dep + cold-compile on a fresh pod + per-arch JIT), scipy RGI (slower than
+    plain numpy + an edge bug), and multiprocessing (core-gated, fork-from-threaded
+    hazard) — pure numpy needs no new dependency and is trivial for one sync worker.
+    With the timeout gone by a >40× margin, the 60 s-survival machinery from 28 (the
+    server result-cache + single-flight and the client retry) was **removed**; the
+    scalar integrator stays for the build's per-instrument forecast/hindcast. **Done**
+    ([docs/interactive_forecast.md](../docs/interactive_forecast.md)); dev PoC, like
     the rest of the Deploy tool.

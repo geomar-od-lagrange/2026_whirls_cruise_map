@@ -48,11 +48,8 @@ still serves.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import threading
-from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -84,11 +81,11 @@ _DEFAULT_HORIZON_H = float(_currents.FORECAST_HORIZON_H)
 _DEFAULT_MARK_STEP_H = 3.0
 
 # Per-request seed cap: how many drops the batch endpoint advects in one POST. The
-# advection is GIL-bound and serialises on the single sync worker, so an unbounded
-# list lets one request pin the pod (see :class:`ForecastRequest`). The cap only bounds
-# that worst case — it is deliberately *not* sized down to what fits in the gateway's
-# 60 s network timeout (~1000 drops), because a placement that advects longer is
-# **recovered** by the result cache + client retry below, not forbidden. This constant
+# vectorized advection runs the whole cap in ~1–2 s, so this is *not* a latency bound
+# (the full cap is far inside the gateway's 60 s timeout) — it caps the unauthenticated
+# worst case: the CPU of one big POST and the transient trajectory array the batch
+# materialises (~18 MB at 2000 seeds × 48 h, ~92 MB at the 240 h horizon cap; it scales
+# with cap × horizon). This constant
 # is the **single source of truth** for the cap: the request model enforces it and the
 # ``GET /api/forecast/limits`` endpoint advertises it, so the deploy-tool client fetches
 # the number to pre-validate against rather than hardcoding its own copy.
@@ -183,10 +180,10 @@ class ForecastRequest(BaseModel):
     single ~100-byte request from exhausting the pod. ``horizon_h``/``mark_step_h``
     cap the per-seed dot schedule ``_seed_marks`` eagerly materialises (``horizon_h //
     mark_step_h`` <= ~960 marks; unbounded, a large ``horizon_h`` + tiny ``mark_step_h``
-    allocates a multi-GB tuple → OOM). ``seeds`` caps the RK4 advection work, which is
-    GIL-bound and serialises on the single sync worker. ``allow_inf_nan`` rejects
-    ``inf``/``nan``, and ``extra="forbid"`` rejects unknown fields (422, not silently
-    ignored)."""
+    allocates a multi-GB tuple → OOM). ``seeds`` caps the vectorized RK4 advection —
+    its CPU and the transient trajectory array it materialises (~cap × horizon).
+    ``allow_inf_nan`` rejects ``inf``/``nan``, and ``extra="forbid"`` rejects unknown
+    fields (422, not silently ignored)."""
 
     model_config = {"extra": "forbid"}
     seeds: list[Seed] = Field(max_length=_MAX_SEEDS)
@@ -207,48 +204,81 @@ def _batch_forecast(seeds: list[Seed], horizon_h: float, mark_step_h: float) -> 
     colour is the whole array at one t0 (see the module docstring). A seed whose
     ``start`` is out of the field window, or at/after the common end (no track left),
     is skipped and counted — the plan still stands even when the field doesn't cover
-    it. Raises :class:`ValueError` (→ 422) on no seeds or an unparseable ``start``."""
+    it. Raises :class:`ValueError` (→ 422) on no seeds or an unparseable ``start``.
+
+    The whole batch advects at once through :func:`_forecast._batch_advect` (vectorized
+    RK4 over all seeds in lockstep) — bit-identical to advecting each seed with the
+    scalar integrator, but ~40× faster at the seed cap. This function then reads the
+    coords and synced-t0 marks off the returned trajectory array."""
     if not seeds:
         raise ValueError("no seeds")
     sampler = _get_sampler()
     lo, hi = float(sampler.times[0]), float(sampler.times[-1])
-    starts = [_parse_start(s.start) for s in seeds]  # ValueError -> 422 in the endpoint
-    run_start = min(starts)
+    starts = np.array(
+        [_parse_start(s.start) for s in seeds], dtype=np.float64  # ValueError -> 422
+    )
+    run_start = float(starts.min())
+    offset_h = (starts - run_start) / 3600.0
+    horizon_i = horizon_h - offset_h
 
+    # A seed out of the field window, or at/after the common end (no track left), is
+    # not advected (n_steps 0) and skipped in the emit loop below.
+    alive0 = (starts >= lo) & (starts <= hi) & (horizon_i > 0)
+    n_steps = np.where(
+        alive0, np.round(horizon_i * 60.0 / _forecast.STEP_MIN).astype(int), 0
+    )
+    seed_lon = np.array([s.lon for s in seeds], dtype=np.float64)
+    seed_lat = np.array([s.lat for s in seeds], dtype=np.float64)
+    positions, completed = _forecast._batch_advect(
+        sampler, seed_lon, seed_lat, starts, n_steps
+    )
+
+    vertex_every = round(_forecast.VERTEX_MIN / _forecast.STEP_MIN)
+    nd = _forecast._COORD_NDIGITS
     features: list[dict] = []
     n_forecasts = 0
     n_skipped = 0
-    for i, (seed, entry) in enumerate(zip(seeds, starts)):
-        offset_h = (entry - run_start) / 3600.0
-        horizon_i = horizon_h - offset_h
-        # Skip a seed out of the field window, or at/after the common end.
-        if not (lo <= entry <= hi) or horizon_i <= 0:
+    for i in range(len(seeds)):
+        if not alive0[i]:
             n_skipped += 1
             continue
-        rel_marks = _seed_marks(offset_h, horizon_h, mark_step_h)
-        t0, valid = _forecast._anchor_t0(sampler, entry)
-        feature = _forecast._advection_feature(
-            sampler,
-            {"role": "forecast", "index": i},
-            seed.lon,
-            seed.lat,
-            t0,
-            valid,
-            1,
-            horizon_h=horizon_i,
-            mark_hours=rel_marks,
-        )
-        if feature is None:
-            n_skipped += 1  # head on land / off the field
+        cs = int(completed[i])
+        coords = [
+            [round(float(positions[i, s, 0]), nd), round(float(positions[i, s, 1]), nd)]
+            for s in range(0, cs + 1, vertex_every)
+        ]
+        if len(coords) < 2:
+            n_skipped += 1  # head on land / off the field (truncated at step 0)
             continue
-        # The integrator tags each mark with its elapsed-from-entry hours; shift each
-        # back to its absolute run-relative hour (offset + elapsed) so every drop's dots
-        # share one wall-clock grid — the client colours each synced dot by this. By
-        # value, not position: a mark the integrator dropped (too close to entry, or past
-        # a coast/window truncation) simply leaves no dot, without shifting the rest.
-        for mark in feature["properties"]["marks"]:
-            mark["hours"] = round(mark["hours"] + offset_h, 3)
-        features.append(feature)
+        off = offset_h[i]
+        # Marks at the seed's synced-t0 schedule (elapsed-from-entry hours), each shifted
+        # back to its absolute run-relative hour (``off + elapsed``) so every drop's dots
+        # share one wall-clock grid — the client colours each synced dot by this. Relabel
+        # by *value*: a mark step past the truncation (``> cs``) or at entry (``ms 0``)
+        # simply leaves no dot, without shifting the colour/label of the rest. Key by
+        # integrator step, mirroring the scalar ``_integrate``'s ``mark_at`` dict, so two
+        # marks that round to the same step collapse to one (they don't at the request
+        # model's ``mark_step_h >= 0.25``, which is >= 3 steps apart — but this keeps the
+        # two paths identical regardless of that bound rather than silently relying on it).
+        step_to_hour = {
+            round(h * 60.0 / _forecast.STEP_MIN): h
+            for h in _seed_marks(off, horizon_h, mark_step_h)
+        }
+        marks = [
+            {
+                "hours": round(step_to_hour[ms] + off, 3),
+                "lon": round(float(positions[i, ms, 0]), nd),
+                "lat": round(float(positions[i, ms, 1]), nd),
+            }
+            for ms in sorted(step_to_hour)
+            if 1 <= ms <= cs
+        ]
+        valid = _forecast._anchor_t0(sampler, float(starts[i]))[1]
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": coords},
+            "properties": {"role": "forecast", "index": i, "valid_time": valid, "marks": marks},
+        })
         n_forecasts += 1
 
     return {
@@ -264,133 +294,6 @@ def _batch_forecast(seeds: list[Seed], horizon_h: float, mark_step_h: float) -> 
             "window": [_iso(lo), _iso(hi)],  # field span; seeds outside it skip
         },
     }
-
-
-# --- result cache + single-flight (survive the 60 s gateway timeout) ---------
-#
-# The deployment gateway (plan 017) fronts this API behind an OpenShift Route with a
-# **60 s** network timeout, but a large batch (up to :data:`_MAX_SEEDS` drops) can
-# advect longer on the single GIL-bound sync worker. When the router cuts the request,
-# the browser's ``fetch`` fails — yet a FastAPI *sync* endpoint runs in the threadpool,
-# and a sync task keeps running to completion after the client disconnects (sync work is
-# not cancellable). So we finish the advection past the cut, cache the FeatureCollection
-# keyed by ``(request, field version)``, and the client simply re-POSTs the identical
-# body: the retry finds the result already computed (a fast hit) or, if the first compute
-# is still running, coalesces onto it (single-flight) rather than firing a second
-# GIL-contending advection that would only miss the next timeout too. Same POST, retried,
-# is the whole protocol — no job IDs, no polling.
-#
-# The cache is bounded to a handful of recent results (each entry is a whole placement's
-# forecast, so the working set is a few, not thousands) and keyed on the window mtime so
-# a fresh cron write rotates keys — a new field never serves a stale forecast. Failures
-# are not cached: a follower whose leader fails recomputes rather than replaying an error
-# it never hit.
-#
-# **Single-pod assumption.** The cache is process-local, so it only survives a retry when
-# that retry lands on the same pod+worker that ran the first compute. The deployment this
-# module targets is exactly that — one pod (RWO PVC, ``strategy: Recreate``), one sync
-# worker — so a client's retries always hit the same warm process. Scaling to >1 replica
-# or >1 worker would silently defeat retry-after-timeout (a retry could hit a cold pod and
-# re-time-out); that step must come with a shared cache (Redis/PVC) or sticky sessions.
-
-_CACHE_MAX_ENTRIES = 8
-_FOLLOWER_WAIT_S = 300.0  # liveness backstop: a follower re-checks, never parks forever
-
-
-class _Slot:
-    """One cache slot: an in-flight or completed forecast. The **leader** (first request
-    for a key) computes, fills ``result``/``error``, then sets ``done``; every
-    **follower** (a retry, or a concurrent identical request) waits on ``done`` and, on
-    success, returns the same result — so the GIL-bound advection runs once even while a
-    retry is in flight."""
-
-    __slots__ = ("done", "result", "error")
-
-    def __init__(self) -> None:
-        self.done = threading.Event()
-        self.result: dict | None = None
-        self.error: BaseException | None = None
-
-
-_cache_lock = threading.Lock()
-_cache: OrderedDict[str, _Slot] = OrderedDict()
-
-
-def _field_version() -> float:
-    """The current window's mtime — the field identity folded into the cache key so a
-    fresh cron write rotates keys. A missing file raises :class:`FileNotFoundError`
-    (→ 503) here, before anything touches the cache."""
-    return _WINDOW_PATH.stat().st_mtime
-
-
-def _cache_key(
-    seeds: list[Seed], horizon_h: float, mark_step_h: float, version: float
-) -> str:
-    """A stable digest of everything a forecast depends on: the seed array, the two
-    cadence knobs, and the field version. A retry re-POSTs the byte-identical body, so it
-    hashes to the same key and hits the cached result."""
-    payload = {
-        "v": version,
-        "h": horizon_h,
-        "m": mark_step_h,
-        "s": [(s.lon, s.lat, s.start) for s in seeds],
-    }
-    blob = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-    return hashlib.sha256(blob.encode()).hexdigest()
-
-
-def _evict_locked() -> None:
-    """Drop the oldest *completed* slots until the cache is back under the cap (the caller
-    holds ``_cache_lock``). A still-pending slot is **never** evicted, whatever its age:
-    dropping an in-flight leader's slot would let that leader's own retry miss and start a
-    redundant second advection. In practice one placement is in flight at a time, well
-    under the cap, so only finished results are shed; if concurrent placements ever exceed
-    the cap the cache rides briefly over it and self-corrects as they complete."""
-    for k in list(_cache):
-        if len(_cache) <= _CACHE_MAX_ENTRIES:
-            break
-        if _cache[k].done.is_set():
-            del _cache[k]
-
-
-def _cached_forecast(seeds: list[Seed], horizon_h: float, mark_step_h: float) -> dict:
-    """:func:`_batch_forecast` behind the result cache + single-flight (see the section
-    note): serve a cached FeatureCollection when one exists for this request+field,
-    compute and cache it once otherwise, and coalesce a concurrent identical request (a
-    retry mid-compute) onto the one in-flight computation."""
-    key = _cache_key(seeds, horizon_h, mark_step_h, _field_version())
-    while True:
-        with _cache_lock:
-            slot = _cache.get(key)
-            if slot is not None:
-                _cache.move_to_end(key)  # LRU: touch on hit / on a still-pending slot
-                leader = False
-            else:
-                slot = _cache[key] = _Slot()
-                _evict_locked()
-                leader = True
-
-        if leader:
-            try:
-                slot.result = _batch_forecast(seeds, horizon_h, mark_step_h)
-            except BaseException as exc:
-                slot.error = exc
-                with _cache_lock:
-                    if _cache.get(key) is slot:  # drop only our own slot, never a newer one
-                        del _cache[key]
-                raise  # don't cache a failure — the next request recomputes
-            finally:
-                slot.done.set()  # wake followers (with the result, or the error above)
-            return slot.result
-
-        # Follower: wait for the leader rather than recompute. On success, share its
-        # result; on the leader's *failure* (its slot is now gone), loop and become a fresh
-        # leader — recompute independently instead of replaying an error we never hit. The
-        # timeout is only a liveness backstop: if it lapses with the leader still running,
-        # loop and re-coalesce onto the same still-pending slot, never parking forever.
-        if slot.done.wait(_FOLLOWER_WAIT_S) and slot.error is None:
-            assert slot.result is not None  # a set `done` without error carries a result
-            return slot.result
 
 
 # --- app ---------------------------------------------------------------------
@@ -417,10 +320,10 @@ def forecast(req: ForecastRequest) -> dict:
     in, one ``+horizon_h`` GeoJSON ``LineString`` per in-window seed out (synced-t0
     dots; see :func:`_batch_forecast`). A sync endpoint, so FastAPI runs it in the
     threadpool — reloading the window on a fresh cron write can block one request
-    without stalling the static map, and a compute keeps running past a client
-    timeout so its result lands in the cache for the retry (see :func:`_cached_forecast`)."""
+    without stalling the static map. The whole batch advects in ~1–2 s even at the
+    seed cap (vectorized RK4), comfortably inside the gateway's 60 s timeout."""
     try:
-        return _cached_forecast(req.seeds, req.horizon_h, req.mark_step_h)
+        return _batch_forecast(req.seeds, req.horizon_h, req.mark_step_h)
     except ValueError as exc:  # no seeds / unparseable start time
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:  # window missing/unreadable — the static map still serves
