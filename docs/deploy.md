@@ -120,8 +120,9 @@ under a subpath.
 
 The map is written to: every asset and data reference in `site/map/index.html`
 and `site/map/app.js` is **relative** (`./style.css`, `./app.js`, `./data/…`),
-and the external resources (Leaflet CDN, basemap tiles, the vessel API) are
-absolute HTTPS. The root redirect follows the same rule — the relative `./map/`
+and the external resources (Leaflet / leaflet-velocity CDN, the vessel API) are
+absolute HTTPS. (There is no basemap tile source — the map ships tile-free to
+spare the at-sea VSAT link; see the currents overlay + sea-tone background.) The root redirect follows the same rule — the relative `./map/`
 meta-refresh in `site/index.html`, never a domain-absolute `_redirects` target
 (see "Why the build runs in CI" above).
 
