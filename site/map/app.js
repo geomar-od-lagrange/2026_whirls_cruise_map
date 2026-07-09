@@ -925,7 +925,7 @@ function drawDrops(drops, deployLayer, deploymentId) {
 // straight onto `state`. Returns { state, handleClick, handleDblClick, handleMove,
 // handleAbort, renderBody }; the dock renders renderBody into its Deploy tab and
 // main() routes background events through the handlers.
-function buildDeployTool(deployLayer) {
+function buildDeployTool(deployLayer, getStartTime) {
   const state = {
     on: false,
     vertices: [],   // LatLng[] — the clicked path, grows per click
@@ -1078,22 +1078,132 @@ function buildDeployTool(deployLayer) {
       setStatus(n ? `downloaded ${n} waypoint(s)` : "no drops placed yet");
     });
 
+    // Import the vessel's route from a waypoint list: the parsed rows are the ship
+    // *route* (like a clicked path), so the drops — hence the number of drifters —
+    // follow from the route length and the Drop spacing / Ship speed knobs, not from
+    // the row count. Start time is pulled live from the time scrubber (getStartTime).
+    // The textarea is the source of truth (the input "mask"); "Load file…" only reads
+    // a .csv into it, so one parseWaypoints serves paste and upload alike (see
+    // docs/interactive_forecast.md).
+    const importBox = L.DomUtil.create("textarea", "pt-import", div);
+    importBox.rows = 3;
+    importBox.placeholder = "vessel waypoints: lon,lat per line (decimal °, negative = S/W) · header optional";
+    // Keep keystrokes local: Leaflet would otherwise treat typing over the map as map
+    // interaction (e.g. a space/'-' shortcut), and drag would pan under the textarea.
+    L.DomEvent.disableClickPropagation(importBox);
+    L.DomEvent.disableScrollPropagation(importBox);
+
+    const fileInput = L.DomUtil.create("input", "", div);
+    fileInput.type = "file";
+    fileInput.accept = ".csv,.txt,text/csv,text/plain";
+    fileInput.style.display = "none";
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        importBox.value = String(reader.result || "");
+        setStatus(`loaded ${file.name} — review, then Place from CSV`);
+      };
+      reader.readAsText(file);
+      fileInput.value = ""; // let the same file re-trigger change next time
+    });
+
+    const loadFile = L.DomUtil.create("button", "ft-btn", div);
+    loadFile.type = "button";
+    loadFile.textContent = "Load file…";
+    loadFile.addEventListener("click", () => fileInput.click());
+
+    const place = L.DomUtil.create("button", "ft-btn", div);
+    place.type = "button";
+    place.textContent = "Place from CSV";
+    place.addEventListener("click", () => {
+      const { latlngs, skipped, error } = parseWaypoints(importBox.value);
+      if (error) {
+        setStatus(error);
+        return;
+      }
+      const startTime = getStartTime ? getStartTime() : null;
+      const note = skipped ? ` (${skipped} row(s) skipped)` : "";
+      setStatus(`routing ${latlngs.length} waypoint(s)${note}…`);
+      // The rows are the vessel route; placeDeployment resamples it at the spacing knob
+      // into drops (same as a clicked path).
+      placeDeployment(latlngs, deployLayer, setStatus, startTime, state);
+    });
+
     L.DomUtil.create("p", "ft-hint", div).textContent =
-      "click a path · double-click to finish · right-click / Esc to cancel";
+      "click a path · double-click to finish · right-click / Esc to cancel · " +
+      "or paste / load a lon,lat vessel route and Place from CSV";
     buildDeployLegend(div);
     statusEl = L.DomUtil.create("p", "ft-status", div);
   };
   return { state, handleClick, handleDblClick, handleMove, handleAbort, renderBody };
 }
 
-// Resample the finished path into equally-spaced drops, stagger each drop's
-// water-entry time by the ship speed, draw the ship track + drops, and (if the
-// forecast checkbox is on) POST the seeds to /api/forecast and draw the returned
-// per-drop advection lines + synced-t0 dots. `startTime` (the displayed field's
-// valid time) is the run start, so drop #1 enters at the field's instant.
+// Parse a block of waypoint text into LatLngs (decimal degrees, negative = S/W).
+// Tolerant by design so a pasted cruise-plan block or a re-imported Download CSV both
+// work: blank lines and `#` comments are dropped; the delimiter is comma / semicolon /
+// tab / whitespace; a header row (any non-numeric token in the first data line) maps
+// columns by name (`lat*` and `lon*`|`lng`), so the export's `…,latitude,longitude,…`
+// round-trips; headerless rows are read as `lon,lat` (GeoJSON x,y, matching the seed
+// object). Rows that aren't two finite in-range numbers are skipped and counted.
+// Returns { latlngs, skipped, error } — `error` set (and latlngs empty) only when the
+// input has no usable rows at all.
+function parseWaypoints(text) {
+  const split = (line) => line.trim().split(/[\s,;]+/).filter((t) => t.length);
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"));
+  if (!lines.length) return { latlngs: [], skipped: 0, error: "no waypoints found" };
+
+  // A header is present when the first non-comment line has a non-numeric token.
+  let lonCol = 0, latCol = 1, start = 0;
+  const first = split(lines[0]);
+  if (first.some((t) => !Number.isFinite(Number(t)))) {
+    const lc = first.findIndex((t) => /^lon|^lng/i.test(t));
+    const ltc = first.findIndex((t) => /^lat/i.test(t));
+    if (lc >= 0 && ltc >= 0) { lonCol = lc; latCol = ltc; }
+    start = 1; // skip the header row
+  }
+
+  const latlngs = [];
+  let skipped = 0;
+  for (let i = start; i < lines.length; i++) {
+    const cols = split(lines[i]);
+    const lon = Number(cols[lonCol]);
+    const lat = Number(cols[latCol]);
+    if (
+      cols.length < 2 || !Number.isFinite(lon) || !Number.isFinite(lat) ||
+      lat < -90 || lat > 90 || lon < -360 || lon > 360
+    ) {
+      skipped++;
+      continue;
+    }
+    latlngs.push(L.latLng(lat, lon));
+  }
+  if (!latlngs.length) return { latlngs: [], skipped, error: "no valid lon,lat rows" };
+  return { latlngs, skipped, error: null };
+}
+
+// Resample a route into equally-spaced drops, then commit. `vertices` is the ship
+// route — the clicked polyline, or the vessel waypoints parsed from a CSV/paste; both
+// are the *route*, and resamplePolyline lays the drops on it at the spacing knob, so
+// the number of drifters follows from the route length and spacing (not the number of
+// waypoints). `startTime` (the displayed field's valid time) is the run start, so
+// drop #1 enters at the field's instant.
 async function placeDeployment(vertices, deployLayer, setStatus, startTime, opts) {
-  const deploymentId = ++deployCounter; // namespaces this placement's dot columns + drop rows
   const { drops, totalKm } = resamplePolyline(vertices, opts.spacing);
+  return commitDeployment(vertices, drops, totalKm, deployLayer, setStatus, startTime, opts);
+}
+
+// Stagger each drop's water-entry time by the ship speed, draw the ship track + drops,
+// and (if the forecast checkbox is on) POST the seeds to /api/forecast and draw the
+// returned per-drop advection lines + synced-t0 dots. Shared by the clicked path and
+// the CSV/paste import — `routeVertices` is the ship route (clicked vertices, or the
+// waypoint rows) drawn as the dashed track; `drops` are the committed drops.
+async function commitDeployment(routeVertices, drops, totalKm, deployLayer, setStatus, startTime, opts) {
+  const deploymentId = ++deployCounter; // namespaces this placement's dot columns + drop rows
   const seeds = drops.map((d) => ({
     lon: Number(d.latlng.lng.toFixed(5)),
     lat: Number(d.latlng.lat.toFixed(5)),
@@ -1112,7 +1222,7 @@ async function placeDeployment(vertices, deployLayer, setStatus, startTime, opts
     start: seeds[i].start,
     cumKm: d.cumKm,
   }));
-  drawShipTrack(vertices, deployLayer);
+  drawShipTrack(routeVertices, deployLayer);
 
   const transitH = totalKm / (opts.shipKn * KN_TO_KMH);
   const geom = `${drops.length} drops · ${totalKm.toFixed(1)} km · ~${transitH.toFixed(1)} h transit`;
@@ -2319,8 +2429,12 @@ async function main() {
   // below); it is the run start, so a placed deployment's drift begins at the same
   // instant as the field.
   const deployLayer = L.featureGroup().addTo(map);
-  const deployTool = buildDeployTool(deployLayer);
+  // The run start for a placed deployment — the valid time of the displayed CMEMS
+  // snapshot (set when the currents meta loads and re-set by the time slider). The
+  // Deploy tool reads it live: the dblclick handler passes it, and the CSV-import
+  // button pulls it through the getStartTime getter, so both start at the shown field.
   let displayedFieldTime = null;
+  const deployTool = buildDeployTool(deployLayer, () => displayedFieldTime);
 
   // Background map clicks: in Deploy mode a click adds a vertex to the path and a
   // double-click finishes it (committing the deployment, its drift locked to

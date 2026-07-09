@@ -329,6 +329,47 @@ dark-outlined; toggle off by re-clicking, or clear all with a background click):
 - **click a forecast line** (on bare track, between the markers) → that one drifter's
   trajectory (a row).
 
+## Importing a deployment: paste or upload spatial waypoints
+
+Rather than clicking a route, a user can hand the tool the **vessel's route as a list
+of waypoints** they already have — a planned track from the bridge, a spreadsheet
+column, a pasted block. The Deploy tab carries a small **paste box** plus **Load
+file…** and **Place from CSV** buttons.
+
+**Upload *and* mask, one parser — not a choice between them.** "CSV upload vs input
+mask" is a false dichotomy: a file and a paste differ only in where the text comes
+from. So the textarea *is* the source of truth (the mask), and **Load file…** merely
+reads a `.csv` into it; one `parseWaypoints` then serves both. This makes the
+pasted-block workflow first-class (paste a plan straight from a doc), lets a loaded
+file be eyeballed and edited before placing, and needs no upload-vs-paste branch.
+
+**No parser dependency.** The format is a few lines of `lon,lat` — a ~30-line
+tolerant hand-parser beats pulling a CSV library over the CDN the map already leans
+on, and stays friendlier to the offline-VSAT / future-CSP direction. PapaParse would
+be the pick only if we needed quoting, streaming, or type inference; we don't.
+
+**The rows are the vessel route, not the drops.** An imported waypoint list is the
+ship's track — exactly what a clicked path is — so it is treated identically: the tool
+**resamples the route at the Drop spacing knob** into equally-spaced drops, and the
+**number of drifters follows from the route length and spacing**, not from the number
+of waypoints. **Ship speed** staggers each drop's water-entry time along that route,
+and the run start is the **time scrubber**'s displayed field instant (pulled live when
+**Place from CSV** is pressed). So the CSV path is the click path fed as text: an
+import literally calls the same `placeDeployment` (resample → `commitDeployment`: seeds
+→ over-cap guard → POST → drift lines + synced-t0 dots + drop discs + waypoint
+registry), so an imported deployment forecasts, exports, highlights, and clears exactly
+like a clicked one. **Forecast (h)** and **Forecast drift** apply the same way.
+
+**Accepted format.** Decimal degrees, negative = S/W. Tolerant: blank lines and `#`
+comments are dropped; the delimiter is comma / semicolon / tab / whitespace; a header
+row (any non-numeric token) maps columns by name (`lat…`, `lon…`/`lng`), so the
+export's `…,latitude,longitude,…` round-trips directly; headerless rows are read as
+`lon,lat` (GeoJSON x,y, the seed object's key order). Rows that aren't two finite
+in-range numbers are skipped and counted in the status line. DMS (`12° 15.6′ E`) is
+not parsed — decimal only (a noted follow-up). `tests/fixtures/deploy_waypoints_wp1-12.csv`
+is a 12-waypoint vessel route from the cruise plan for exercising this — resampled at
+the default spacing it yields tens of drops along the ~185 km track.
+
 ## Validation: cross-checked against OceanParcels v4
 
 The hand-rolled RK4 is validated against **parcels v4** (the OceanParcels rewrite,
