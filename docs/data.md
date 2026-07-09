@@ -48,7 +48,8 @@ manifest.json              file index + per-file provenance + freshness stamp
 index.html                 browsable listing of this directory (human landing)
 raw/drifters_raw.csv       concatenated snapshot CSVs, pre-clean
 raw/gliders/<id>.csv       glider-group source CSV, exactly as fetched (one per
-                           glider; one mr_float_<inst>_positions.csv per float)
+                           glider; one per-float file — mr_float_<inst>_positions
+                           .csv or uvp_float_<id>_locations.csv — per float)
 raw/marion_dufresne.json   FOF positions API response, exactly as fetched
 raw/agulhas_ii.csv         IPSL observations-portal CSV, exactly as fetched
 ```
@@ -138,13 +139,14 @@ section points at the modules rather than duplicating their docstrings.
   type; all converge on the same UTC `time_utc` convention as every other source.
 - **Floats** (`_gliders.py`, `fetch_float_sources` / `parse_float_source`). The
   floats live under the same `GLIDERS` tree on the observations portal. We ingest
-  the
-  per-institution `mr_float_<institution>_positions.csv` files and **skip** the
-  folder's aggregate `floats_track.csv` (the same fixes interleaved, but it lags
-  the per-institution files). The platform identity is in a `filename` column
-  rather than the file name, so each file's rows are grouped by the `filename`'s
-  leading id (`65a0 → UGOT`, `6594 → SOTON`; unmapped ids keep their raw id),
-  landing in `gliders.csv` as `platform_type` `float`. See
+  the per-float position files and **skip** the folder's aggregate
+  `floats_track.csv` (the same fixes interleaved, but it lags the per-float
+  files). Two float CSV schemas are read: `mr_float_<institution>_positions.csv`
+  (time column `time`, identity in a `filename` column) and
+  `uvp_float_<id>_locations.csv` (time column `utc_time`, no `filename` column —
+  identity is the `<id>` in the file name). Identity maps to a label
+  (`65a0 → UGOT`, `6594 → SOTON`; unmapped ids such as the UVP `6596` / `6597`
+  keep their raw id), landing in `gliders.csv` as `platform_type` `float`. See
   [gliders.md](gliders.md).
 - **Agulhas II** (`_agulhas.py`). `reported_at` carries no timezone; it is
   assumed UTC because the file's own `scraped_at_utc` column is UTC and the
