@@ -99,7 +99,30 @@ VELOCITY_GAMMA = 0.5
 # Speed shading.
 SPEED_CMAP = cmocean.cm.speed
 SPEED_CLIP_PERCENTILE = 99
-COLORBAR_STOPS = 16
+
+# Discrete shading classes. Both the sequential speed raster and the diverging ζ/f
+# raster (_vorticity, which imports these) snap the normalized [0, 1] colormap input
+# to one of N_BINS flat colour classes — bin midpoints — *before* the cmocean lookup,
+# trading the continuous ~256-step ramp for N_BINS constant-colour regions on the same
+# palette (no new colours). Lossless WebP compresses those large flat regions far
+# better: ~-60% bytes per frame at 12 bins (measured on the real frames — the speed set
+# drops ~0.70 MB -> ~0.27 MB, ζ/f ~0.95 MB -> ~0.38 MB, and the critical-path now frame
+# ~87 kB -> ~34 kB). The classes also make the map<->legend lookup quantitative
+# (standard for oceanographic charts). The cost is deliberate banding; this is the one
+# constant to raise (toward a continuous ramp) to revert. Keep it **even** so the
+# diverging ζ/f map holds zero on a bin *edge* — clip(x/vmax,-1,1)*0.5+0.5 = 0.5 = 6/12
+# lands on the boundary between the two middle classes, 6 classes per sign.
+N_BINS = 12
+
+
+def _quantize_unit(t: np.ndarray) -> np.ndarray:
+    """Snap a normalized [0, 1] colormap input to its N_BINS-bin midpoint, so the
+    cmocean lookup returns one of N_BINS flat colours. Bin ``i`` spans ``[i/N,
+    (i+1)/N)`` with midpoint ``(i+0.5)/N``; ``t == 1`` clamps into the top bin. NaN
+    (land) passes straight through — the caller masks it to a transparent pixel after
+    the colour lookup, so the alpha handling is untouched."""
+    idx = np.clip(np.floor(t * N_BINS), 0.0, N_BINS - 1)
+    return (idx + 0.5) / N_BINS
 
 
 # --- fetch -----------------------------------------------------------------
@@ -340,9 +363,12 @@ def to_velocity_frames(
 
 # --- speed shading (Mercator-warped PNG) -----------------------------------
 
-def _colorbar_stops(n: int = COLORBAR_STOPS) -> list[str]:
-    """Hex stops sampled along the speed colour map, low -> high."""
-    return [mcolors.to_hex(SPEED_CMAP(i / (n - 1))) for i in range(n)]
+def _colorbar_stops(n: int = N_BINS) -> list[str]:
+    """The ``n`` discrete bin colours the speed raster actually uses — hex, low ->
+    high (the ``(i+0.5)/n`` midpoints :func:`_quantize_unit` snaps to). The client
+    legend renders them as hard-edged classes, so it shows exactly the raster's
+    classes rather than a smooth ramp over sampled stops."""
+    return [mcolors.to_hex(SPEED_CMAP((i + 0.5) / n)) for i in range(n)]
 
 
 def _speed_of(frame: xr.Dataset) -> np.ndarray:
@@ -370,7 +396,9 @@ def to_speed_frames(
     vmax = float(np.nanpercentile(np.stack(speeds), SPEED_CLIP_PERCENTILE))
 
     def to_rgba(warped):
-        rgba = SPEED_CMAP(np.clip(warped / vmax, 0.0, 1.0))
+        # Quantize to N_BINS flat classes before the lookup (see N_BINS): far fewer
+        # unique colours, so lossless WebP squeezes the constant-value regions.
+        rgba = SPEED_CMAP(_quantize_unit(np.clip(warped / vmax, 0.0, 1.0)))
         rgba[np.isnan(warped), 3] = 0.0  # land transparent
         return rgba
 

@@ -44,7 +44,6 @@ _EARTH_RADIUS_M = 6_371_000.0
 # map — built for exactly this quantity.
 VORT_CMAP = cmocean.cm.curl
 CLIP_PERCENTILE = 98
-COLORBAR_STOPS = 16
 
 
 def zeta_over_f(field: xr.Dataset) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -77,11 +76,13 @@ def zeta_over_f(field: xr.Dataset) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return zeta / fcor, lats, lons
 
 
-def _colorbar_stops(n: int = COLORBAR_STOPS) -> list[str]:
-    """Hex stops sampled across the full diverging map, low (anticyclonic) → high
-    (cyclonic). A local twin of :func:`._currents._colorbar_stops`, which is bound
-    to the sequential speed map (cf. :func:`._inertial._colorbar_stops`)."""
-    return [mcolors.to_hex(VORT_CMAP(i / (n - 1))) for i in range(n)]
+def _colorbar_stops(n: int = _currents.N_BINS) -> list[str]:
+    """The ``n`` discrete bin colours the ζ/f raster uses across the full diverging
+    map, low (anticyclonic) → high (cyclonic) — the ``(i+0.5)/n`` midpoints
+    :func:`._currents._quantize_unit` snaps to. A local twin of
+    :func:`._currents._colorbar_stops`, which is bound to the sequential speed map
+    (cf. :func:`._inertial._colorbar_stops`)."""
+    return [mcolors.to_hex(VORT_CMAP((i + 0.5) / n)) for i in range(n)]
 
 
 def to_vorticity_frames(
@@ -104,8 +105,11 @@ def to_vorticity_frames(
     vmax = float(np.nanpercentile(np.abs(np.stack([z for z, _, _ in fields])), CLIP_PERCENTILE))
 
     def to_rgba(warped):
-        # [-vmax, vmax] -> [0, 1] so zero maps to the diverging map's midpoint.
-        rgba = VORT_CMAP(np.clip(warped / vmax, -1.0, 1.0) * 0.5 + 0.5)
+        # [-vmax, vmax] -> [0, 1] so zero maps to the diverging map's midpoint, then
+        # quantize to N_BINS flat classes before the lookup (see _currents.N_BINS).
+        # N_BINS is even, so zero (-> 0.5) stays a bin *edge*: 6 classes per sign.
+        t = _currents._quantize_unit(np.clip(warped / vmax, -1.0, 1.0) * 0.5 + 0.5)
+        rgba = VORT_CMAP(t)
         rgba[np.isnan(warped), 3] = 0.0  # land transparent
         return rgba
 

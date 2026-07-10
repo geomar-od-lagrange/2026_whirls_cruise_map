@@ -20,6 +20,7 @@ import os
 import numpy as np
 import pytest
 import xarray as xr
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from pytest import approx
 
@@ -333,3 +334,40 @@ def test_get_sampler_raises_when_the_window_is_missing(tmp_path, monkeypatch, _f
     monkeypatch.setattr(_api, "_WINDOW_PATH", tmp_path / "not_written_yet.nc")
     with pytest.raises(FileNotFoundError):
         _api._get_sampler()
+
+
+# --- gzip on the wire ---------------------------------------------------------
+#
+# The at-sea link pays per byte, so the app compresses its own responses (in-app
+# GZipMiddleware rather than gateway-side — every deployment shape gets it, and
+# the dev flow measures what production ships). These pin the contract: a
+# gzip-accepting client gets a gzip-encoded body that decodes to exactly the
+# identity-encoding payload, and tiny responses (the limits probe) skip the
+# codec overhead via minimum_size.
+
+
+def test_forecast_response_is_gzipped_and_decodes_to_the_identity_payload(monkeypatch):
+    field = _constant_field()
+    monkeypatch.setattr(_api, "_get_sampler", lambda: field)
+    client = TestClient(_api.app)
+    body = {"seeds": _ONE_SEED}  # one 48 h track is a few kB of JSON, > minimum_size
+
+    plain = client.post(
+        "/api/forecast", json=body, headers={"Accept-Encoding": "identity"}
+    )
+    gz = client.post("/api/forecast", json=body, headers={"Accept-Encoding": "gzip"})
+
+    assert plain.status_code == 200 and gz.status_code == 200
+    assert "content-encoding" not in plain.headers
+    assert gz.headers.get("content-encoding") == "gzip"
+    # The client (httpx) decodes the gzip body transparently; the decoded payload
+    # must equal the identity-encoding one byte-for-byte.
+    assert gz.content == plain.content
+
+
+def test_limits_response_stays_uncompressed_below_minimum_size():
+    client = TestClient(_api.app)
+    resp = client.get("/api/forecast/limits", headers={"Accept-Encoding": "gzip"})
+    assert resp.status_code == 200
+    assert "content-encoding" not in resp.headers
+    assert resp.json() == {"max_seeds": _api._MAX_SEEDS}

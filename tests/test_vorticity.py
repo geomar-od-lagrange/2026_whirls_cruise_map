@@ -12,6 +12,7 @@ import numpy as np
 import xarray as xr
 from PIL import Image
 
+from whirls_cruise_map._currents import N_BINS
 from whirls_cruise_map._vorticity import (
     OMEGA,
     _EARTH_RADIUS_M,
@@ -123,7 +124,9 @@ def test_render_meta_is_symmetric():
     assert meta["vmin"] == -meta["vmax"]  # symmetric range, shared across frames
     assert meta["vmax"] > 0
     assert meta["units"] == "ζ/f"
-    assert len(meta["colorbar"]) == 16
+    # The colorbar is the discrete bin-class palette the raster snaps to (lever 5),
+    # not a 16-stop continuous sample.
+    assert len(meta["colorbar"]) == N_BINS
     assert [f["offset_h"] for f in meta["frames"]] == [-12, 0, 12, 24, 36, 48, 60, 72]
     assert meta["now_offset_h"] == 0
     # top-level valid_time is the now (offset 0) frame's, ISO-8601 Z.
@@ -144,3 +147,16 @@ def test_land_becomes_transparent():
     assert Image.open(io.BytesIO(land_frames[0]["image"])).format == "WEBP"
     assert (_alpha(land_frames[0]["image"]) == 0).any()  # the land cell shows through
     assert (_alpha(ocean_frames[0]["image"]) > 0).all()  # no spurious transparency
+
+
+def test_shading_is_binned_to_n_bins():
+    """Lever 5: the raster snaps ζ/f to at most N_BINS flat colour classes so
+    lossless WebP compresses the constant-value regions — count the distinct opaque
+    RGB triples in a frame (a continuous ramp would show far more). Also pins that
+    the client `colorbar` carries exactly those N_BINS class colours."""
+    frames, meta = _window(with_land=False)
+    im = np.array(Image.open(io.BytesIO(frames[1]["image"])).convert("RGBA"))
+    opaque = im[im[..., 3] == 255][:, :3]
+    n_colours = len({tuple(px) for px in opaque})
+    assert 0 < n_colours <= N_BINS
+    assert len(meta["colorbar"]) == N_BINS

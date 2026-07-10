@@ -18,6 +18,7 @@ from PIL import Image
 
 from whirls_cruise_map import _currents
 from whirls_cruise_map._currents import (
+    N_BINS,
     SHADING_OFFSETS_H,
     to_speed_frames,
     to_velocity_frames,
@@ -82,6 +83,19 @@ def test_frames_are_webp_and_masked():
     assert im.format == "WEBP"  # the compact encoding
     alpha = np.array(im.convert("RGBA"))[..., 3]
     assert (alpha == 0).any() and (alpha == 255).any()  # land masked, ocean opaque
+
+
+def test_frames_binned_to_n_bins():
+    """Lever 5: the speed raster snaps |velocity| to at most N_BINS flat colour
+    classes (bin midpoints) so lossless WebP compresses the large constant-value
+    regions — count the distinct opaque RGB triples in a frame (a continuous ramp
+    would show far more). The meta's `colorbar` carries exactly those classes."""
+    frames, meta = to_speed_frames(_window())
+    im = np.array(Image.open(io.BytesIO(frames[1]["image"])).convert("RGBA"))
+    opaque = im[im[..., 3] == 255][:, :3]
+    n_colours = len({tuple(px) for px in opaque})
+    assert 0 < n_colours <= N_BINS
+    assert len(meta["colorbar"]) == N_BINS
 
 
 # --- flow frames --------------------------------------------------------------

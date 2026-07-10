@@ -86,3 +86,24 @@ def test_gliders_geojson_uses_deployed_track_but_raw_latest_point():
     # First drawn fix derives its velocity from nothing (blank), like a truncated
     # drifter's first free fix.
     assert line["properties"]["fixes"][0]["derived_speed_mps"] is None
+
+
+def test_gliders_geojson_crops_coordinates_to_the_display_bound():
+    """Glider source fixes carry full float tails; every emitted geometry vertex —
+    the raw-latest Point and each LineString vertex — is cropped to the shared 4 dp
+    display bound (~11 m; ``_forecast._COORD_NDIGITS`` via ``_geojson._coord``)."""
+    fixes = [
+        _fix(0, 12.123456789, lat=-37.987654321),
+        _fix(60, 12.123512345, lat=-37.987612345),
+        _fix(120, 12.123598765, lat=-37.987554321),
+    ]  # metres apart over hours: glider-slow, so nothing is pruned
+    fc = gliders_geojson([Platform("sg999", "seaglider", fixes)])
+    point = next(f for f in fc["features"] if f["geometry"]["type"] == "Point")
+    line = next(f for f in fc["features"] if f["geometry"]["type"] == "LineString")
+
+    assert point["geometry"]["coordinates"] == [12.1236, -37.9876]
+    assert line["geometry"]["coordinates"] == [
+        [12.1235, -37.9877],
+        [12.1235, -37.9876],
+        [12.1236, -37.9876],
+    ]

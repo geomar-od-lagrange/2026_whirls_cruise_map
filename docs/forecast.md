@@ -127,8 +127,10 @@ each instrument independently:
 
 Identical shape (one is the forward integration, the other the backward). One
 `LineString` per instrument from its head, a vertex every 15 min for a smooth
-curve, coordinates `[lon, lat]` rounded to 5 dp (~1 m, far below the ~10 km
-displacement). Properties:
+curve, coordinates `[lon, lat]` rounded to 4 dp (~11 m — sub-pixel at the map's
+`maxZoom: 12`, ~30 m/px at the working latitude, at the drifters' ~5–15 m GPS
+fix scatter, and three orders below the 1/12° field; the display bound every
+served coordinate obeys, `_forecast._COORD_NDIGITS`). Properties:
 
 - the head identity — `D_number` for a drifter, `id` for a glider — plus `batch`
   (the instrument key its marker/track toggle under: the drifter batch, or the

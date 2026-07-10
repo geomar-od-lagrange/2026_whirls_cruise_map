@@ -44,11 +44,29 @@ findings decided it:
 
 The server-side API inverts the economics: the ~66 MB window stays in the
 backend's memory, and each response is a **small FeatureCollection** — one short
-polyline per drop, a few kB for a whole deployment, less than the existing
-`forecast.geojson`. The forecast cost scales with *particles requested*, not with
-the field, and never touches the client's link. The **drops and the ship track are
+polyline per drop, a few kB each. The forecast cost scales with *particles
+requested*, not with the field, and never touches the client's link. The **drops and the ship track are
 not in the response**: the client computed the geometry, so the wire carries only
 what needs the field — the advected tracks.
+
+Two transport measures shrink the answer further, both sized against what a
+viewer can actually resolve:
+
+- **gzip on the wire.** The app compresses its own responses (Starlette's
+  `GZipMiddleware` on the FastAPI app, `minimum_size=1024`) — in-app rather than
+  gateway-side, so every deployment shape (the two-port dev flow, the plan-017
+  gateway, any future proxy) ships compressed and the dev flow measures what
+  production ships. The GeoJSON is highly repetitive, so a 1000-seed response
+  drops from ~4.9 MB raw to ~1/3 gzipped; responses below `minimum_size` (the
+  `limits` probe, error bodies) skip the codec overhead and stay identity-encoded.
+- **coordinates cropped to 4 dp.** Every emitted coordinate (track vertices and
+  marks alike) is rounded to 4 decimal places (~11 m) — sub-pixel at the map's
+  `maxZoom: 12` (~30 m/CSS-px at the working latitude), at the drifters' ~5–15 m
+  GPS fix scatter, and three orders below the 1/12° CMEMS field driving the
+  advection, so nothing visible is lost. The bound is one constant
+  (`_forecast._COORD_NDIGITS`), shared with the build's
+  `forecast`/`hindcast.geojson` and the `_geojson` emitters, so every served
+  coordinate obeys it. Combined with gzip, a 1000-seed response lands at ~1 MB.
 
 ## Two endpoints, deliberately split
 
