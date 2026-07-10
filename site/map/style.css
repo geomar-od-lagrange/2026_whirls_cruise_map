@@ -465,10 +465,14 @@ body {
   color: var(--muted);
 }
 
-/* A sidebar legend hidden while its shading is off (contextual legends): the
-   speed legend shows only under the "Current speed" shading, ζ/f only under
-   "Vorticity ζ/f". Toggled from onShadingChange in app.js. */
-.legend-hidden {
+/* The active shading's colour-class legend, in the Currents dock right below the
+   shading radios (moved here from the sidebar so it sits with its control). Renders
+   .legend-bar + .legend-scale; :empty collapses it — margin and all — when the
+   active shading is "None". */
+.dock-legend {
+  margin: 6px 0 2px;
+}
+.dock-legend:empty {
   display: none;
 }
 

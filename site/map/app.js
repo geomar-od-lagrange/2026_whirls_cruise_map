@@ -447,19 +447,23 @@ function buildInstrumentRows(div, map, markerGroups, overlays) {
 // others; the flow / near-inertial layers (`overlays`) are independent
 // **checkboxes**. Rows are appended to `div` (the dock owns the box). The
 // initially-active shading is whichever `shadings` layer is already on the map
-// (speed, added by default), else "None". `onShadingChange(name)` fires on every
-// selection and once at build, so the caller can key the contextual sidebar
-// legends and the lazy ζ·f prefetch to the active shading.
+// (speed, added by default), else "None". `onShadingChange(name, legendEl)` fires on
+// every selection and once at build, so the caller can render the active shading's
+// colour scale into `legendEl` (the dock legend below the radios) and key the lazy
+// ζ·f prefetch to the active shading.
 function buildShadingRows(div, map, shadings, overlays, onShadingChange) {
   const names = Object.keys(shadings);
   let active = names.find((n) => n !== "None" && map.hasLayer(shadings[n])) ?? "None";
+  // The active shading's colour-class legend, right under the radios (null when
+  // there is no shading to show one for). onShadingChange fills it per selection.
+  let legendEl = null;
   const select = (name) => {
     active = name;
     for (const n of names) {
       if (n === name) shadings[n].addTo(map);
       else map.removeLayer(shadings[n]);
     }
-    onShadingChange?.(name);
+    onShadingChange?.(name, legendEl);
   };
 
   if (names.length) {
@@ -473,6 +477,7 @@ function buildShadingRows(div, map, shadings, overlays, onShadingChange) {
       L.DomUtil.create("span", "batch-text", row).textContent = name;
       rb.addEventListener("change", () => rb.checked && select(name));
     }
+    legendEl = L.DomUtil.create("div", "dock-legend", div);
   }
 
   const overlayNames = Object.keys(overlays);
@@ -491,7 +496,7 @@ function buildShadingRows(div, map, shadings, overlays, onShadingChange) {
     }
   }
 
-  onShadingChange?.(active); // set the initial legend state to match the default shading
+  onShadingChange?.(active, legendEl); // render the initial legend for the default shading
 }
 
 // The dock's Ships tab. A vessel's row is added lazily (`addVessel`) on its first
@@ -2118,44 +2123,39 @@ function hardStopBand(colors) {
   return `linear-gradient(to right, ${stops.join(", ")})`;
 }
 
-// The legend (colour bar + shared vmax) is constant across the slider; only the
-// displayed *time* changes. Pass the selected `frame` ({offset_h, valid_time}) to
-// show which forecast step is on the map; without it, the now frame.
+// The active shading's colour-class legend, as HTML for the Currents dock (below
+// the shading radios — moved there from the sidebar, where it was easy to overlook,
+// so the scale sits with the control that picks it). `meta.colorbar` is the raster's
+// discrete classes (see hardStopBand); `diverging` picks the ζ/f scale (vmin…0…+vmax
+// over the signed field) over the speed ramp (0→vmax). Returns "" (which
+// `.dock-legend:empty` collapses) when there is no meta — e.g. the "None" shading.
+// The legend is constant across the slider; only the displayed time (currents-time,
+// in the sidebar) changes as you scrub, so this need only render on shading change.
+function shadingLegendHtml(meta, diverging) {
+  if (!meta) return "";
+  const bar = `<div class="legend-bar" style="background:${hardStopBand(meta.colorbar)}"></div>`;
+  const scale = diverging
+    ? `<div class="legend-scale"><span>${meta.vmin.toFixed(2)}</span>` +
+      `<span>${meta.units}</span><span>+${meta.vmax.toFixed(2)}</span></div>`
+    : `<div class="legend-scale"><span>0</span>` +
+      `<span>speed (${meta.units})</span><span>${meta.vmax.toFixed(2)}</span></div>`;
+  return bar + scale;
+}
+
+// The sidebar "Surface currents" panel keeps only the displayed-time readout (the
+// colour scale now lives in the Currents dock). Pass the selected `frame`
+// ({offset_h, valid_time}) to show which forecast step is on the map; without it,
+// the now frame. Re-called on every slider scrub.
 function renderCurrentsInfo(meta, frame) {
   const timeEl = document.getElementById("currents-time");
-  const legendEl = document.getElementById("speed-legend");
   if (!meta) {
     timeEl.textContent = "Surface currents unavailable.";
-    legendEl.innerHTML = "";
     return;
   }
   const shown = frame ?? meta.frames?.find((f) => f.offset_h === (meta.now_offset_h ?? 0));
   const at = shown ? formatFixTime(shown.valid_time) : formatFixTime(meta.valid_time);
   const off = shown && shown.offset_h !== 0 ? ` (${frameOffsetLabel(shown.offset_h)})` : "";
   timeEl.textContent = `Showing ${at}${off} — CMEMS analysis/forecast.`;
-  legendEl.innerHTML =
-    `<div class="legend-bar" style="background:${hardStopBand(meta.colorbar)}"></div>` +
-    `<div class="legend-scale"><span>0</span>` +
-    `<span>speed (${meta.units})</span>` +
-    `<span>${meta.vmax.toFixed(2)}</span></div>`;
-}
-
-// Legend for the ζ/f overlay. A local twin of renderCurrentsInfo: the field is
-// signed, so the scale is symmetric (vmin…0…vmax) over a diverging bar, not the
-// 0→vmax speed ramp. vmin is negative; the sign convention (cyclonic +,
-// anticyclonic −) is stated in the panel's static hint.
-function renderVorticityInfo(meta) {
-  const legendEl = document.getElementById("vorticity-legend");
-  if (!legendEl) return;
-  if (!meta) {
-    legendEl.innerHTML = "";
-    return;
-  }
-  legendEl.innerHTML =
-    `<div class="legend-bar" style="background:${hardStopBand(meta.colorbar)}"></div>` +
-    `<div class="legend-scale"><span>${meta.vmin.toFixed(2)}</span>` +
-    `<span>${meta.units}</span>` +
-    `<span>+${meta.vmax.toFixed(2)}</span></div>`;
 }
 
 // Renderer for the combined forecast+hindcast sidebar panel. Both advect through
@@ -2641,7 +2641,6 @@ async function main() {
     currentShading["Vorticity ζ/f"] = vorticityLayer;
     shadingLayers.push({ layer: vorticityLayer, frames: vorticityMeta.frames });
   }
-  renderVorticityInfo(vorticityMeta);
 
   // Re-point the flow trails to the slider's frame `i`; assigned by the flow block
   // below (null until then, and if there is no flow data). Declared here so the
@@ -2819,16 +2818,20 @@ async function main() {
   // Awaiting-first-fix sidebar.
   renderAwaiting(await fetchJSON(DATA.awaiting, { optional: true }));
 
-  // Contextual sidebar legends: the speed legend shows only while "Current speed"
-  // is the active shading, the ζ/f legend only while "Vorticity ζ/f" is — so a
-  // legend never sits open for a shading that's off. This is also the seam for the
+  // Render the active shading's colour scale into the Currents dock legend (below
+  // the radios), so only the on-map shading shows a scale and it sits with its
+  // control instead of in the easy-to-miss sidebar. This is also the seam for the
   // lazy ζ/f-frame prefetch (first time that shading is picked), which used to hang
   // off the removed layer control's baselayerchange event.
-  const setLegendShown = (id, shown) =>
-    document.getElementById(id)?.classList.toggle("legend-hidden", !shown);
-  const onShadingChange = (name) => {
-    setLegendShown("speed-legend", name === "Current speed");
-    setLegendShown("vorticity-legend", name === "Vorticity ζ/f");
+  const onShadingChange = (name, legendEl) => {
+    if (legendEl) {
+      legendEl.innerHTML =
+        name === "Current speed"
+          ? shadingLegendHtml(meta, false)
+          : name === "Vorticity ζ/f"
+            ? shadingLegendHtml(vorticityMeta, true)
+            : ""; // "None" — collapsed by .dock-legend:empty
+    }
     if (name === "Vorticity ζ/f" && !vortPrefetched && vorticityMeta?.frames) {
       vortPrefetched = true;
       prefetchFrames(vorticityMeta.frames);
