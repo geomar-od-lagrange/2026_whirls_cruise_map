@@ -52,11 +52,13 @@ speed (~0.5–0.7 m/s) at assignment; **Deployment 4** — an array staged toget
 the Marion Dufresne and left in the water as the ship departed station, seeded with
 the two drifters (D-433, D-434) confirmed separated (21–44 km) and drifting (~0.2 m/s)
 first, to be extended as the array's other staged drifters report their own free
-drift; **Deployment 5** — a large overnight array of 77 drifters that went into the
+drift; **Deployment 5** — a large overnight array of 79 drifters that went into the
 water between 2026-07-09 21:29 and 2026-07-10 05:30 UTC, each confirmed separated
 from the vessel (14–67 km) and drifting steadily at surface-current speed (~0.3–1.7
 m/s) by assignment (a handful included with a last fix ~1 h old — an irregular
-reporting gap, not a behavioural one). Drifters that merely reported the same day while stationary on
+reporting gap, not a behavioural one; and two later additions, D-492 and D-505,
+included after only ~35 min of free drift on an unambiguous ~8 km separation that had
+opened from <0.2 km an hour earlier at ~1.1 m/s). Drifters that merely reported the same day while stationary on
 deck, or that showed only brief ship-transit motion, stayed `pre_deploy`.
 
 ## GUI: the instrument filter
