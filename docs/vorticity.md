@@ -68,6 +68,17 @@ rationale). Two choices follow from ζ/f being **signed** rather than a magnitud
   bar's 0…vmax. The percentile clip keeps a few grid-scale spikes in the Agulhas
   shear front (where |ζ/f| can exceed 1) from washing out the mesoscale scale.
 
+Like the speed raster, ζ/f is **binned to `N_BINS = 12` discrete colour classes**
+before the colour lookup (`_currents._quantize_unit`) — same `curl` palette, no new
+colours — for the transport and quantitative-legend reasons spelled out in
+[currents.md](currents.md) (*Discrete colour classes*): lossless WebP compresses the
+resulting flat regions far better (~−60 % per frame), and the classes make the map ↔
+legend lookup exact. The bin count is **even** on purpose so **zero falls on a bin
+edge** (the diverging midpoint `0.5 = 6/12` sits between the two central classes),
+giving 6 classes per rotation sense with none straddling no-rotation. The meta's
+`colorbar` is those 12 class colours, which the client draws as hard-edged legend
+swatches rather than a smooth ramp.
+
 The client (`app.js`) registers it as an `L.imageOverlay` in the same `shading`
 pane as the speed raster. Because both shadings fill that one pane, only one makes
 sense at a time, so in the **Currents** control they are **mutually-exclusive base
@@ -77,7 +88,8 @@ selected by default. Both rasters are drawn **fully opaque** (the overlay carrie
 no `opacity`, so the ocean shows its true colour rather than a wash over the
 basemap; land stays transparent via the PNG's own alpha mask, so the coastline
 still shows through). Its legend is a local twin of the speed legend
-(`renderVorticityInfo`), symmetric where the speed one is zero-based.
+(`renderVorticityInfo`), symmetric where the speed one is zero-based, and drawn as
+the same 12 hard-edged colour classes the raster uses.
 
 ### Land and coastal edge
 

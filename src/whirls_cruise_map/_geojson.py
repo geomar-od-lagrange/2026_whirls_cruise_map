@@ -7,6 +7,7 @@ import math
 import pandas as pd
 
 from ._clean import PRE_DEPLOY_BATCH
+from ._forecast import _COORD_NDIGITS
 
 _EARTH_RADIUS_M = 6_371_000.0
 
@@ -21,6 +22,13 @@ GLIDER_TRANSIT_MPS = 2.0
 
 def _feature_collection(features: list[dict]) -> dict:
     return {"type": "FeatureCollection", "features": features}
+
+
+def _coord(lon, lat) -> list[float]:
+    """One ``[lon, lat]`` geometry vertex, cropped to the shared display bound
+    (:data:`._forecast._COORD_NDIGITS`, 4 dp ~ 11 m — sub-pixel at the map's max
+    zoom and at the GPS fix scatter), so no full-precision float tails ship."""
+    return [round(float(lon), _COORD_NDIGITS), round(float(lat), _COORD_NDIGITS)]
 
 
 def _point(row) -> tuple[float, float, pd.Timestamp]:
@@ -144,7 +152,8 @@ def gliders_geojson(platforms: list) -> dict:
     """FeatureCollection for the glider platforms (see :mod:`._gliders`).
 
     Per platform: a ``Point`` at its most-recent fix and, when it has >=2 fixes,
-    a ``LineString`` track. Coordinates are [Longitude, Latitude]. Properties
+    a ``LineString`` track. Coordinates are [Longitude, Latitude], cropped to the
+    shared 4 dp display bound (:func:`_coord`). Properties
     carry ``id`` and ``type`` (``"xspar"`` / ``"seaglider"`` / ``"float"``, keying
     the client's colour and label); the Point adds the latest :func:`_glider_fix_record`, the
     LineString a per-vertex ``fixes`` list aligned with ``coordinates`` (so the
@@ -165,7 +174,7 @@ def gliders_geojson(platforms: list) -> dict:
         features.append(
             {
                 "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [last[2], last[1]]},
+                "geometry": {"type": "Point", "coordinates": _coord(last[2], last[1])},
                 "properties": {
                     "id": p.id,
                     "type": p.type,
@@ -178,7 +187,7 @@ def gliders_geojson(platforms: list) -> dict:
             continue
         coords, fix_recs, prev_pt = [], [], None
         for f in fixes:
-            coords.append([f[2], f[1]])
+            coords.append(_coord(f[2], f[1]))
             fix_recs.append(_glider_fix_record(f, prev_pt))
             prev_pt = (f[1], f[2], f[0])
         features.append(
@@ -199,7 +208,8 @@ def gliders_geojson(platforms: list) -> dict:
 def latest_geojson(tracks: pd.DataFrame) -> dict:
     """FeatureCollection of one Point per drifter at its most-recent valid fix.
 
-    Coordinates are [Longitude, Latitude]. Properties: ``D_number``, ``batch``,
+    Coordinates are [Longitude, Latitude], cropped to the shared 4 dp display
+    bound (:func:`_coord`). Properties: ``D_number``, ``batch``,
     and the latest fix's :func:`_fix_record` payload (``date_UTC``,
     ``batteryState``, reported + derived velocity). The derived velocity is taken
     from the prior fix, so a single-fix drifter reports ``null`` there.
@@ -216,7 +226,7 @@ def latest_geojson(tracks: pd.DataFrame) -> dict:
                 "type": "Feature",
                 "geometry": {
                     "type": "Point",
-                    "coordinates": [last.Longitude, last.Latitude],
+                    "coordinates": _coord(last.Longitude, last.Latitude),
                 },
                 "properties": {
                     "D_number": d_number,
@@ -233,7 +243,8 @@ def tracks_geojson(
 ) -> dict:
     """FeatureCollection of one LineString per drifter over its time-sorted fixes.
 
-    Coordinates are [Longitude, Latitude] pairs in time order. A single-fix
+    Coordinates are [Longitude, Latitude] pairs in time order, cropped to the
+    shared 4 dp display bound (:func:`_coord`). A single-fix
     drifter cannot form a valid (>=2 point) LineString, so it is skipped here;
     it still appears in :func:`latest_geojson`. Properties: ``D_number``,
     ``batch``, ``n_fixes``, and ``fixes`` — a per-vertex list aligned with
@@ -274,7 +285,7 @@ def tracks_geojson(
             continue
         coords, fixes, prev_pt = [], [], None
         for row in rows:
-            coords.append([row.Longitude, row.Latitude])
+            coords.append(_coord(row.Longitude, row.Latitude))
             fixes.append(_fix_record(row, prev_pt))
             prev_pt = _point(row)
         features.append(

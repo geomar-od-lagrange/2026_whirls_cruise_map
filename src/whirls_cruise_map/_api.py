@@ -20,7 +20,8 @@ CMEMS hourly current window and returns one GeoJSON ``LineString`` per seed — 
 (:mod:`whirls_cruise_map._forecast`), just seeded by the request. All the pattern
 geometry (where the drops go, when each enters the water) lives in the client;
 the field stays in server memory and only the answer ships (a few kB per seed,
-far below shipping the field to the browser — the route this PoC prototypes).
+gzipped on the wire by the in-app GZip middleware, far below shipping the field
+to the browser — the route this PoC prototypes).
 
 **Synced-t0 dots.** Every seed is integrated to a **common wall-clock end** (the
 run start + ``horizon_h``, 48 h) and dotted at absolute run-relative times
@@ -57,6 +58,7 @@ import numpy as np
 import xarray as xr
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 
 from . import _currents, _forecast
@@ -299,6 +301,13 @@ def _batch_forecast(seeds: list[Seed], horizon_h: float, mark_step_h: float) -> 
 # --- app ---------------------------------------------------------------------
 
 app = FastAPI(title="WHIRLS interactive forecast (PoC)")
+# gzip every sizeable response in-app (Starlette's middleware) rather than at a
+# gateway, so every deployment shape — the two-port dev flow, the plan-017 gateway,
+# any future proxy — compresses, and the dev flow measures what production ships.
+# The JSON is highly repetitive (a 1000-seed forecast is ~4.9 MB raw, ~1/3 gzipped);
+# `minimum_size` keeps tiny responses like `/api/forecast/limits` and error bodies
+# uncompressed, where the codec overhead beats the savings.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 # The only real deployment is same-origin (the plan-017 gateway serves /map and /api
 # under one host), so it exercises no CORS at all. The sole cross-origin caller is the
 # two-port dev flow — the static map on :8000 fetching this API on :8001 (see

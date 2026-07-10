@@ -52,7 +52,13 @@ STEP_MIN = 5.0
 VERTEX_MIN = 15.0
 MARK_HOURS = (1, 3, 6)
 
-_COORD_NDIGITS = 5  # ~1 m; the 6 h displacement is ~10 km, so this is ample
+# Display precision for every emitted coordinate (shared with the _geojson
+# emitters): 4 dp is ~11 m — sub-pixel at the map's maxZoom 12 (~30 m/CSS-px at the
+# working latitude), at the drifters' ~5–15 m GPS fix scatter, and three orders
+# below the 1/12° CMEMS field driving the advection. 5 dp (~1.1 m, the source
+# feed's own precision) buys nothing visible and costs ~1/3 of the gzipped
+# forecast payload.
+_COORD_NDIGITS = 4
 
 
 class _Field:

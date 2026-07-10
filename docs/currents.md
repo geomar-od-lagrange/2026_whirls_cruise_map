@@ -35,6 +35,30 @@ once; only the displayed *time* changes as the slider moves. (Pooling clips the
 busiest instant slightly harder than a per-frame scale would, which is the point —
 the scale is stable across the run rather than breathing frame to frame.)
 
+## Discrete colour classes
+
+Both rasters snap the field to **`N_BINS = 12` flat colour classes**: the
+`_currents._quantize_unit` step rounds the normalized `[0, 1]` colour-map input to a
+bin midpoint *before* the cmocean lookup, so a frame carries 12 constant-colour
+regions instead of a ~256-step continuous ramp — same `speed` / `curl` palettes, no
+new colours. Two reasons:
+
+- **Bytes.** Lossless WebP encodes large constant-value regions cheaply, so binning
+  the field cuts each frame by a further **~60 %** — the single biggest per-frame
+  lever here (see the Transport totals below).
+- **A quantitative legend.** Discrete classes make the map ↔ legend lookup exact: a
+  pixel's colour reads as one labelled class the way an oceanographic contour chart
+  does, rather than eyeballing a position on a smooth ramp. The client renders the
+  legend bar as the *same* 12 hard-edged classes (`renderCurrentsInfo` /
+  `renderVorticityInfo` over the meta's `colorbar`, which now carries the 12 class
+  colours, not sampled ramp stops).
+
+The diverging ζ/f map keeps an **even** bin count so **zero stays a bin edge**: the
+neutral midpoint `0.5` falls on the boundary between the two central classes (6
+classes per rotation sense), so no single class straddles no-rotation. The cost is
+deliberate banding; `N_BINS` (in `_currents`) is the one constant to raise to go back
+toward a continuous ramp.
+
 ## Transport: full pixel detail, minimum bytes
 
 The rasters keep **full pixel resolution** (no coarsening — coarser pixels lose the
@@ -43,34 +67,36 @@ mesoscale eddies that are the whole point), so the only lever is the encoding an
 cruise's at-sea VSAT link ([data.md](data.md)):
 
 1. **Lossless WebP, not PNG.** Each frame is a lossless WebP with a native alpha
-   plane for land (`_raster.mercator_rgba_webp`). On the cruise-bbox speed field a
-   frame is **~85 kB** — versus ~150 kB for an indexed PNG and ~310 kB for the RGBA
-   PNG the map shipped before — at *identical* pixels and full colour (no palette
-   quantisation). WebP is universally supported and honours
-   `image-rendering: pixelated`, so the crisp native-grid look is unchanged.
-   Weighed and rejected: indexed PNG (bigger, and quantises the ramp); a client-side
-   temporal-delta codec (a canvas reconstruction pipeline — real complexity for less
-   gain than WebP already gives).
+   plane for land (`_raster.mercator_rgba_webp`) — universally supported and honouring
+   `image-rendering: pixelated`, so the crisp native-grid look is unchanged. WebP with
+   lossless alpha is roughly *half* an equivalent RGBA PNG's bytes at *identical*
+   pixels; combined with the 12 discrete classes above, a cruise-bbox speed frame lands
+   at **~27 kB** (the single RGBA PNG the map shipped before was ~310 kB). Weighed and
+   rejected: indexed PNG (bigger, and its fixed 256-colour palette buys nothing once
+   the field is binned to 12 classes); a client-side temporal-delta codec (a canvas
+   reconstruction pipeline — real complexity for less gain than WebP + binning already
+   give).
 
 2. **No extra download in the build.** All frames slice the one window already
    fetched (above), so the slider costs the build one wider fetch, not eight.
 
 3. **Lazy transfer on the client.** The page loads the **now** frame only — so the
-   critical-path bytes (~85 kB) are actually *lighter* than the old single 310 kB
-   raster. The other seven speed frames prefetch in the background once the map is
-   idle; the ζ/f frames prefetch only once vorticity is first selected, so an
-   untouched layer costs zero bytes. Sliding to an un-prefetched frame just fetches
-   it on demand.
+   critical-path bytes (~27 kB) are far *lighter* than the old single 310 kB
+   raster. The other seven speed frames prefetch in the background on the slider's
+   **first move**, so a viewer who never scrubs pays only that one frame; the ζ/f
+   frames prefetch only once vorticity is first selected, so an untouched layer costs
+   zero bytes. Sliding to an un-prefetched frame just fetches it on demand.
 
-Net: the naïve 8× (~6 MB for both raster fields) becomes ~0.7 MB of speed frames +
-~0.9 MB of ζ/f frames, and only ~85 kB on the initial load.
+Net: the naïve 8× (~6 MB for both raster fields) becomes ~0.22 MB of speed frames +
+~0.30 MB of ζ/f frames (WebP + the 12 discrete classes), and only ~27 kB on the
+initial load.
 
 The **flow-trail** grids are JSON, not rasters, so the same lazy-transfer discipline
 applies with a different codec: values round to **4 dp** (the raw solve emits
 17-significant-digit floats — ~3× the bytes for sub-mm/s precision the decorative,
 gamma-scaled trails never resolve), which roughly halves each frame to ~0.45 MB. The
 now frame loads first (actually *lighter* than the single ~1 MB grid the map shipped
-before), the other seven prefetch once the map is idle, and scrubbing to an
+before), the other seven prefetch on the slider's first move, and scrubbing to an
 un-prefetched frame fetches it on demand — so the 8-frame flow set is ~3.6 MB total
 (~0.94 MB gzipped, comparable to one shading field) but only ~0.45 MB on load.
 
@@ -81,7 +107,8 @@ un-prefetched frame fetches it on demand — so the 8-frame flow set is ~3.6 MB 
 - `currents_-12h.json … currents_+72h.json` — 8 flow-trail leaflet-velocity grids,
   one per slider offset (`to_velocity_frames`), values rounded to 4 dp.
 - `currents_meta.json` / `vorticity_meta.json` — shared `bounds`, `vmax`
-  (+ `vmin` for ζ/f), `units`, `colorbar`, plus:
+  (+ `vmin` for ζ/f), `units`, `colorbar` (the 12 discrete class colours the raster
+  is binned to — see *Discrete colour classes*), plus:
   - `frames`: `[{offset_h, valid_time, file}]` — the slider manifest, one entry per
     frame with its own `valid_time`;
   - `now_offset_h`: `0` — which frame the slider opens on;

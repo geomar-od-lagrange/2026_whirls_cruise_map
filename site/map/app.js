@@ -345,7 +345,9 @@ function buildBatchGroups(geojson) {
 // instrument's markers. Above them, one master row per *overlay* (True track,
 // Forecast, Hindcast) turns that overlay's per-instrument layers on or off for
 // every instrument at once. Each overlay is `{ label, groups: {key: layer}, on }`
-// keyed by the same instrument key as `markerGroups`. They compose with the
+// keyed by the same instrument key as `markerGroups` — optionally with a `lazy`
+// loader whose (heavy, default-off) groups are fetched and merged in on the
+// master row's first tick rather than at load. They compose with the
 // instrument rows: an overlay's layer for an instrument shows only when both that
 // instrument's row and the overlay's master row are checked, so unchecking an
 // instrument hides its markers *and* every overlay riding on it. Data-driven from
@@ -362,8 +364,12 @@ function buildInstrumentRows(div, map, markerGroups, overlays) {
     batchOn[batch] = batch !== "pre_deploy";
 
   // Only the overlays with layers to show get a master row, so a missing/empty
-  // artifact (no tracks, no forecast) doesn't leave a dead checkbox.
-  const activeOverlays = overlays.filter((o) => Object.keys(o.groups).length);
+  // artifact (no tracks, no forecast) doesn't leave a dead checkbox. An overlay
+  // with a deferred `lazy` loader (the drifter true tracks, fetched on first tick)
+  // is kept even with empty groups — its master row is what fires the loader.
+  const activeOverlays = overlays.filter(
+    (o) => Object.keys(o.groups).length || o.lazy
+  );
 
   const toggle = (layer, show) =>
     layer && (show ? layer.addTo(map) : map.removeLayer(layer));
@@ -390,6 +396,19 @@ function buildInstrumentRows(div, map, markerGroups, overlays) {
     text.textContent = overlay.label;
     cb.addEventListener("change", () => {
       overlay.on = cb.checked;
+      // First tick of an overlay with a deferred loader (the drifter true tracks,
+      // kept off the critical-path load): fetch its groups once, merge them into
+      // overlay.groups and re-sync so visibility reconciles through the normal
+      // path. Null the loader so it fires exactly once; a missing artifact resolves
+      // to {} and nothing blanks (glider tracks are already in overlay.groups).
+      const load = overlay.lazy;
+      if (load) {
+        overlay.lazy = null;
+        load().then((groups) => {
+          Object.assign(overlay.groups, groups);
+          sync();
+        });
+      }
       sync();
     });
   }
@@ -428,19 +447,23 @@ function buildInstrumentRows(div, map, markerGroups, overlays) {
 // others; the flow / near-inertial layers (`overlays`) are independent
 // **checkboxes**. Rows are appended to `div` (the dock owns the box). The
 // initially-active shading is whichever `shadings` layer is already on the map
-// (speed, added by default), else "None". `onShadingChange(name)` fires on every
-// selection and once at build, so the caller can key the contextual sidebar
-// legends and the lazy ζ·f prefetch to the active shading.
+// (speed, added by default), else "None". `onShadingChange(name, legendEl)` fires on
+// every selection and once at build, so the caller can render the active shading's
+// colour scale into `legendEl` (the dock legend below the radios) and key the lazy
+// ζ·f prefetch to the active shading.
 function buildShadingRows(div, map, shadings, overlays, onShadingChange) {
   const names = Object.keys(shadings);
   let active = names.find((n) => n !== "None" && map.hasLayer(shadings[n])) ?? "None";
+  // The active shading's colour-class legend, right under the radios (null when
+  // there is no shading to show one for). onShadingChange fills it per selection.
+  let legendEl = null;
   const select = (name) => {
     active = name;
     for (const n of names) {
       if (n === name) shadings[n].addTo(map);
       else map.removeLayer(shadings[n]);
     }
-    onShadingChange?.(name);
+    onShadingChange?.(name, legendEl);
   };
 
   if (names.length) {
@@ -454,6 +477,7 @@ function buildShadingRows(div, map, shadings, overlays, onShadingChange) {
       L.DomUtil.create("span", "batch-text", row).textContent = name;
       rb.addEventListener("change", () => rb.checked && select(name));
     }
+    legendEl = L.DomUtil.create("div", "dock-legend", div);
   }
 
   const overlayNames = Object.keys(overlays);
@@ -472,7 +496,7 @@ function buildShadingRows(div, map, shadings, overlays, onShadingChange) {
     }
   }
 
-  onShadingChange?.(active); // set the initial legend state to match the default shading
+  onShadingChange?.(active, legendEl); // render the initial legend for the default shading
 }
 
 // The dock's Ships tab. A vessel's row is added lazily (`addVessel`) on its first
@@ -1389,12 +1413,9 @@ function updateDeployLegend(horizonH, markStepH) {
     // One hard-edged band per mark over the horizon (left = run, right = horizon), so
     // the bar shows the discrete swatch sequence, not a smooth gradient.
     const n = Math.max(1, Math.round(h / step));
-    const bands = [];
-    for (let k = 0; k < n; k++) {
-      const c = deployMarkColor((k + 1) * step, step);
-      bands.push(`${c} ${((k / n) * 100).toFixed(2)}% ${(((k + 1) / n) * 100).toFixed(2)}%`);
-    }
-    deployLegendBar.style.background = `linear-gradient(to right, ${bands.join(", ")})`;
+    const colors = [];
+    for (let k = 0; k < n; k++) colors.push(deployMarkColor((k + 1) * step, step));
+    deployLegendBar.style.background = hardStopBand(colors);
   }
 }
 
@@ -2085,46 +2106,56 @@ function renderAwaiting(ids) {
   }
 }
 
-// The legend (colour bar + shared vmax) is constant across the slider; only the
-// displayed *time* changes. Pass the selected `frame` ({offset_h, valid_time}) to
-// show which forecast step is on the map; without it, the now frame.
+// A discrete colour list as a hard-edged (banded) CSS gradient: each colour fills
+// an equal 1/n slice with a hard stop at both ends (c₀ 0% 8.33%, c₁ 8.33% 16.67%,
+// …), so neighbours never interpolate. The shading rasters snap to N_BINS flat
+// colour classes (see N_BINS in _currents.py) and ship those class colours as
+// `colorbar`; rendering them banded makes the legend show the raster's exact
+// classes, not a smooth ramp. Also drives the deploy dot band (updateDeployLegend).
+function hardStopBand(colors) {
+  const n = colors.length;
+  const stops = [];
+  for (let i = 0; i < n; i++) {
+    const a = ((i / n) * 100).toFixed(2);
+    const b = (((i + 1) / n) * 100).toFixed(2);
+    stops.push(`${colors[i]} ${a}% ${b}%`);
+  }
+  return `linear-gradient(to right, ${stops.join(", ")})`;
+}
+
+// The active shading's colour-class legend, as HTML for the Currents dock (below
+// the shading radios — moved there from the sidebar, where it was easy to overlook,
+// so the scale sits with the control that picks it). `meta.colorbar` is the raster's
+// discrete classes (see hardStopBand); `diverging` picks the ζ/f scale (vmin…0…+vmax
+// over the signed field) over the speed ramp (0→vmax). Returns "" (which
+// `.dock-legend:empty` collapses) when there is no meta — e.g. the "None" shading.
+// The legend is constant across the slider; only the displayed time (currents-time,
+// in the sidebar) changes as you scrub, so this need only render on shading change.
+function shadingLegendHtml(meta, diverging) {
+  if (!meta) return "";
+  const bar = `<div class="legend-bar" style="background:${hardStopBand(meta.colorbar)}"></div>`;
+  const scale = diverging
+    ? `<div class="legend-scale"><span>${meta.vmin.toFixed(2)}</span>` +
+      `<span>${meta.units}</span><span>+${meta.vmax.toFixed(2)}</span></div>`
+    : `<div class="legend-scale"><span>0</span>` +
+      `<span>speed (${meta.units})</span><span>${meta.vmax.toFixed(2)}</span></div>`;
+  return bar + scale;
+}
+
+// The sidebar "Surface currents" panel keeps only the displayed-time readout (the
+// colour scale now lives in the Currents dock). Pass the selected `frame`
+// ({offset_h, valid_time}) to show which forecast step is on the map; without it,
+// the now frame. Re-called on every slider scrub.
 function renderCurrentsInfo(meta, frame) {
   const timeEl = document.getElementById("currents-time");
-  const legendEl = document.getElementById("speed-legend");
   if (!meta) {
     timeEl.textContent = "Surface currents unavailable.";
-    legendEl.innerHTML = "";
     return;
   }
   const shown = frame ?? meta.frames?.find((f) => f.offset_h === (meta.now_offset_h ?? 0));
   const at = shown ? formatFixTime(shown.valid_time) : formatFixTime(meta.valid_time);
   const off = shown && shown.offset_h !== 0 ? ` (${frameOffsetLabel(shown.offset_h)})` : "";
   timeEl.textContent = `Showing ${at}${off} — CMEMS analysis/forecast.`;
-  const gradient = meta.colorbar.join(", ");
-  legendEl.innerHTML =
-    `<div class="legend-bar" style="background:linear-gradient(to right, ${gradient})"></div>` +
-    `<div class="legend-scale"><span>0</span>` +
-    `<span>speed (${meta.units})</span>` +
-    `<span>${meta.vmax.toFixed(2)}</span></div>`;
-}
-
-// Legend for the ζ/f overlay. A local twin of renderCurrentsInfo: the field is
-// signed, so the scale is symmetric (vmin…0…vmax) over a diverging bar, not the
-// 0→vmax speed ramp. vmin is negative; the sign convention (cyclonic +,
-// anticyclonic −) is stated in the panel's static hint.
-function renderVorticityInfo(meta) {
-  const legendEl = document.getElementById("vorticity-legend");
-  if (!legendEl) return;
-  if (!meta) {
-    legendEl.innerHTML = "";
-    return;
-  }
-  const gradient = meta.colorbar.join(", ");
-  legendEl.innerHTML =
-    `<div class="legend-bar" style="background:linear-gradient(to right, ${gradient})"></div>` +
-    `<div class="legend-scale"><span>${meta.vmin.toFixed(2)}</span>` +
-    `<span>${meta.units}</span>` +
-    `<span>+${meta.vmax.toFixed(2)}</span></div>`;
 }
 
 // Renderer for the combined forecast+hindcast sidebar panel. Both advect through
@@ -2610,7 +2641,6 @@ async function main() {
     currentShading["Vorticity ζ/f"] = vorticityLayer;
     shadingLayers.push({ layer: vorticityLayer, frames: vorticityMeta.frames });
   }
-  renderVorticityInfo(vorticityMeta);
 
   // Re-point the flow trails to the slider's frame `i`; assigned by the flow block
   // below (null until then, and if there is no flow data). Declared here so the
@@ -2620,6 +2650,13 @@ async function main() {
   // it once `scrubFlow` is assigned — the initial now-frame fetch is awaited, and a
   // scrub during that window would otherwise leave the flow pinned to now.
   let displayedFrameIndex = nowIndex(meta);
+
+  // One-shot background prefetch of the remaining speed + flow frames, fired on the
+  // slider's *first move* (below) instead of on idle — so a metered viewer who never
+  // touches the slider pays only the two now frames. `flowPrefetch` is wired up by
+  // the flow block once `loadFlow` exists (like `scrubFlow`), null until then.
+  let framesPrefetched = false;
+  let flowPrefetch = null;
 
   // Time slider: scrub the shadings *and* the flow trails through the forecast
   // together. It drives the speed frames' offsets/times (vorticity and flow share
@@ -2631,6 +2668,16 @@ async function main() {
   if (meta?.frames?.length > 1) {
     const frames = meta.frames;
     buildTimeSlider(map, frames, nowIndex(meta), (i) => {
+      // First slider move: warm the remaining speed *and* flow frames in the
+      // background so subsequent scrubbing is smooth. Until this fires an untouched
+      // slider pays only the two now frames — mirroring the ζ/f frames, which
+      // likewise prefetch on first selection (see onShadingChange). One-shot; the
+      // flow half is wired up by the flow block below (null until then).
+      if (!framesPrefetched) {
+        framesPrefetched = true;
+        prefetchFrames(frames);
+        flowPrefetch?.();
+      }
       for (const s of shadingLayers) {
         const file = s.frames[i]?.file;
         if (file) s.layer.setUrl(frameUrl(file));
@@ -2641,11 +2688,6 @@ async function main() {
       renderCurrentsInfo(meta, f);
       scrubFlow?.(i);
     });
-    // Prefetch the speed frames once the map is idle (the now frame is already
-    // loaded); prefetch the ζ/f frames only once vorticity is first selected, so an
-    // untouched layer costs no bytes. Both keep the slider smooth without inflating
-    // the critical-path load.
-    (window.requestIdleCallback || ((cb) => setTimeout(cb, 1500)))(() => prefetchFrames(frames));
   }
 
   // Flow trails: dark->white ramp keyed to speed, so the bright jet pops over the
@@ -2653,8 +2695,8 @@ async function main() {
   // which means the readout would show scaled m/s — so displayValues is off and
   // true speed is read from the shading legend instead. One leaflet-velocity grid
   // per slider offset (meta.flow_frames): the now frame loads on the critical path,
-  // the rest prefetch on idle, and scrubbing to an un-prefetched frame fetches it on
-  // demand — the same lazy pattern as the shading frames.
+  // the rest prefetch on the slider's first move, and scrubbing to an un-prefetched
+  // frame fetches it on demand — the same lazy pattern as the shading frames.
   const flowFrames = meta?.flow_frames ?? [];
   if (flowFrames.length && typeof L.velocityLayer === "function") {
     const flowCache = new Map(); // offset_h -> velocity data (fetched once, reused)
@@ -2713,11 +2755,13 @@ async function main() {
       // now). A no-op when untouched — `displayedFrameIndex` is still the now index.
       if (displayedFrameIndex !== nowIndex(meta)) scrubFlow(displayedFrameIndex);
 
-      // Prefetch the remaining frames once the map is idle (the now frame is loaded),
-      // so scrubbing is smooth without inflating the critical-path load.
-      (window.requestIdleCallback || ((cb) => setTimeout(cb, 1500)))(() =>
-        flowFrames.forEach(loadFlow)
-      );
+      // Warm the remaining flow frames on the slider's first move (one-shot, wired
+      // to the slider block above), not on idle — so an untouched slider costs only
+      // the now frame. If that first move already happened while the now frame was
+      // still fetching, run it now; otherwise it waits for the move. Scrubbing to an
+      // un-prefetched frame still fetches it on demand.
+      flowPrefetch = () => flowFrames.forEach(loadFlow);
+      if (framesPrefetched) flowPrefetch();
     }
   }
 
@@ -2734,12 +2778,13 @@ async function main() {
     startInertialClock(map, inertialGrid, inertialLayer, () => displayedFieldTime);
   }
 
-  // Trajectories and the current-advection forecast/hindcast, each grouped by
-  // batch (off by default; optional so a missing file can't blank the map). Not
-  // layer-control overlays: the batch control governs them, so unchecking a batch
-  // hides its track, forecast and hindcast along with its markers.
-  const tracks = await fetchJSON(DATA.tracks, { optional: true });
-  const trackGroups = tracks ? buildTrackGroups(tracks) : {};
+  // The current-advection forecast/hindcast, each grouped by batch (off by
+  // default; optional so a missing file can't blank the map). Not layer-control
+  // overlays: the batch control governs them, so unchecking a batch hides its
+  // forecast and hindcast along with its markers. The drifter true tracks
+  // (tracks.geojson, ~0.7 MB) are the heaviest of the three and default off, so
+  // they are *not* fetched here — the "True track" overlay carries a `lazy` loader
+  // that fetches and builds them on the master row's first tick (see below).
   const forecast = await fetchJSON(DATA.forecast, { optional: true });
   const forecastGroups = forecast ? buildAdvectionGroups(forecast, FORECAST_COLOR) : {};
   const hindcast = await fetchJSON(DATA.hindcast, { optional: true });
@@ -2773,16 +2818,20 @@ async function main() {
   // Awaiting-first-fix sidebar.
   renderAwaiting(await fetchJSON(DATA.awaiting, { optional: true }));
 
-  // Contextual sidebar legends: the speed legend shows only while "Current speed"
-  // is the active shading, the ζ/f legend only while "Vorticity ζ/f" is — so a
-  // legend never sits open for a shading that's off. This is also the seam for the
+  // Render the active shading's colour scale into the Currents dock legend (below
+  // the radios), so only the on-map shading shows a scale and it sits with its
+  // control instead of in the easy-to-miss sidebar. This is also the seam for the
   // lazy ζ/f-frame prefetch (first time that shading is picked), which used to hang
   // off the removed layer control's baselayerchange event.
-  const setLegendShown = (id, shown) =>
-    document.getElementById(id)?.classList.toggle("legend-hidden", !shown);
-  const onShadingChange = (name) => {
-    setLegendShown("speed-legend", name === "Current speed");
-    setLegendShown("vorticity-legend", name === "Vorticity ζ/f");
+  const onShadingChange = (name, legendEl) => {
+    if (legendEl) {
+      legendEl.innerHTML =
+        name === "Current speed"
+          ? shadingLegendHtml(meta, false)
+          : name === "Vorticity ζ/f"
+            ? shadingLegendHtml(vorticityMeta, true)
+            : ""; // "None" — collapsed by .dock-legend:empty
+    }
     if (name === "Vorticity ζ/f" && !vortPrefetched && vorticityMeta?.frames) {
       vortPrefetched = true;
       prefetchFrames(vorticityMeta.frames);
@@ -2811,7 +2860,16 @@ async function main() {
         buildInstrumentRows(div, map, markerGroups, [
           {
             label: "True track",
-            groups: { ...trackGroups, ...gliderTrackGroups },
+            // Glider tracks ride gliders.geojson (already fetched for the markers),
+            // so they start in `groups` eagerly and merged, as today. The drifter
+            // true tracks (tracks.geojson) default off and are the heaviest
+            // artifact, so they load once on the master row's first tick via the
+            // `lazy` loader — buildInstrumentRows merges the resolved groups in.
+            groups: { ...gliderTrackGroups },
+            lazy: async () => {
+              const tracks = await fetchJSON(DATA.tracks, { optional: true });
+              return tracks ? buildTrackGroups(tracks) : {};
+            },
             on: false,
             color: TRACK_COLOR,
           },

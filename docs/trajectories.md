@@ -116,6 +116,15 @@ instrument's track shows only when both its own row and the master True track ro
 are checked**, so unchecking an instrument hides its markers *and* its track
 together. Markers start visible; tracks start hidden.
 
+Because the True-track overlay defaults off and `tracks.geojson` is the heaviest
+data artifact, its drifter lines are **not fetched at load**: the first tick of the
+master **True track** checkbox fetches `tracks.geojson` once, builds the lines, and
+merges them into the overlay — so a viewer who never opens the tracks pays none of
+those bytes. The glider tracks ride `gliders.geojson` (already fetched for the
+markers), so they appear the instant the master row is checked, even before the
+drifter fetch resolves. If `tracks.geojson` is missing, the toggle is a no-op for
+drifters and still governs the glider tracks.
+
 The gliders' tracks share this **True track** layer, drawn in the same orange
 `TRACK_COLOR` so every past track reads as one layer — the instrument identity
 stays on the coloured diamond marker, not the track (see [gliders.md](gliders.md)).
