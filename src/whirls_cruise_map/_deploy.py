@@ -6,10 +6,22 @@ are not a free drift. Using the vessel track, find where each drifter left the
 vessel's vicinity and report the time of its first free-drift fix, so the
 trajectory can be truncated there (see :func:`_geojson.tracks_geojson`).
 
-The rule is deliberately conservative — exactness of the deployment instant does
-not matter, but leaking a vessel-following fix into the free track does — so the
-cut is placed after the *last* fix within :data:`NEAR_SHIP_KM` of the vessel:
-everything kept is, by construction, beyond that distance.
+The scan walks each drifter's fixes in time order and stops at its first
+**clear departure**: consecutive fixes beyond :data:`DETACHED_KM` after the
+drifter has been within :data:`NEAR_SHIP_KM`. Once a drifter has been that
+clearly away it is deployed for good, and later close passes (the vessel works
+among its own drifters routinely) can never re-truncate the established free
+track. Two kinds of distance noise are deliberately inert: far fixes *before*
+the first near fix (drifters sit in the staging port days before the vessel
+arrives, so a far pre-history does not mean already deployed), and a *lone* far
+fix amid near ones (a GPS outlier must not end the attached leg early and leak
+the remaining transit into the free track — hence *consecutive*). Within the
+attached leg the rule is deliberately conservative — exactness of the deployment
+instant does not matter, but leaking a vessel-following fix into the free track
+does — so the cut is placed after the *last* fix within :data:`NEAR_SHIP_KM` of
+the vessel: everything kept up to the departure is beyond that distance, while
+fixes after it are kept regardless (a later close pass is part of the free
+drift).
 """
 from __future__ import annotations
 
@@ -22,6 +34,12 @@ import pandas as pd
 # deck / alongside). Comfortably above GPS + ship-length scatter (~0.1 km seen on
 # deck), far below deployed separations (5+ km).
 NEAR_SHIP_KM = 1.0
+# Beyond this distance on consecutive fixes (after having been near) a drifter
+# is deployed for good: the attachment scan stops there, so a later close pass
+# cannot re-truncate the free track. Comfortably above any ship-track
+# interpolation scatter seen while a drifter is aboard, and matched to the
+# separation a genuinely deployed drifter reaches (5+ km).
+DETACHED_KM = 5.0
 _EARTH_RADIUS_KM = 6371.0
 
 
@@ -67,17 +85,23 @@ def deployment_starts(
 ) -> dict[str, pd.Timestamp]:
     """Map each drifter to the time of its first free-drift fix.
 
-    A drifter's key is present only when a cut is warranted:
+    Fixes are scanned in time order up to the drifter's first clear departure —
+    consecutive fixes beyond :data:`DETACHED_KM` after a fix within
+    :data:`NEAR_SHIP_KM` — which freezes the cut: nothing later (in particular
+    a close pass by the vessel) can re-truncate the established free track. A
+    drifter's key is present only when a cut is warranted:
 
-    - **detached** — some fix is within :data:`NEAR_SHIP_KM` and a later fix is
-      not: the value is the time of the first fix after the last attached one.
-    - **still attached** — every fix (through the latest) is within range: the
-      value is a time just past the last fix, so the free track is empty and the
-      drifter draws no trajectory (it is not freely drifting yet).
+    - **detached** — the drifter was within :data:`NEAR_SHIP_KM` and a later
+      fix exists: the value is the time of the first fix after the last
+      attached one.
+    - **still attached** — the latest fix is within :data:`NEAR_SHIP_KM` (and
+      no clear departure happened before it): the value is a time just past the
+      last fix, so the free track is empty and the drifter draws no trajectory
+      (it is not freely drifting yet).
 
-    A drifter never seen near the vessel is **absent** from the map — no basis to
-    truncate, so its full track is kept. An empty ``ship_track`` yields an empty
-    map (no truncation anywhere).
+    A drifter never within :data:`NEAR_SHIP_KM` of the vessel is **absent**
+    from the map — no basis to truncate, so its full track is kept. An empty
+    ``ship_track`` yields an empty map (no truncation anywhere).
     """
     if not ship_track:
         return {}
@@ -85,11 +109,26 @@ def deployment_starts(
     starts: dict[str, pd.Timestamp] = {}
     for d_number, group in tracks.sort_values("date_UTC").groupby("D_number"):
         rows = list(group.itertuples(index=False))
-        last_attached = None
-        for i, row in enumerate(rows):
+        dists = []
+        for row in rows:
             slat, slon = ship.at(row.date_UTC)
-            if _haversine_km(row.Latitude, row.Longitude, slat, slon) <= NEAR_SHIP_KM:
+            dists.append(_haversine_km(row.Latitude, row.Longitude, slat, slon))
+        last_attached = None
+        for i, dist in enumerate(dists):
+            if dist <= NEAR_SHIP_KM:
                 last_attached = i
+            elif (
+                last_attached is not None
+                and dist > DETACHED_KM
+                and i + 1 < len(dists)
+                and dists[i + 1] > DETACHED_KM
+            ):
+                # Clear departure: deployed for good, the cut is frozen — a
+                # later close pass by the vessel cannot re-truncate the track.
+                # A lone far fix (GPS outlier) does not qualify, and neither do
+                # far fixes before the first near one (port staging while the
+                # vessel is still elsewhere).
+                break
         if last_attached is None:
             continue  # never near the vessel — keep the full track
         if last_attached + 1 < len(rows):
