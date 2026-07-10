@@ -37,8 +37,9 @@ still on deck (stationary) or still aboard during transit (ship-speed motion):
 - **Drifted away from the ship** — it started near the vessel and its distance to
   the vessel has been increasing; it is separating, not riding along on deck.
 - **Sustained realistic drift** — it has drifted for at least an hour at speeds
-  consistent with the surface currents (order 0.1–1 m/s here), not near-zero
-  (on deck) and not ship-transit fast (several m/s).
+  consistent with the surface currents (order 0.1–1 m/s, reaching ~1.5–1.7 m/s in
+  the region's fast Agulhas-current jets), not near-zero (on deck) and not
+  ship-transit fast (several m/s).
 
 The check is done by hand against the live positions, the derived per-segment
 speeds, and the R/V Marion Dufresne track (see [ship.md](ship.md)); the resulting
@@ -51,8 +52,12 @@ speed (~0.5–0.7 m/s) at assignment; **Deployment 4** — an array staged toget
 the Marion Dufresne and left in the water as the ship departed station, seeded with
 the two drifters (D-433, D-434) confirmed separated (21–44 km) and drifting (~0.2 m/s)
 first, to be extended as the array's other staged drifters report their own free
-drift. Drifters that merely reported the same day while stationary on deck, or that
-showed only brief ship-transit motion, stayed `pre_deploy`.
+drift; **Deployment 5** — a large overnight array of 77 drifters that went into the
+water between 2026-07-09 21:29 and 2026-07-10 05:30 UTC, each confirmed separated
+from the vessel (14–67 km) and drifting steadily at surface-current speed (~0.3–1.7
+m/s) by assignment (a handful included with a last fix ~1 h old — an irregular
+reporting gap, not a behavioural one). Drifters that merely reported the same day while stationary on
+deck, or that showed only brief ship-transit motion, stayed `pre_deploy`.
 
 ## GUI: the instrument filter
 
@@ -111,7 +116,7 @@ lands.
 `styleForBatch()` is the single seam for per-batch appearance, and the swatches
 in the control follow whatever it returns. Staged drifters (`pre_deploy`) render
 muted grey; each deployment batch has its own vivid colour (Deployment 1 blue,
-Deployment 2 teal, Deployment 3 orange, Deployment 4 purple), so in-water drifters
-stand out from those still awaiting deployment and successive deployments read
-apart. Colours live in `BATCH_STYLES` in `app.js`; a further deployment with no
-entry falls back to blue until given one.
+Deployment 2 teal, Deployment 3 orange, Deployment 4 purple, Deployment 5 magenta),
+so in-water drifters stand out from those still awaiting deployment and successive
+deployments read apart. Colours live in `BATCH_STYLES` in `app.js`; a further
+deployment with no entry falls back to blue until given one.
