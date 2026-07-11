@@ -59,20 +59,27 @@ body {
   cursor: default;
 }
 
-/* Imprint link, right-aligned in the title bar. Same size as the caution tag
-   but plain white-on-black — no pill, no highlight (margin-left:auto pushes it
-   to the far right of the flex header). */
-.imprint-link {
+/* Right-aligned link cluster in the title bar (data browser, imprint).
+   margin-left:auto pushes the whole nav to the far right; the header's flex
+   gap spaces the links. */
+.header-links {
   margin-left: auto;
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Same size as the caution tag but plain white-on-black — no pill, no highlight. */
+.header-link {
   font-size: 0.72rem;
   color: #fff;
   text-decoration: none;
   white-space: nowrap;
 }
 
-.imprint-link:hover,
-.imprint-link:focus {
+.header-link:hover,
+.header-link:focus {
   text-decoration: underline;
 }
 
