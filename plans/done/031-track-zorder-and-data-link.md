@@ -1,9 +1,15 @@
 # Track z-order + zoom-scaled tracks, and a data-browser link
 
-> **Implemented.** Selection z-order and zoom-scaled line/dot sizing are
-> documented in [docs/trajectories.md](../../docs/trajectories.md) (*Selection*
-> and *Rendering and stacking order*). The data-browser header link is a
-> self-contained `site/map/` change.
+> **Implemented, then refined.** The design below reached the map as
+> selection z-order + zoom-scaled lines *and* zoom-gated per-fix dots. The dots
+> were then **removed entirely** (they cluttered the tracks at every zoom): each
+> track is now one polyline **per fix-to-fix segment**, and the per-fix tooltip
+> that lived on each dot moved onto its segment, so hovering the line still shows
+> that leg's fix. The zoom-scaled *line weight* and the selection z-order stayed.
+> Current behaviour is in [docs/trajectories.md](../../docs/trajectories.md)
+> (*Tooltips*, *Selection*, *Rendering and stacking order*); the dot-specific
+> parts of this plan (`dotStyle`/`dotRadius`/`DOT_MIN_ZOOM`) are historical.
+> The data-browser header link is a self-contained `site/map/` change.
 
 
 Covers issues #11 (highlighted-track z-order + zoom-dependent line/dot sizing)
