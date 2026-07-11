@@ -277,9 +277,9 @@ let selectedInstrument = null;
 // tracks stay distinct when zoomed out and their dots surface when zoomed in.
 let trackZoom = FALLBACK_ZOOM;
 
-// Per-fix dots only appear at the finest three zoom levels (MAX_ZOOM-2 .. MAX_ZOOM);
+// Per-fix dots only appear at the finest four zoom levels (MAX_ZOOM-3 .. MAX_ZOOM);
 // zoomed out, the individual dots blur the tracks together, so they are hidden.
-const DOT_MIN_ZOOM = MAX_ZOOM - 2;
+const DOT_MIN_ZOOM = MAX_ZOOM - 3;
 
 // Thin lines when zoomed out so overlapping tracks stay separable, a touch
 // heavier zoomed in. The selected track keeps a fixed extra weight so it still

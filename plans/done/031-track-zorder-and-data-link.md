@@ -37,8 +37,8 @@ radius a function of the current zoom (maxZoom = 12):
 
 - **Line weight**: 1 at coarse zoom, stepping up to 2 zoomed in; the selected
   track stays a fixed increment thicker so it still reads as picked.
-- **Dot radius**: hidden (radius 0) below the finest three zoom levels
-  (zoom < 10), then shown at 10–12.
+- **Dot radius**: hidden (radius 0) below the finest four zoom levels
+  (zoom < 9), then shown at 9–12.
 
 `lineStyle`/`dotStyle` read a module-level `trackZoom`, updated on `zoomend`,
 which then re-runs `applySelection` to restyle every registered part. Heads and
