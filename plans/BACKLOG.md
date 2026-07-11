@@ -9,7 +9,10 @@ Unscheduled ideas, not yet promoted to a plan.
   persistence this wanted; parquet stays a deferred efficiency companion there.
 - **Track thinning** — simplify/decimate dense trajectories (the ship's 10-min
   grid, ≤5 min drifter snapshots over weeks) for rendering performance, now that
-  every fix draws a dot.
+  every fix draws a dot. *Coarse-zoom visual clutter is handled by the
+  zoom-gated dots from [031](done/031-track-zorder-and-data-link.md) (dots hidden
+  below the finest zooms); the layers still exist, so the performance decimation
+  this wanted is still open.*
 - **GPS despike at ingestion** — several Deployment-1 drifters show single-fix
   out-and-back GPS spikes (one stray fix implying 15–140 m/s to both
   neighbours; seen in D-577, D-602, D-606, D-610, D-630, worst in D-611 and

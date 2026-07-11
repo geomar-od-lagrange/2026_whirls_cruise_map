@@ -43,6 +43,10 @@ const FLOW_COLORS = [
 // Fallback view if no valid positions are present (cruise staging, Table Bay).
 const FALLBACK_CENTER = [-33.9, 18.43];
 const FALLBACK_ZOOM = 12;
+// Deepest zoom (bounded — no zooming into empty space past the field's
+// resolution). Also the top of the track line/dot sizing ramp (see trackWeight /
+// dotRadius); passed to L.map so the two stay in sync.
+const MAX_ZOOM = 12;
 
 // R/V Marion Dufresne live track. Fetched client-side from the French
 // Oceanographic Fleet (Flotte Océanographique Française) localisation API — the
@@ -268,6 +272,31 @@ function desaturate(hex, amount = 0.72) {
 
 const trackParts = {}; // instrument key -> [restyle(state), ...]
 let selectedInstrument = null;
+// Current map zoom, kept live by a `zoomend` handler in main(). Track line
+// weight and per-fix dot radius scale with it (trackWeight / dotRadius) so that
+// tracks stay distinct when zoomed out and their dots surface when zoomed in.
+let trackZoom = FALLBACK_ZOOM;
+
+// Per-fix dots only appear at the finest three zoom levels (MAX_ZOOM-2 .. MAX_ZOOM);
+// zoomed out, the individual dots blur the tracks together, so they are hidden.
+const DOT_MIN_ZOOM = MAX_ZOOM - 2;
+
+// Thin lines when zoomed out so overlapping tracks stay separable, a touch
+// heavier zoomed in. The selected track keeps a fixed extra weight so it still
+// reads as picked at any zoom.
+function trackWeight(zoom, selected) {
+  const base = zoom >= MAX_ZOOM - 2 ? 2 : zoom >= MAX_ZOOM - 5 ? 1.5 : 1;
+  return selected ? base + 2.5 : base;
+}
+
+// Per-fix dot radius: hidden (0) until the finest zoom levels, then shown —
+// slightly larger for the selected track. 0 renders nothing, so coarse zoom is
+// lines only.
+function dotRadius(zoom, selected) {
+  if (zoom < DOT_MIN_ZOOM) return 0;
+  const base = zoom >= MAX_ZOOM ? 3.5 : 3;
+  return selected ? base + 1 : base;
+}
 
 const stateFor = (key) =>
   key === selectedInstrument ? "selected" : selectedInstrument ? "dim" : "normal";
@@ -290,18 +319,36 @@ function selectInstrument(key) {
   applySelection();
 }
 
-// Shared line/dot restylers — all track lines and dots are TRACK_COLOR, so both
+// Shared line/dot styles — all track lines and dots are TRACK_COLOR, so both
 // drifter and glider elements use these. Opacity is held constant across states:
-// dimming is by desaturation, not transparency.
-const lineStyle = (state) =>
-  state === "selected"
-    ? { color: SELECTED_COLOR, weight: 5, opacity: 1 }
-    : { color: state === "dim" ? desaturate(TRACK_COLOR) : TRACK_COLOR, weight: 2, opacity: 0.85 };
+// dimming is by desaturation, not transparency. Weight and dot radius follow the
+// live zoom (see trackWeight / dotRadius).
+const trackColor = (state) =>
+  state === "selected" ? SELECTED_COLOR : state === "dim" ? desaturate(TRACK_COLOR) : TRACK_COLOR;
+const lineStyle = (state) => ({
+  color: trackColor(state),
+  weight: trackWeight(trackZoom, state === "selected"),
+  opacity: state === "selected" ? 1 : 0.85,
+});
 const dotStyle = (state) => {
-  const c =
-    state === "selected" ? SELECTED_COLOR : state === "dim" ? desaturate(TRACK_COLOR) : TRACK_COLOR;
+  const c = trackColor(state);
   return { color: c, fillColor: c, opacity: 1, fillOpacity: state === "selected" ? 1 : 0.9 };
 };
+
+// Restyle a track line / per-fix dot for the current selection state and zoom,
+// and lift the selected instrument's parts to the front of the shared track
+// renderer (overlayPane) so the picked track sits above every *other track* —
+// but still below the head/ship marker panes (issue #11). Both the drifter and
+// glider builders route through these so front-raising is defined once.
+function restyleLine(line, state) {
+  line.setStyle(lineStyle(state));
+  if (state === "selected") line.bringToFront();
+}
+function restyleDot(dot, state) {
+  dot.setStyle(dotStyle(state));
+  dot.setRadius(dotRadius(trackZoom, state === "selected"));
+  if (state === "selected") dot.bringToFront();
+}
 // A drifter head is a per-batch circleMarker: hold its batch colour, enlarge it
 // when selected, and desaturate that batch colour when another instrument is.
 function styleHead(marker, base, state) {
@@ -779,7 +826,7 @@ function buildTrackGroups(geojson) {
       bubblingMouseEvents: false, // background clicks (not this) clear selection
     }).addTo(group);
     if (D_number != null) {
-      registerPart(D_number, (s) => line.setStyle(lineStyle(s)));
+      registerPart(D_number, (s) => restyleLine(line, s));
       line.on("click", () => selectInstrument(D_number));
     }
     coords.forEach(([lng, lat], i) => {
@@ -796,7 +843,7 @@ function buildTrackGroups(geojson) {
       // add the line-level identity for the same tooltip as the main marker.
       dot.bindTooltip(popupHtml({ D_number, batch, ...fix }, dot.getLatLng()));
       if (D_number != null) {
-        registerPart(D_number, (s) => dot.setStyle(dotStyle(s)));
+        registerPart(D_number, (s) => restyleDot(dot, s));
         dot.on("click", () => selectInstrument(D_number));
       }
       group.addLayer(dot);
@@ -2064,7 +2111,7 @@ function buildGliderTrackGroups(geojson) {
       bubblingMouseEvents: false, // background clicks (not this) clear selection
     }).addTo(group);
     if (id != null) {
-      registerPart(id, (s) => line.setStyle(lineStyle(s)));
+      registerPart(id, (s) => restyleLine(line, s));
       line.on("click", () => selectInstrument(id));
     }
     coords.forEach(([lng, lat], i) => {
@@ -2078,7 +2125,7 @@ function buildGliderTrackGroups(geojson) {
       });
       dot.bindTooltip(gliderPopupHtml({ id, type, ...(fixes?.[i] ?? {}) }, dot.getLatLng()));
       if (id != null) {
-        registerPart(id, (s) => dot.setStyle(dotStyle(s)));
+        registerPart(id, (s) => restyleDot(dot, s));
         dot.on("click", () => selectInstrument(id));
       }
       group.addLayer(dot);
@@ -2471,7 +2518,17 @@ async function main() {
   const map = L.map("map", {
     center: FALLBACK_CENTER,
     zoom: FALLBACK_ZOOM,
-    maxZoom: 12,
+    maxZoom: MAX_ZOOM,
+  });
+
+  // Track line weight and per-fix dot radius scale with zoom (see trackWeight /
+  // dotRadius): thin, dotless tracks when zoomed out so they stay separable; the
+  // per-fix dots surface at the finest levels. Re-run the registered restylers
+  // whenever the zoom lands so every line/dot picks up the new size.
+  trackZoom = map.getZoom();
+  map.on("zoomend", () => {
+    trackZoom = map.getZoom();
+    applySelection();
   });
 
   const currentOverlays = {};

@@ -133,11 +133,14 @@ stays on the coloured diamond marker, not the track (see [gliders.md](gliders.md
 
 Clicking any part of an instrument — its **line**, one of its **dots**, or its
 **latest-position head marker** — selects that instrument: its line **brightens**
-(to a lighter orange) and thickens, and its head enlarges, while **every other
+(to a lighter orange) and thickens, its head enlarges, and its line and dots are
+**raised in front of every other track** (`bringToFront`), while **every other
 instrument desaturates** — greyed rather than faded, so it recedes without
 vanishing. One track lifts out of the overlapping tangle while the rest stay
-legible. Clicking the selected instrument again, or clicking the empty map, clears
-the selection.
+legible. The raise stops at the track layer: the selected track still draws
+*below* the latest-position heads and the ship (which live in higher panes), so
+it comes forward among the tracks without ever hiding a marker. Clicking the
+selected instrument again, or clicking the empty map, clears the selection.
 
 Selection spans **every instrument that carries a track** — the drifters *and* the
 gliders (seagliders, the XSPAR) — since all their tracks share the one orange
@@ -162,7 +165,11 @@ and the desaturated others are the two ends of that treatment.
 
 Restyling happens **in place** and mutates each layer's options (`setStyle` /
 `setIcon`), so the styling survives a batch toggle's remove/re-add: a hidden track
-is restyled too and shows correctly the moment its instrument is re-enabled.
+is restyled too and shows correctly the moment its instrument is re-enabled. The
+front-raise is the one part that is *draw order*, not an option, so it is not
+carried by a remove/re-add — it is simply reapplied by the next `applySelection`
+pass (any selection change or zoom), which is when a re-enabled selected track
+returns to the front.
 Click and hover are cleanly separated: **hovering** a dot or head shows that fix's
 tooltip (see above), while **clicking** selects the instrument — the tooltip is
 non-interactive (`pointer-events: none`), so it never intercepts the click.
@@ -178,6 +185,18 @@ carries no tooltip). Because the line and its dots resolve to the same drifter,
 there is no click for the line to "swallow": whichever the pointer lands on, the
 result is the same selection. Dots are individual SVG circle markers (each
 independently hit-testable, and each also bearing that fix's hover tooltip).
+
+**Line weight and dot radius scale with zoom** so the tracks read well at every
+scale. Zoomed out, overlapping tracks blur together, so lines are **thin** and the
+per-fix **dots are hidden** (radius 0); the dots reappear only at the finest three
+zoom levels (`DOT_MIN_ZOOM = MAX_ZOOM − 2`), where there is room for them, and the
+lines thicken a step. The selected track keeps a fixed extra weight (and slightly
+larger dots) on top of whatever the zoom sets, so it reads as picked at any scale.
+`trackWeight`/`dotRadius` are pure functions of the live zoom (`trackZoom`, kept
+current by a `zoomend` handler that re-runs `applySelection`); the single
+`lineStyle`/`dotStyle` pair reads them, so drifter and glider tracks scale
+identically. The latest-position heads and the ship track do not scale — only the
+track lines and their fix dots.
 
 The ship track and its per-fix dots sit **below the drifter markers** too, for a
 specific reason: the cruise departs the drifters' staging port, so the early ship
