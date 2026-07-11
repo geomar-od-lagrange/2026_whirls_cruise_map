@@ -188,7 +188,8 @@ independently hit-testable, and each also bearing that fix's hover tooltip).
 
 **Line weight and dot radius scale with zoom** so the tracks read well at every
 scale. Zoomed out, overlapping tracks blur together, so lines are **thin** and the
-per-fix **dots are hidden** (radius 0); the dots reappear only at the finest four
+per-fix **dots are hidden** (fully transparent — Leaflet floors a circle's drawn
+radius at 1px, so hiding is by opacity, not radius 0); the dots reappear only at the finest four
 zoom levels (`DOT_MIN_ZOOM = MAX_ZOOM − 3`), where there is room for them, and the
 lines thicken a step. The selected track keeps a fixed extra weight (and slightly
 larger dots) on top of whatever the zoom sets, so it reads as picked at any scale.

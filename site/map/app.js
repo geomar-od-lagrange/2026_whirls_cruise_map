@@ -345,8 +345,17 @@ function restyleLine(line, state) {
   if (state === "selected") line.bringToFront();
 }
 function restyleDot(dot, state) {
-  dot.setStyle(dotStyle(state));
-  dot.setRadius(dotRadius(trackZoom, state === "selected"));
+  const r = dotRadius(trackZoom, state === "selected");
+  const style = dotStyle(state);
+  // Leaflet's renderers floor a circle's drawn radius at 1px (Math.max(_radius, 1)),
+  // so setRadius(0) still paints a dot. Hide the coarse-zoom dots by going fully
+  // transparent instead — the radius is set too, so they snap back on zoom-in.
+  if (r === 0) {
+    style.opacity = 0;
+    style.fillOpacity = 0;
+  }
+  dot.setStyle(style);
+  dot.setRadius(r);
   if (state === "selected") dot.bringToFront();
 }
 // A drifter head is a per-batch circleMarker: hold its batch colour, enlarge it
