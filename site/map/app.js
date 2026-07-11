@@ -43,6 +43,10 @@ const FLOW_COLORS = [
 // Fallback view if no valid positions are present (cruise staging, Table Bay).
 const FALLBACK_CENTER = [-33.9, 18.43];
 const FALLBACK_ZOOM = 12;
+// Deepest zoom (bounded — no zooming into empty space past the field's
+// resolution). Also the top of the track line-weight ramp (see trackWeight);
+// passed to L.map so the two stay in sync.
+const MAX_ZOOM = 12;
 
 // R/V Marion Dufresne live track. Fetched client-side from the French
 // Oceanographic Fleet (Flotte Océanographique Française) localisation API — the
@@ -268,6 +272,17 @@ function desaturate(hex, amount = 0.72) {
 
 const trackParts = {}; // instrument key -> [restyle(state), ...]
 let selectedInstrument = null;
+// Current map zoom, kept live by a `zoomend` handler in main(). Track line
+// weight scales with it (trackWeight) so tracks stay distinct when zoomed out.
+let trackZoom = FALLBACK_ZOOM;
+
+// Thin lines when zoomed out so overlapping tracks stay separable, a touch
+// heavier zoomed in. The selected track keeps a fixed extra weight so it still
+// reads as picked at any zoom.
+function trackWeight(zoom, selected) {
+  const base = zoom >= MAX_ZOOM - 2 ? 2 : zoom >= MAX_ZOOM - 5 ? 1.5 : 1;
+  return selected ? base + 2.5 : base;
+}
 
 const stateFor = (key) =>
   key === selectedInstrument ? "selected" : selectedInstrument ? "dim" : "normal";
@@ -290,18 +305,52 @@ function selectInstrument(key) {
   applySelection();
 }
 
-// Shared line/dot restylers — all track lines and dots are TRACK_COLOR, so both
-// drifter and glider elements use these. Opacity is held constant across states:
-// dimming is by desaturation, not transparency.
-const lineStyle = (state) =>
-  state === "selected"
-    ? { color: SELECTED_COLOR, weight: 5, opacity: 1 }
-    : { color: state === "dim" ? desaturate(TRACK_COLOR) : TRACK_COLOR, weight: 2, opacity: 0.85 };
-const dotStyle = (state) => {
-  const c =
-    state === "selected" ? SELECTED_COLOR : state === "dim" ? desaturate(TRACK_COLOR) : TRACK_COLOR;
-  return { color: c, fillColor: c, opacity: 1, fillOpacity: state === "selected" ? 1 : 0.9 };
-};
+// Shared line style — all track lines are TRACK_COLOR, so both drifter and glider
+// elements use it. Opacity is held constant across states: dimming is by
+// desaturation, not transparency. Weight follows the live zoom (see trackWeight).
+const trackColor = (state) =>
+  state === "selected" ? SELECTED_COLOR : state === "dim" ? desaturate(TRACK_COLOR) : TRACK_COLOR;
+const lineStyle = (state) => ({
+  color: trackColor(state),
+  weight: trackWeight(trackZoom, state === "selected"),
+  opacity: state === "selected" ? 1 : 0.85,
+});
+
+// Restyle a track line for the current selection state and zoom, and lift the
+// selected instrument's segments to the front of the shared track renderer
+// (overlayPane) so the picked track sits above every *other track* — but still
+// below the head/ship marker panes (issue #11). Both the drifter and glider
+// builders route through this so front-raising is defined once.
+function restyleLine(line, state) {
+  line.setStyle(lineStyle(state));
+  if (state === "selected") line.bringToFront();
+}
+
+// Build a track as one polyline *per fix-to-fix segment* rather than a single
+// line plus a dot at every fix. The segments abut into one continuous line, but
+// each carries its own hover tooltip — the tooltip that used to live on the
+// per-fix dot — so hovering anywhere along the track shows that leg's fix
+// (no separate dot markers; the whole line is the hover target). `tip(fix, latlng)`
+// renders the fix tooltip; each segment registers for click-to-highlight under
+// `key` (a drifter D_number or glider id) and selects it on click. Segment i
+// (coords[i] -> coords[i+1]) is tagged with fix i at its start; the final fix is
+// the instrument's latest-position head marker, so every fix stays reachable.
+function addTrackSegments(group, coords, fixes, key, tip) {
+  const pts = coords.map(([lng, lat]) => [lat, lng]);
+  for (let i = 0; i < pts.length - 1; i++) {
+    const seg = L.polyline([pts[i], pts[i + 1]], {
+      color: TRACK_COLOR,
+      weight: 2,
+      opacity: 0.85,
+      bubblingMouseEvents: false, // background clicks (not this) clear selection
+    }).addTo(group);
+    seg.bindTooltip(tip(fixes?.[i] ?? {}, L.latLng(pts[i])), { sticky: true });
+    if (key != null) {
+      registerPart(key, (s) => restyleLine(seg, s));
+      seg.on("click", () => selectInstrument(key));
+    }
+  }
+}
 // A drifter head is a per-batch circleMarker: hold its batch colour, enlarge it
 // when selected, and desaturate that batch colour when another instrument is.
 function styleHead(marker, base, state) {
@@ -753,17 +802,16 @@ const DEPLOY_COLOR = "#16a34a";
 const KM_PER_DEG = 111.19492664455873;
 const KN_TO_KMH = 1.852;
 
-// Trajectories, grouped by `batch` so each batch's lines+dots toggle with that
-// batch's markers (see buildInstrumentRows). For each drifter: one line, plus a
-// small dot at every fix. Each dot carries the same hover tooltip as the drifter's
-// main marker, but filled with *that fix's* own time, battery, and reported/derived
-// velocity — read from the per-vertex `fixes` array that rides parallel to
-// `coordinates`. Tolerates a
-// `fixes`-less artifact from an older build: the dot then falls back to the
-// line-level identity (D_number/batch) with an unknown time. The line and dots
-// are interactive: clicking either selects the drifter (see selectInstrument);
-// both resolve to the same drifter, so there is no click to "swallow". Returns
-// { batch: featureGroup }.
+// Trajectories, grouped by `batch` so each batch's lines toggle with that batch's
+// markers (see buildInstrumentRows). Each drifter's track is drawn as one polyline
+// per fix-to-fix segment (see addTrackSegments), so the whole line is a hover
+// target: hovering a segment shows *that fix's* own time, battery, and
+// reported/derived velocity — read from the per-vertex `fixes` array that rides
+// parallel to `coordinates`, and filled into the same popup as the drifter's main
+// marker. Tolerates a `fixes`-less artifact from an older build: the tooltip then
+// falls back to the line-level identity (D_number/batch) with an unknown time.
+// Segments are interactive: clicking one selects the drifter (see selectInstrument).
+// Returns { batch: featureGroup }.
 function buildTrackGroups(geojson) {
   const groups = {};
   for (const feature of geojson.features ?? []) {
@@ -771,36 +819,13 @@ function buildTrackGroups(geojson) {
     const { D_number, batch, fixes } = feature.properties ?? {};
     const key = batch ?? "unknown";
     const group = (groups[key] ??= L.featureGroup());
-    const coords = feature.geometry.coordinates;
-    const line = L.polyline(coords.map(([lng, lat]) => [lat, lng]), {
-      color: TRACK_COLOR,
-      weight: 2,
-      opacity: 0.85,
-      bubblingMouseEvents: false, // background clicks (not this) clear selection
-    }).addTo(group);
-    if (D_number != null) {
-      registerPart(D_number, (s) => line.setStyle(lineStyle(s)));
-      line.on("click", () => selectInstrument(D_number));
-    }
-    coords.forEach(([lng, lat], i) => {
-      const fix = fixes?.[i] ?? {};
-      const dot = L.circleMarker([lat, lng], {
-        radius: 3,
-        color: TRACK_COLOR,
-        weight: 1,
-        fillColor: TRACK_COLOR,
-        fillOpacity: 0.9,
-        bubblingMouseEvents: false, // background clicks (not this) clear selection
-      });
-      // The fix record already carries date/battery/reported+derived velocity;
-      // add the line-level identity for the same tooltip as the main marker.
-      dot.bindTooltip(popupHtml({ D_number, batch, ...fix }, dot.getLatLng()));
-      if (D_number != null) {
-        registerPart(D_number, (s) => dot.setStyle(dotStyle(s)));
-        dot.on("click", () => selectInstrument(D_number));
-      }
-      group.addLayer(dot);
-    });
+    addTrackSegments(
+      group,
+      feature.geometry.coordinates,
+      fixes,
+      D_number,
+      (fix, latlng) => popupHtml({ D_number, batch, ...fix }, latlng),
+    );
   }
   return groups;
 }
@@ -2042,47 +2067,27 @@ function buildGliderMarkerGroups(geojson) {
 
 // Glider tracks, one feature group per `type`, keyed like buildGliderMarkerGroups
 // so they ride the "True track" overlay against the matching instrument row. Per
-// platform (from its track LineString): a line plus a tooltip-bearing dot per fix —
-// mirroring buildTrackGroups, and (like it) registered for click-to-highlight
-// under the platform `id`, so clicking a glider's line, a dot or its head selects
-// it. Drawn in TRACK_COLOR, the single true-track colour shared with the drifters
-// (the instrument identity stays on the coloured marker); this keeps every past
-// track reading as one layer. A platform with a single deployed fix has no
-// LineString and so no track group, only its marker. Returns
-// { type: featureGroup }.
+// platform (from its track LineString): a per-segment line whose segments each
+// carry that fix's hover tooltip — mirroring buildTrackGroups (see
+// addTrackSegments), and (like it) registered for click-to-highlight under the
+// platform `id`, so clicking a glider's line or its head selects it. Drawn in
+// TRACK_COLOR, the single true-track colour shared with the drifters (the
+// instrument identity stays on the coloured marker); this keeps every past track
+// reading as one layer. A platform with a single deployed fix has no LineString
+// and so no track group, only its marker. Returns { type: featureGroup }.
 function buildGliderTrackGroups(geojson) {
   const groups = {};
   for (const feature of geojson.features ?? []) {
     if (feature.geometry?.type !== "LineString") continue;
     const { id, type, fixes } = feature.properties ?? {};
     const group = (groups[type] ??= L.featureGroup());
-    const coords = feature.geometry.coordinates;
-    const line = L.polyline(coords.map(([lng, lat]) => [lat, lng]), {
-      color: TRACK_COLOR,
-      weight: 2,
-      opacity: 0.85,
-      bubblingMouseEvents: false, // background clicks (not this) clear selection
-    }).addTo(group);
-    if (id != null) {
-      registerPart(id, (s) => line.setStyle(lineStyle(s)));
-      line.on("click", () => selectInstrument(id));
-    }
-    coords.forEach(([lng, lat], i) => {
-      const dot = L.circleMarker([lat, lng], {
-        radius: 3,
-        color: TRACK_COLOR,
-        weight: 1,
-        fillColor: TRACK_COLOR,
-        fillOpacity: 0.9,
-        bubblingMouseEvents: false, // background clicks (not this) clear selection
-      });
-      dot.bindTooltip(gliderPopupHtml({ id, type, ...(fixes?.[i] ?? {}) }, dot.getLatLng()));
-      if (id != null) {
-        registerPart(id, (s) => dot.setStyle(dotStyle(s)));
-        dot.on("click", () => selectInstrument(id));
-      }
-      group.addLayer(dot);
-    });
+    addTrackSegments(
+      group,
+      feature.geometry.coordinates,
+      fixes,
+      id,
+      (fix, latlng) => gliderPopupHtml({ id, type, ...fix }, latlng),
+    );
   }
   return groups;
 }
@@ -2471,7 +2476,17 @@ async function main() {
   const map = L.map("map", {
     center: FALLBACK_CENTER,
     zoom: FALLBACK_ZOOM,
-    maxZoom: 12,
+    maxZoom: MAX_ZOOM,
+  });
+
+  // Track line weight scales with zoom (see trackWeight): thin lines when zoomed
+  // out so overlapping tracks stay separable, a touch heavier zoomed in. Re-run
+  // the registered restylers whenever the zoom lands so every segment picks up
+  // the new weight.
+  trackZoom = map.getZoom();
+  map.on("zoomend", () => {
+    trackZoom = map.getZoom();
+    applySelection();
   });
 
   const currentOverlays = {};

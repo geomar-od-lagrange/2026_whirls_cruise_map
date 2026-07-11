@@ -8,8 +8,11 @@ Unscheduled ideas, not yet promoted to a plan.
   seam persists the cleaned tracks (as CSV, not parquet), which is the
   persistence this wanted; parquet stays a deferred efficiency companion there.
 - **Track thinning** — simplify/decimate dense trajectories (the ship's 10-min
-  grid, ≤5 min drifter snapshots over weeks) for rendering performance, now that
-  every fix draws a dot.
+  grid, ≤5 min drifter snapshots over weeks) for rendering performance. The
+  per-fix dots were removed in [031](done/031-track-zorder-and-data-link.md)
+  (each track is now one polyline per fix-to-fix segment), so the visual clutter
+  is gone, but a dense track is still ~one polyline per fix — the performance
+  decimation this wanted is still open.
 - **GPS despike at ingestion** — several Deployment-1 drifters show single-fix
   out-and-back GPS spikes (one stray fix implying 15–140 m/s to both
   neighbours; seen in D-577, D-602, D-606, D-610, D-630, worst in D-611 and

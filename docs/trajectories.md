@@ -1,16 +1,17 @@
 # trajectories
 
-Each drifter's **free-drift path** over time — its "true track" — drawn as a line
-with a dot at every fix, so a viewer can read where a drifter has drifted, not
-just where it is now. The layer is labelled **True track** in the control.
+Each drifter's **free-drift path** over time — its "true track" — drawn as a line,
+so a viewer can read where a drifter has drifted, not just where it is now.
+Hovering anywhere along the line shows that leg's fix. The layer is labelled
+**True track** in the control.
 
 ## What is drawn
 
-For every drifter with at least two free-drift fixes, the True track layer draws:
-
-- **a line** over its time-sorted positions, in the track colour (orange,
-  distinct from the blue latest-position markers); and
-- **a dot at every fix** along that line, in the same track colour.
+For every drifter with at least two free-drift fixes, the True track layer draws
+**a line** over its time-sorted positions, in the track colour (orange, distinct
+from the blue latest-position markers). The line is built as one polyline **per
+fix-to-fix segment** (see *Tooltips* below) rather than a single stroke, so the
+whole line is a hover target — but the segments abut into one continuous track.
 
 For a **deployed** drifter only the **free drift** is drawn: the path is
 truncated at its deployment (see *Truncation at deployment* below), so the
@@ -18,12 +19,13 @@ port-staging and transit legs — where it was still on the vessel — are exclu
 A **pre-deployment** drifter keeps its **full track** (it has no free drift to
 isolate, and its whole path — port, on deck — is what a viewer wants). A drifter
 with fewer than two drawn fixes (single-fix, or a deployed one still on the
-vessel) has no line and so no dots; it still shows its latest-position marker.
+vessel) has no line; it still shows its latest-position marker.
 
 ## Tooltips: every fix shows the marker's info on hover
 
-Each dot — and the latest-position marker — shows the **same tooltip on hover**,
-filled with *that fix's* own data:
+The track carries no separate dot markers; instead **each line segment** carries a
+hover tooltip, so hovering a leg of the track — and hovering the latest-position
+marker — shows the **same tooltip**, filled with *that fix's* own data:
 
 - **identity** (`D_number`), **last fix** time, **battery**;
 - **velocity, derived and reported, side by side**;
@@ -59,9 +61,11 @@ properties:
 `latest_geojson` carries the same per-fix payload in each Point's properties
 (its latest fix, derived against the prior one). Non-finite cells are written as
 `null`, never `NaN`, so the JSON parses client-side and the tooltip renders a dash.
-The client reads `fixes[i]` for the dot at `coordinates[i]`; a `fixes`-less
-artifact from an older build degrades gracefully (dots fall back to the
-line-level identity with blank time/velocity).
+The client tags segment `i` (from `coordinates[i]` to `coordinates[i+1]`) with
+`fixes[i]`, so hovering a leg shows the fix at its start; the **last** fix is not
+a segment start but is covered by the latest-position head marker, so every fix
+stays reachable on hover. A `fixes`-less artifact from an older build degrades
+gracefully (segments fall back to the line-level identity with blank time/velocity).
 
 ## Truncation at deployment
 
@@ -110,7 +114,7 @@ batch colour/filtering, the detection supplies the cut point.
 True tracks are governed by the **Instruments** control (top-right), not the
 Leaflet layer control — the same control that filters drifter batches and glider
 platforms (see [batches.md](batches.md)). A master **True track** checkbox turns
-the lines and dots on or off for every instrument at once; each instrument's own
+the lines on or off for every instrument at once; each instrument's own
 checkbox turns that instrument's markers on or off. The two compose: **an
 instrument's track shows only when both its own row and the master True track row
 are checked**, so unchecking an instrument hides its markers *and* its track
@@ -131,13 +135,16 @@ stays on the coloured diamond marker, not the track (see [gliders.md](gliders.md
 
 ## Selection: click a track to highlight it
 
-Clicking any part of an instrument — its **line**, one of its **dots**, or its
+Clicking any part of an instrument — its **line** (any segment) or its
 **latest-position head marker** — selects that instrument: its line **brightens**
-(to a lighter orange) and thickens, and its head enlarges, while **every other
+(to a lighter orange) and thickens, its head enlarges, and its line segments are
+**raised in front of every other track** (`bringToFront`), while **every other
 instrument desaturates** — greyed rather than faded, so it recedes without
 vanishing. One track lifts out of the overlapping tangle while the rest stay
-legible. Clicking the selected instrument again, or clicking the empty map, clears
-the selection.
+legible. The raise stops at the track layer: the selected track still draws
+*below* the latest-position heads and the ship (which live in higher panes), so
+it comes forward among the tracks without ever hiding a marker. Clicking the
+selected instrument again, or clicking the empty map, clears the selection.
 
 Selection spans **every instrument that carries a track** — the drifters *and* the
 gliders (seagliders, the XSPAR) — since all their tracks share the one orange
@@ -150,8 +157,8 @@ glider `id`). Each element *registers a restyle callback* as it is built — in
 `buildGliderTrackGroups`/`buildGliderMarkerGroups` (gliders) — and selects its
 instrument on click; `applySelection` calls every registered callback with the new
 state (`"selected"` / `"dim"` / `"normal"`). A callback per element, rather than a
-shared restyler, lets each element kind render each state its own way: SVG
-lines/dots via `setStyle` (colour swapped for the brighter or the desaturated
+shared restyler, lets each element kind render each state its own way: SVG line
+segments via `setStyle` (colour swapped for the brighter or the desaturated
 tone), and the gliders' `divIcon` heads via `setIcon` (a CSS class scales the
 selected diamond; the dim fill is desaturated in the icon HTML).
 
@@ -162,9 +169,13 @@ and the desaturated others are the two ends of that treatment.
 
 Restyling happens **in place** and mutates each layer's options (`setStyle` /
 `setIcon`), so the styling survives a batch toggle's remove/re-add: a hidden track
-is restyled too and shows correctly the moment its instrument is re-enabled.
-Click and hover are cleanly separated: **hovering** a dot or head shows that fix's
-tooltip (see above), while **clicking** selects the instrument — the tooltip is
+is restyled too and shows correctly the moment its instrument is re-enabled. The
+front-raise is the one part that is *draw order*, not an option, so it is not
+carried by a remove/re-add — it is simply reapplied by the next `applySelection`
+pass (any selection change or zoom), which is when a re-enabled selected track
+returns to the front.
+Click and hover are cleanly separated: **hovering** a line segment or head shows
+that fix's tooltip (see above), while **clicking** selects the instrument — the tooltip is
 non-interactive (`pointer-events: none`), so it never intercepts the click.
 Selection also composes with the empty-map clear, which works because the track
 elements set `bubblingMouseEvents: false`, so only genuine background clicks reach
@@ -172,12 +183,22 @@ the map's `click` handler.
 
 ## Rendering and stacking order
 
-The trajectory lines and dots draw **below** the latest-position markers, which
-stay on top. The line **is interactive** — it selects its drifter on click (it
-carries no tooltip). Because the line and its dots resolve to the same drifter,
-there is no click for the line to "swallow": whichever the pointer lands on, the
-result is the same selection. Dots are individual SVG circle markers (each
-independently hit-testable, and each also bearing that fix's hover tooltip).
+The trajectory lines draw **below** the latest-position markers, which stay on
+top. The line **is interactive** — hovering a segment shows that fix's tooltip and
+clicking any segment selects the drifter. The track is drawn as one polyline per
+fix-to-fix segment (see `addTrackSegments`); the segments share endpoints and one
+style, so they read as a single continuous line while each stays independently
+hit-testable for its own tooltip. There are **no separate dot markers**, so
+nothing sits over the line to intercept a click meant for it.
+
+**Line weight scales with zoom** so the tracks read well at every scale. Zoomed
+out, overlapping tracks blur together, so lines are **thin**; they thicken a step
+at the finer zoom levels. The selected track keeps a fixed extra weight on top of
+whatever the zoom sets, so it reads as picked at any scale. `trackWeight` is a
+pure function of the live zoom (`trackZoom`, kept current by a `zoomend` handler
+that re-runs `applySelection`); the single `lineStyle` reads it, so drifter and
+glider tracks scale identically. The latest-position heads and the ship track do
+not scale — only the track lines.
 
 The ship track and its per-fix dots sit **below the drifter markers** too, for a
 specific reason: the cruise departs the drifters' staging port, so the early ship
@@ -188,8 +209,10 @@ still sits on top. See [ship.md](ship.md).
 
 ## Performance
 
-A dot per fix is cheap at current counts — drifters report sparsely, so each
-track has few fixes. The ship, on a fixed 10-minute grid, accumulates many more
-(hundreds over the cruise); its dots are plain SVG for the same
-click-through reason, which is fine at cruise scale. If a future dense track
-lags, decimate it — see the *Track thinning* backlog item.
+One polyline per segment means a track of *n* fixes is *n − 1* small polylines
+rather than one — roughly the layer count the per-fix dots used to add, traded for
+the dots, so it is cheap at current counts (drifters report sparsely, so each
+track has few fixes). The ship, on a fixed 10-minute grid, accumulates many more
+(hundreds over the cruise); its own per-fix dots stay plain SVG below the drifter
+markers for the click-through reason above, which is fine at cruise scale. If a
+future dense track lags, decimate it — see the *Track thinning* backlog item.
