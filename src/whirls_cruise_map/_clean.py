@@ -10,12 +10,16 @@ how often drifters report.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pandas as pd
 
+_log = logging.getLogger(__name__)
+
 SENTINEL = -99999  # Latitude/Longitude value meaning "no fix yet"
 DATE_FORMAT = "%d-%b-%Y %H:%M:%S"  # e.g. "21-Jun-2026 11:26:09" (UTC)
+DATE_ONLY_FORMAT = "%d-%b-%Y"  # upstream sometimes drops the time component
 PRE_DEPLOY_BATCH = "pre_deploy"
 DEPLOYMENTS_PATH = Path(__file__).with_name("deployments.json")
 
@@ -49,21 +53,50 @@ def concat_snapshots(csv_paths: list[Path]) -> pd.DataFrame:
     return pd.concat((pd.read_csv(path) for path in csv_paths), ignore_index=True)
 
 
+def _parse_dates(raw_dates: pd.Series) -> pd.Series:
+    """Parse ``date_UTC`` to tz-aware UTC, tolerating a missing time component.
+
+    Values matching the full :data:`DATE_FORMAT` (``date + HH:MM:SS``) parse
+    directly. Upstream occasionally emits a **date-only** value (e.g.
+    ``"11-Jul-2026"``); those are parsed with :data:`DATE_ONLY_FORMAT` and land
+    at ``00:00:00Z`` rather than aborting the whole ingest. Anything still
+    unparseable becomes ``NaT`` and is logged, so the caller can drop it — one
+    malformed upstream row must not take down every build (see issue #14).
+    """
+    parsed = pd.to_datetime(raw_dates, format=DATE_FORMAT, utc=True, errors="coerce")
+    date_only = parsed.isna() & raw_dates.notna()
+    if date_only.any():
+        parsed.loc[date_only] = pd.to_datetime(
+            raw_dates[date_only], format=DATE_ONLY_FORMAT, utc=True, errors="coerce"
+        )
+    unparseable = parsed.isna() & raw_dates.notna()
+    if unparseable.any():
+        bad = sorted(set(raw_dates[unparseable].astype(str)))
+        _log.warning(
+            "Dropping %d drifter row(s) with unparseable date_UTC: %s",
+            int(unparseable.sum()),
+            ", ".join(bad),
+        )
+    return parsed
+
+
 def clean(raw: pd.DataFrame) -> pd.DataFrame:
     """De-duplicate the concatenated snapshots into the cleaned drifter table.
 
-    Parse ``date_UTC`` to tz-aware UTC datetimes; the canonical identity of a fix
-    is ``(D_number, date_UTC)``, so drop duplicates on that pair. Keep sentinel
-    (-99999) rows so :func:`awaiting` can see drifters that have never reported.
-    Force ``D_number`` to string so it matches the deployment roster's (JSON,
-    hence string) keys, then add a ``batch`` column from :func:`load_deployments`,
-    defaulting to :data:`PRE_DEPLOY_BATCH` for drifters not yet rostered.
-    ``U_speed_mps`` / ``U_Dir_deg`` are carried through unmodified but not relied
-    upon (they may be invalid before deployment).
+    Parse ``date_UTC`` to tz-aware UTC datetimes (tolerating date-only values and
+    dropping unparseable ones, see :func:`_parse_dates`); the canonical identity
+    of a fix is ``(D_number, date_UTC)``, so drop duplicates on that pair. Keep
+    sentinel (-99999) rows so :func:`awaiting` can see drifters that have never
+    reported. Force ``D_number`` to string so it matches the deployment roster's
+    (JSON, hence string) keys, then add a ``batch`` column from
+    :func:`load_deployments`, defaulting to :data:`PRE_DEPLOY_BATCH` for drifters
+    not yet rostered. ``U_speed_mps`` / ``U_Dir_deg`` are carried through
+    unmodified but not relied upon (they may be invalid before deployment).
     """
     out = raw.copy()
     out["D_number"] = out["D_number"].astype(str)
-    out["date_UTC"] = pd.to_datetime(out["date_UTC"], format=DATE_FORMAT, utc=True)
+    out["date_UTC"] = _parse_dates(out["date_UTC"])
+    out = out.dropna(subset=["date_UTC"]).reset_index(drop=True)
     out = out.drop_duplicates(subset=["D_number", "date_UTC"], ignore_index=True)
     out["batch"] = out["D_number"].map(load_deployments()).fillna(PRE_DEPLOY_BATCH)
     return out
