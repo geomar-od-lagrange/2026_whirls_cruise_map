@@ -504,6 +504,16 @@ body {
   flex: 0 0 auto;
 }
 
+/* Diamond variant for the glider-group rows (XSPAR / seagliders / wave gliders /
+   floats): a rotated square, so the legend glyph reads as the same diamond their
+   markers wear on the map, apart from the drifters' round swatch. The rotation is
+   visual only — the layout box stays 10px, so text still left-aligns with the
+   circular rows. */
+.batch-swatch-diamond {
+  border-radius: 0;
+  transform: rotate(45deg);
+}
+
 /* Line swatch for the overlay (True track / Forecast / Hindcast) rows — a
    short bar keying the checkbox to the coloured layers it toggles, as the
    round .batch-swatch keys a batch row to its circular markers. */

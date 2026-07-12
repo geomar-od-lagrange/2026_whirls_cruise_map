@@ -40,16 +40,18 @@ legible, auditable tables instead of a one-off in-memory step.
 
 ```
 drifters.csv               cleaned drifter fixes
-gliders.csv                cleaned glider-group fixes (XSPAR + seagliders + floats)
+gliders.csv                cleaned glider-group fixes (XSPAR + seagliders + wave gliders + floats)
 ship_marion_dufresne.csv   cleaned R/V Marion Dufresne fixes
 ship_agulhas_ii.csv        cleaned R/V S.A. Agulhas II fixes (+ SOG/COG/status/area)
 platforms.csv              one row per platform (batch, deployed_at, coverage)
 manifest.json              file index + per-file provenance + freshness stamp
 index.html                 browsable listing of this directory (human landing)
 raw/drifters_raw.csv       concatenated snapshot CSVs, pre-clean
-raw/gliders/<id>.csv       glider-group source CSV, exactly as fetched (one per
-                           glider; one per-float file — mr_float_<inst>_positions
-                           .csv or uvp_float_<id>_locations.csv — per float)
+raw/gliders/<id>.csv       glider-group source, exactly as fetched (one CSV per
+                           glider incl. the melktert wave glider; one per-float
+                           file — mr_float_<inst>_positions.csv or
+                           uvp_float_<id>_locations.csv — per float; the wg1169
+                           wave glider is a .nc, not a .csv)
 raw/marion_dufresne.json   FOF positions API response, exactly as fetched
 raw/agulhas_ii.csv         IPSL observations-portal CSV, exactly as fetched
 ```
@@ -61,7 +63,7 @@ plus native extras for the sources that report more:
 | Column | Meaning |
 |---|---|
 | `platform_id` | drifter `D-number`, glider filename id, float label (`UGOT` / `SOTON`), or `marion_dufresne` / `agulhas_ii` |
-| `platform_type` | `drifter`, `xspar`, `seaglider`, `float`, or `ship` |
+| `platform_type` | `drifter`, `xspar`, `seaglider`, `waveglider`, `float`, or `ship` |
 | `time_utc` | ISO-8601 UTC, `…Z`, second precision |
 | `lat`, `lon` | decimal degrees |
 
@@ -148,6 +150,12 @@ section points at the modules rather than duplicating their docstrings.
   (`65a0 → UGOT`, `6594 → SOTON`; unmapped ids such as the UVP `6596` / `6597`
   keep their raw id), landing in `gliders.csv` as `platform_type` `float`. See
   [gliders.md](gliders.md).
+- **Wave gliders** (`_gliders.py`). Also under the `GLIDERS` tree, in two shapes:
+  a plain CSV (`melktert`) read through the shared glider path, and a NetCDF-only
+  wave glider (`wg1169`) read as a static `.nc` from the portal with xarray
+  (`fetch_waveglider_nc_sources` / `parse_waveglider_nc`); its raw source is the
+  `.nc` (not a CSV). Both land in `gliders.csv` as `platform_type` `waveglider`.
+  See [gliders.md](gliders.md).
 - **Agulhas II** (`_agulhas.py`). `reported_at` carries no timezone; it is
   assumed UTC because the file's own `scraped_at_utc` column is UTC and the
   whole app is UTC. `speed_kn` is blank (empty, not zero) when the vessel is

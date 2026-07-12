@@ -1,9 +1,9 @@
 """Current-advection forecast and hindcast: advect a passive particle through the
 **time-dependent** CMEMS surface-current field from each instrument's latest fix —
-the drifters and the glider-group platforms (XSPAR buoy, seagliders, floats)
-alike — forward for the forecast, backward for the hindcast. These non-drifter
-platforms don't move purely with the surface current (gliders maneuver, floats
-park and profile at depth), so their advection is a passive-drift what-if
+the drifters and the glider-group platforms (XSPAR buoy, seagliders, wave gliders,
+floats) alike — forward for the forecast, backward for the hindcast. These
+non-drifter platforms don't move purely with the surface current (gliders and wave
+gliders maneuver, floats park and profile at depth), so their advection is a passive-drift what-if
 (surface current only), meaningful for their drift phases rather than a track
 prediction.
 
@@ -383,9 +383,10 @@ def _drifter_heads(tracks: pd.DataFrame) -> list[tuple[dict, float, float]]:
 
 def _glider_heads(gliders: list) -> list[tuple[dict, float, float]]:
     """``(properties, lon, lat)`` for each glider-group platform's latest fix (see
-    :mod:`._gliders`, includes floats). ``batch`` is the platform ``type``
-    (``xspar`` / ``seaglider`` / ``float``) — the same key its marker and track
-    use, so the advection line rides the same instrument row. These platforms
+    :mod:`._gliders`, includes wave gliders and floats). ``batch`` is the platform
+    ``type`` (``xspar`` / ``seaglider`` / ``waveglider`` / ``float``) — the same key
+    its marker and track use, so the advection line rides the same instrument row.
+    These platforms
     don't drift purely with the surface current, so this is a passive-drift
     what-if (the surface current only), useful for their drift phases."""
     heads = []

@@ -262,3 +262,15 @@ move to `done/` and gain a `docs/` counterpart.
     scalar integrator stays for the build's per-instrument forecast/hindcast. **Done**
     ([docs/interactive_forecast.md](../docs/interactive_forecast.md)); dev PoC, like
     the rest of the Deploy tool.
+30. [Wave gliders](done/033-wave-gliders.md) — the two **wave gliders** the WHIRLS
+    operational map now shows, added as a new `waveglider` instrument type (pink,
+    the operational map's own colour). Closes the `WAVEGLIDERS/` follow-up flagged
+    in [020](done/020-observations-portal-csv-source.md). The folder serves them in
+    two shapes: `melktert` is a CSV picked up by the existing autoindex discovery
+    (one `_GROUPS` line), while `wg1169` is published only as an L1 **NetCDF**, read
+    as a **static portal file** with xarray (`fetch_waveglider_nc_sources` /
+    `parse_waveglider_nc`) — the portal-over-THREDDS choice of 020, and richer than
+    the operational map's read (which omits the `.nc`'s CF `time`). Everything
+    downstream (track, tooltips, per-instrument forecast/hindcast, the one client
+    `GLIDER_STYLES` entry) is type-generic. **Done**
+    ([docs/gliders.md](../docs/gliders.md), [docs/data.md](../docs/data.md)).

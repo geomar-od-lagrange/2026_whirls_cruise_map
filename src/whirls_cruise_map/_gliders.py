@@ -1,6 +1,6 @@
 """Fetch the WHIRLS glider-group platforms — the XSPAR spar buoy, the seagliders,
-and the profiling floats — from the IPSL WHIRLS observations portal (the same
-source the operational-centre map draws; see docs/gliders.md).
+the wave gliders, and the profiling floats — from the IPSL WHIRLS observations
+portal (the same source the operational-centre map draws; see docs/gliders.md).
 
 Each platform *type* is a folder on the portal — a plain Apache directory
 listing — holding one ``*_track.csv`` (or ``*.csv``) per platform. We discover
@@ -14,8 +14,14 @@ The **floats** sit under the same tree but need their own fetch/split
 (:func:`fetch_float_sources` / :func:`parse_float_source`): they come one file
 per float in two CSV schemas — identity in a ``filename`` column (``mr_float_*``)
 or in the file name (``uvp_float_*``) — beside an aggregate CSV that is skipped.
-See the floats section below. All three types converge on the same
-:class:`Platform`.
+See the floats section below.
+
+The **wave gliders** likewise mix shapes: one is a plain CSV (discovered and
+parsed like any glider), the other is published only as a **NetCDF**, which the
+CSV scan skips — so it has its own fetch/parse
+(:func:`fetch_waveglider_nc_sources` / :func:`parse_waveglider_nc`, read as a
+static portal file with xarray). See the wave-gliders section below. All types
+converge on the same :class:`Platform`.
 
 Best-effort throughout: any failure — a dead folder, a bad CSV, an unparseable
 row — is swallowed so the build still produces every other artifact. A total
@@ -24,6 +30,8 @@ failure returns ``[]`` / ``None`` and the map simply shows no gliders/floats.
 from __future__ import annotations
 
 import csv
+import math
+import os
 import re
 import urllib.request
 from datetime import datetime, timezone
@@ -33,20 +41,23 @@ from typing import NamedTuple
 BASE = "https://observations.ipsl.fr/aeris/whirls/data/observations"
 
 # (type, folder URL). `type` keys the client colour/label; the operational map
-# groups both under "Gliders", but XSPAR is a surface spar buoy and the
-# seagliders are underwater, so we keep them apart. A new WAVEGLIDERS/ folder
-# exists on the portal but is empty and would need a client type, so it is not
-# wired here yet (plan 020 follow-up).
+# groups these under "Gliders", but XSPAR is a surface spar buoy, the seagliders
+# are underwater, and the wave gliders are a surface class of their own, so we
+# keep them apart. The WAVEGLIDERS/ folder's *CSV* wave glider (melktert) is
+# discovered here like any other; its NetCDF-only wave glider (wg1169) needs the
+# separate `fetch_waveglider_nc_sources` path below.
 _GROUPS = [
     ("xspar", f"{BASE}/GLIDERS/XSPAR/"),
     ("seaglider", f"{BASE}/GLIDERS/SEAGLIDERS/"),
+    ("waveglider", f"{BASE}/GLIDERS/WAVEGLIDERS/"),
 ]
 
 
 class Platform(NamedTuple):
-    """One glider-group platform: ``id`` (a glider's CSV filename, or a float's
-    mapped label), ``type`` (``"xspar"`` / ``"seaglider"`` / ``"float"``), and
-    time-sorted ``(time, lat, lon)`` fixes (tz-aware UTC)."""
+    """One glider-group platform: ``id`` (a glider's CSV filename, a wave glider's
+    NetCDF id, or a float's mapped label), ``type`` (``"xspar"`` / ``"seaglider"``
+    / ``"waveglider"`` / ``"float"``), and time-sorted ``(time, lat, lon)`` fixes
+    (tz-aware UTC)."""
 
     id: str
     type: str
@@ -58,10 +69,14 @@ class Platform(NamedTuple):
 _HEADERS = {"User-Agent": "whirls-cruise-map ingest", "Accept": "*/*"}
 
 
-def _get(url: str) -> str:
+def _get_bytes(url: str) -> bytes:
     req = urllib.request.Request(url, headers=_HEADERS)
     with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read().decode("utf-8", "replace")
+        return resp.read()
+
+
+def _get(url: str) -> str:
+    return _get_bytes(url).decode("utf-8", "replace")
 
 
 def _csv_datasets(index_html: str, dir_url: str) -> list[tuple[str, str]]:
@@ -181,10 +196,12 @@ def _parse_csv(text: str) -> list[tuple[datetime, float, float]]:
 
 class Source(NamedTuple):
     """A glider-group source CSV as fetched: ``id`` (the filename), ``type``
-    (``"xspar"`` / ``"seaglider"`` / ``"float"``), and the raw CSV ``text``. Kept
-    separate from :class:`Platform` so ingest can publish the untouched source
-    (``data/raw/gliders/<id>.csv``) before parsing it. One glider source parses to
-    one platform; the ``float`` source is the aggregate that splits into many."""
+    (``"xspar"`` / ``"seaglider"`` / ``"waveglider"`` / ``"float"``), and the raw
+    CSV ``text``. Kept separate from :class:`Platform` so ingest can publish the
+    untouched source (``data/raw/gliders/<id>.csv``) before parsing it. One glider
+    source parses to one platform; the ``float`` source is the aggregate that
+    splits into many. (The NetCDF-only wave glider does not use this text-carrying
+    shape — see :func:`fetch_waveglider_nc_sources`.)"""
 
     id: str
     type: str
@@ -341,3 +358,112 @@ def parse_float_source(src: Source) -> list[Platform]:
         fixes = sorted(by_id[raw_id], key=lambda f: f[0])
         platforms.append(Platform(_FLOAT_LABELS.get(raw_id, raw_id), "float", fixes))
     return platforms
+
+
+# --------------------------------------------------------------------------- #
+# wave gliders — one CSV (auto-discovered), one NetCDF (read here)
+# --------------------------------------------------------------------------- #
+# The WAVEGLIDERS folder mixes shapes: a plain track CSV (``melktert_track.csv``),
+# picked up by the shared autoindex+CSV path above (it is a ``.csv`` under the
+# ``waveglider`` group in ``_GROUPS``), and a wave glider published only as an L1
+# **NetCDF** (``wg1169_WHIRLS_Cruise_L1.nc``, beside a ``.ncml`` NcML pointer).
+# The CSV scan matches only ``.csv``, so the NetCDF needs the fetch/parse pair
+# here.
+#
+# We read the ``.nc`` as a **static file from the observations portal**, not via
+# THREDDS OPeNDAP as the operational map does: plan 020 moved this project off the
+# heavy, intermittently failing THREDDS server onto the portal, which serves the
+# ``.nc`` directly. The file carries a CF ``time`` coordinate (which the
+# operational map omits, reading only lat/lon), so our track is time-stamped like
+# every other platform's and rides the same downstream unchanged.
+WAVEGLIDERS_DIR = f"{BASE}/GLIDERS/WAVEGLIDERS/"
+
+
+def _nc_datasets(index_html: str, dir_url: str) -> list[tuple[str, str]]:
+    """``(filename, nc_url)`` for every ``.nc`` linked from a folder's autoindex.
+
+    The filename is kept whole (so ingest can publish it raw and
+    :func:`parse_waveglider_nc` can take identity from it). The pattern matches a
+    ``.nc`` suffix but **not** the sibling ``.ncml`` NcML aggregation pointer (in
+    ``…​.ncml"`` the ``.nc`` is followed by ``ml``, not the closing quote), and —
+    like :func:`_csv_datasets` — drops absolute hrefs (parent/other folders)."""
+    out = []
+    for name in re.findall(r'href="([^"]+\.nc)"', index_html, flags=re.IGNORECASE):
+        if "/" in name:
+            continue
+        out.append((name, dir_url + name))
+    return out
+
+
+def fetch_waveglider_nc_sources() -> list[tuple[str, bytes]]:
+    """Every NetCDF-only wave glider under the WAVEGLIDERS folder, as
+    ``(filename, nc_bytes)``; ``[]`` on failure.
+
+    Discovered from the folder autoindex like the gliders (so a second wave-glider
+    ``.nc`` appears with no code change) and downloaded as **bytes** — a NetCDF is
+    binary, unlike the text-carrying :class:`Source`. The CSV wave glider in the
+    same folder is handled by the shared :func:`fetch_sources` path and is not
+    re-fetched here. Each listing and each file is fetched independently so one
+    dead file can't suppress the rest."""
+    try:
+        datasets = _nc_datasets(_get(WAVEGLIDERS_DIR), WAVEGLIDERS_DIR)
+    except Exception:
+        return []
+    sources = []
+    for name, nc_url in datasets:
+        try:
+            data = _get_bytes(nc_url)
+        except Exception:
+            continue
+        sources.append((name, data))
+    return sources
+
+
+def parse_waveglider_nc(name: str, data: bytes) -> Platform | None:
+    """Parse one wave-glider NetCDF (``name`` + raw ``data`` bytes) into a
+    :class:`Platform`; ``None`` if it lacks ``time`` / ``latitude`` / ``longitude``,
+    is unreadable, or has no finite fix.
+
+    Identity is the leading ``_``-token of the file name
+    (``wg1169_WHIRLS_Cruise_L1.nc`` -> ``wg1169``), matching the operational map's
+    own id. ``xarray`` (a project dep) is imported lazily so the CSV path stays
+    dependency-light; it decodes the CF ``time`` coordinate to UTC. The bytes are
+    staged to a temp file because the netCDF4 engine reads a path, not a buffer.
+    Non-finite lat/lon rows are dropped; fixes come back time-sorted in the shared
+    :class:`Platform` shape, so wave gliders ride the same downstream unchanged."""
+    import tempfile
+
+    import numpy as np
+    import xarray as xr
+
+    pid = name.split("_", 1)[0].strip()
+    with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as tf:
+        tf.write(data)
+        tmp = tf.name
+    try:
+        with xr.open_dataset(tmp) as ds:
+            if not {"time", "latitude", "longitude"} <= set(ds.variables):
+                return None
+            times = np.asarray(ds["time"].values, dtype="datetime64[ns]")
+            secs = times.astype("datetime64[s]").astype("int64")
+            nat = np.isnat(times)
+            lat = np.asarray(ds["latitude"].values, dtype=float)
+            lon = np.asarray(ds["longitude"].values, dtype=float)
+    except Exception:
+        return None
+    finally:
+        os.unlink(tmp)
+    fixes = []
+    for i in range(min(len(secs), len(lat), len(lon))):
+        # Skip a NaT time or non-finite position, and guard the epoch conversion
+        # against an out-of-range value — one bad row must not sink the whole
+        # track (mirrors the CSV path's per-value _parse_time tolerance).
+        if nat[i] or not (math.isfinite(lat[i]) and math.isfinite(lon[i])):
+            continue
+        try:
+            t = datetime.fromtimestamp(int(secs[i]), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            continue
+        fixes.append((t, float(lat[i]), float(lon[i])))
+    fixes.sort(key=lambda f: f[0])
+    return Platform(pid, "waveglider", fixes) if fixes else None
