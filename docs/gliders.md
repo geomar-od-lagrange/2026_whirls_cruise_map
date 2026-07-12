@@ -1,21 +1,22 @@
-# Glider-group instruments: XSPAR buoy + seagliders + floats
+# Glider-group instruments: XSPAR buoy + seagliders + wave gliders + floats
 
 The WHIRLS glider-group platforms — the **XSPAR** drifting spar buoy, the
-**seagliders**, and the profiling **floats** — shown on the map alongside the
-drifters and the ship, each as a latest-position marker with a track and (like
-every other instrument) a current-advection forecast/hindcast. They are
-**instruments** in the same top-right control as the drifter batches (see
-[batches.md](batches.md)).
+**seagliders**, the **wave gliders**, and the profiling **floats** — shown on the
+map alongside the drifters and the ship, each as a latest-position marker with a
+track and (like every other instrument) a current-advection forecast/hindcast.
+They are **instruments** in the same top-right control as the drifter batches
+(see [batches.md](batches.md)).
 
-**Why one doc, not `xspar.md` + `floats.md` + a gliders doc.** Neither the XSPAR
-(a surface spar buoy) nor the floats (autonomous profilers) are underwater
-gliders, but IPSL's WHIRLS operational centre groups all three under *Gliders* —
-IPSL's data tree nests them at `OBSERVATIONS/GLIDERS/{XSPAR,SEAGLIDERS,FLOATS}`.
-Following that terminology keeps this map aligned with the source it draws from,
-so they are documented together; the code likewise treats each as one `type`
-among others converging on the same `Platform` shape, so a shared doc matches the
-shared mechanism. Where the distinction matters — the marker colour, and (for
-floats) a different source shape — it is called out per type below.
+**Why one doc, not `xspar.md` + `floats.md` + a gliders doc.** None of the XSPAR
+(a surface spar buoy), the wave gliders (wave-propelled surface vehicles), or the
+floats (autonomous profilers) are underwater gliders, but IPSL's WHIRLS
+operational centre groups all four under *Gliders* — IPSL's data tree nests them
+at `OBSERVATIONS/GLIDERS/{XSPAR,SEAGLIDERS,WAVEGLIDERS,FLOATS}`. Following that
+terminology keeps this map aligned with the source it draws from, so they are
+documented together; the code likewise treats each as one `type` among others
+converging on the same `Platform` shape, so a shared doc matches the shared
+mechanism. Where the distinction matters — the marker colour, and (for wave
+gliders and floats) a different source shape — it is called out per type below.
 
 ## Source: the WHIRLS observations portal
 
@@ -26,6 +27,7 @@ plain Apache directory listing — holding one `*_track.csv` per platform:
 
 - XSPAR — `…/GLIDERS/XSPAR/`
 - Seagliders — `…/GLIDERS/SEAGLIDERS/`
+- Wave gliders — `…/GLIDERS/WAVEGLIDERS/` (one CSV, one NetCDF — see below)
 
 `_gliders.fetch_sources()` **auto-discovers** every CSV: it fetches each folder's
 autoindex, takes every `.csv` link in it, and downloads each (`parse_source` then
@@ -39,8 +41,35 @@ is a lighter static host — less overhead, fewer intermittent failures, and
 CORS-open — at the cost of discovering CSVs from autoindex HTML rather than a
 machine-readable catalog. The portal's Apache rejects requests with no `Accept`
 header (`403`), which `urllib` omits by default, so the fetcher sends
-`Accept: */*`. A sibling `WAVEGLIDERS/` folder exists but is empty and would need
-a client marker type, so it is not wired in yet.
+`Accept: */*`.
+
+### Wave gliders: one CSV, one NetCDF
+
+The operational map draws **two** wave gliders, and the `WAVEGLIDERS/` folder
+serves each in a different shape:
+
+- **`melktert`** — `melktert_track.csv`, a plain `time,longitude,latitude` CSV
+  (epoch-second times). It is a `.csv` under the `waveglider` group, so
+  `fetch_sources` / `parse_source` pick it up through the shared autoindex path
+  with **no wave-glider-specific code** — the same mechanism as every other CSV
+  platform.
+- **`wg1169`** — `wg1169_WHIRLS_Cruise_L1.nc`, an L1 **NetCDF** (rich telemetry;
+  a `.ncml` NcML pointer sits beside it). The CSV scan matches only `.csv`, so the
+  NetCDF has its own pair: `fetch_waveglider_nc_sources()` scans the folder
+  autoindex for `.nc` links — a pattern that matches `.nc` but **not** the sibling
+  `.ncml` — and downloads each as **bytes**; `parse_waveglider_nc()` opens the
+  bytes with **xarray** (a project dep, imported lazily), reads
+  `time`/`latitude`/`longitude`, and returns the same `Platform` shape. Identity
+  is the leading `_`-token of the file name (`wg1169_WHIRLS_Cruise_L1.nc` →
+  `wg1169`), matching the operational map's own id. A second wave-glider `.nc`
+  appears with no code change.
+
+We read the `.nc` as a **static file from the observations portal**, not via
+THREDDS OPeNDAP as the operational map does — the same portal-over-THREDDS choice
+made for every other source here (the portal serves the `.nc` directly). The
+NetCDF carries a CF `time` coordinate that the operational map omits (it reads
+only lat/lon), so our `wg1169` track is time-stamped like every other platform's
+and rides the whole downstream — track, tooltips, forecast/hindcast — unchanged.
 
 ### Floats: per-float files, two schemas, identity off the column or the name
 
@@ -146,7 +175,11 @@ several m/s (4–7 m/s seen on the transit legs). So the cut cleanly separates
 carried-aboard fixes from free drift, without needing to know *which* vessel
 (Marion Dufresne or Agulhas II) launched the glider — unlike the drifter rule,
 this is speed-based and vessel-agnostic (contrast [trajectories.md](trajectories.md)'s
-ship-proximity `_deploy`).
+ship-proximity `_deploy`). The wave gliders self-propel faster than a Seaglider
+(~0.5 m/s median, briefly more) but still well under 2.0 m/s, so the same
+threshold fits them: `wg1169` was carried out by ship (~5 m/s leading fixes,
+correctly pruned to its free drift), while `melktert` started near-stationary and
+keeps its whole track.
 
 **Only the leading run is cut.** Once a glider is deployed, every later fix is kept
 unchanged, however fast — the map shows raw, unprocessed positions, so a
@@ -158,9 +191,9 @@ above threshold — has no free track yet and draws only its marker. The **`Poin
 is always the raw latest fix**, unaffected by the prune (the latest fix is well
 past deployment).
 
-Coordinates are `[lon, lat]`. Properties carry `id` (the glider CSV filename, or a
-float's mapped label) and `type` (`xspar` / `seaglider` / `float`, which keys the
-client's colour and label); the
+Coordinates are `[lon, lat]`. Properties carry `id` (the glider CSV filename, the
+wave glider's NetCDF id, or a float's mapped label) and `type` (`xspar` /
+`seaglider` / `waveglider` / `float`, which keys the client's colour and label); the
 Point adds the latest fix record, the LineString a per-vertex `fixes` list aligned
 with `coordinates` (each `{date_UTC, derived_speed_mps, derived_heading_deg}`).
 Gliders carry no reported velocity or battery, so — unlike the drifter fix record
@@ -177,8 +210,9 @@ The gliders join the same top-right control as the drifter batches — renamed
 - **marker groups** (`buildGliderMarkerGroups`, keyed by `type`) — one instrument
   row per platform class, each a **diamond `divIcon`** so gliders read apart from
   the drifters' circles, coloured per type (XSPAR amber `#f59e0b`, seaglider blue
-  `#38bdf8`, float purple `#a855f7` — the operational map's own colours; the two
-  floats share the one purple **Floats** row, like the two seagliders share theirs);
+  `#38bdf8`, waveglider pink `#ec4899`, float purple `#a855f7` — the operational
+  map's own colours; the two floats share the one purple **Floats** row, and the
+  two wave gliders the one pink **Wave gliders** row, like the two seagliders share theirs);
   and
 - **track groups** (`buildGliderTrackGroups`, keyed by `type`) — a line plus a
   tooltip-bearing dot per fix, drawn in the **shared orange `TRACK_COLOR`** so every
@@ -193,9 +227,9 @@ drifter batches use.
 ## Forecast / hindcast
 
 The current-advection forecast and hindcast are computed **per instrument**, not
-per drifter, so the gliders, the XSPAR, and the floats get advection lines too
-(keyed by `type` so they ride their own instrument row and the Forecast/Hindcast
-masters). These platforms don't drift purely with the surface current — gliders
-maneuver, floats park and profile at depth — so this is a passive-drift what-if
-(surface current only), meaningful for their drift phases rather than a track
-prediction. See [forecast.md](forecast.md).
+per drifter, so the gliders, the XSPAR, the wave gliders, and the floats get
+advection lines too (keyed by `type` so they ride their own instrument row and the
+Forecast/Hindcast masters). These platforms don't drift purely with the surface
+current — gliders and wave gliders maneuver, floats park and profile at depth — so
+this is a passive-drift what-if (surface current only), meaningful for their drift
+phases rather than a track prediction. See [forecast.md](forecast.md).

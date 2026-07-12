@@ -9,7 +9,7 @@ back instead of re-fetching). See ``docs/data.md`` and
 Layout under the data dir::
 
     drifters.csv              cleaned drifter fixes
-    gliders.csv               cleaned glider-group fixes (XSPAR + seagliders + floats)
+    gliders.csv               cleaned glider-group fixes (XSPAR + seagliders + wave gliders + floats)
     ship_marion_dufresne.csv  cleaned R/V Marion Dufresne fixes
     ship_agulhas_ii.csv       cleaned R/V S.A. Agulhas II fixes (+ SOG/COG/status/area)
     platforms.csv             one row per platform (batch, deployed_at, coverage)
@@ -107,6 +107,13 @@ def write_raw_text(data_dir: Path, name: str, text: str, source: str) -> dict:
     return {"name": f"raw/{name}", "kind": "raw", "source": source}
 
 
+def write_raw_bytes(data_dir: Path, name: str, data: bytes, source: str) -> dict:
+    """A binary source payload published verbatim under ``raw/`` (the wave-glider
+    NetCDF), the bytes counterpart of :func:`write_raw_text`."""
+    atomic_write_bytes(data_dir / "raw" / name, data)
+    return {"name": f"raw/{name}", "kind": "raw", "source": source}
+
+
 def write_drifters(data_dir: Path, tracks: pd.DataFrame) -> dict:
     """Cleaned drifter fixes, ordered by ``(time_utc, platform_id)``.
 
@@ -144,7 +151,7 @@ def write_drifters(data_dir: Path, tracks: pd.DataFrame) -> dict:
 
 def write_gliders(data_dir: Path, platforms: list[Platform]) -> dict:
     """Cleaned glider-group fixes, one long table over all platforms
-    (``platform_type`` is ``xspar`` / ``seaglider`` / ``float``)."""
+    (``platform_type`` is ``xspar`` / ``seaglider`` / ``waveglider`` / ``float``)."""
     rows = [
         (p.id, p.type, iso_utc(t), lat, lon)
         for p in platforms

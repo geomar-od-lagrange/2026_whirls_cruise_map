@@ -201,11 +201,13 @@ def ingest(data_dir: Path) -> None:
         f"deployment detected for {len(deploy_starts)} drifters"
     )
 
-    # Glider-group platforms (XSPAR + seagliders + floats), from the WHIRLS
-    # observations portal, all folded into gliders.csv. Each source CSV is
-    # published raw before parsing. Gliders and floats are fetched in separate
-    # best-effort blocks (one failing can't suppress the other), then written
-    # together; a total failure of both leaves no gliders.csv.
+    # Glider-group platforms (XSPAR + seagliders + wave gliders + floats), from the
+    # WHIRLS observations portal, all folded into gliders.csv. Each source is
+    # published raw before parsing. The CSV platforms, the NetCDF-only wave glider,
+    # and the floats are fetched in separate best-effort blocks (one failing can't
+    # suppress the others), then written together; a total failure of all leaves no
+    # gliders.csv. The CSV block covers XSPAR, the seagliders, and the CSV wave
+    # glider (melktert) via the shared autoindex discovery.
     gliders = []
     try:
         for src in _gliders.fetch_sources():
@@ -216,6 +218,23 @@ def ingest(data_dir: Path) -> None:
         print(f"gliders: {len(gliders)} platforms")
     except Exception as exc:
         print(f"WARNING: glider ingest failed: {exc}")
+
+    # Wave gliders published only as a NetCDF (wg1169): read as static portal files
+    # (not THREDDS — see _gliders), published raw as bytes before parsing. The CSV
+    # wave glider (melktert) already came through fetch_sources above; this covers
+    # only the .nc siblings. Best-effort, so a NetCDF failure can't suppress the
+    # CSV platforms.
+    try:
+        wavegliders = []
+        for name, data in _gliders.fetch_waveglider_nc_sources():
+            entries.append(_data.write_raw_bytes(data_dir, f"gliders/{name}", data, _gliders.BASE))
+            p = _gliders.parse_waveglider_nc(name, data)
+            if p is not None:
+                wavegliders.append(p)
+        gliders.extend(wavegliders)
+        print(f"wave gliders (NetCDF): {len(wavegliders)} platforms")
+    except Exception as exc:
+        print(f"WARNING: wave-glider NetCDF ingest failed: {exc}")
 
     # Floats: the per-institution position CSVs under the FLOATS folder (the
     # aggregate floats_track.csv is skipped — same fixes, but it lags). Each

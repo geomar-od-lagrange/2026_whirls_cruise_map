@@ -129,8 +129,9 @@ const BATCH_LABELS = {
   deployment_5: "Drifter batch 5",
 };
 // Instrument rows share this control: drifter batches use BATCH_LABELS; glider-
-// group types (xspar/seaglider/float) fall back to their GLIDER_STYLES label so
-// they read as "XSPAR buoy" / "Seagliders" / "Floats" in the same compartment.
+// group types (xspar/seaglider/waveglider/float) fall back to their GLIDER_STYLES
+// label so they read as "XSPAR buoy" / "Seagliders" / "Wave gliders" / "Floats"
+// in the same compartment.
 const batchLabel = (batch) =>
   BATCH_LABELS[batch] ?? GLIDER_STYLES[batch]?.label ?? batch;
 
@@ -392,8 +393,10 @@ function buildBatchGroups(geojson) {
 
 // A checkbox panel governing all instrument visibility — this control, not the
 // Leaflet layer control, owns it. Instruments are the drifter batches and the
-// glider platforms (XSPAR buoy, seagliders), each one row that shows/hides that
-// instrument's markers. Above them, one master row per *overlay* (True track,
+// glider-group platforms (XSPAR buoy, seagliders, wave gliders, floats), each one
+// row that shows/hides that instrument's markers — the glider rows separated from
+// the drifter batches by a divider and drawn with a diamond swatch matching their
+// map markers. Above them, one master row per *overlay* (True track,
 // Forecast, Hindcast) turns that overlay's per-instrument layers on or off for
 // every instrument at once. Each overlay is `{ label, groups: {key: layer}, on }`
 // keyed by the same instrument key as `markerGroups` — optionally with a `lazy`
@@ -468,15 +471,31 @@ function buildInstrumentRows(div, map, markerGroups, overlays) {
   // rows below.
   if (activeOverlays.length) L.DomUtil.create("hr", "batch-divider", div);
 
+  // Drifter batches sort ahead of the glider-group types, so one divider before
+  // the first glider row separates the two families. Only inserted once, and only
+  // if a drifter row preceded it (no leading rule when gliders stand alone).
+  let sawBatch = false;
+  let gliderDivider = false;
   for (const batch of Object.keys(markerGroups).sort(instrumentOrder)) {
+    const isGlider = GLIDER_STYLES[batch] != null;
+    if (isGlider && sawBatch && !gliderDivider) {
+      L.DomUtil.create("hr", "batch-divider", div);
+      gliderDivider = true;
+    }
+    if (!isGlider) sawBatch = true;
     const group = markerGroups[batch];
     const row = L.DomUtil.create("label", "batch-row", div);
     const cb = L.DomUtil.create("input", "", row);
     cb.type = "checkbox";
     cb.checked = batchOn[batch];
-    const swatch = L.DomUtil.create("span", "batch-swatch", row);
-    // Glider rows key to their instrument colour; drifter batches to their
-    // marker fill.
+    // Glider rows key to their instrument colour and draw a diamond swatch
+    // matching their map markers; drifter batches key to their marker fill and
+    // keep the round swatch.
+    const swatch = L.DomUtil.create(
+      "span",
+      isGlider ? "batch-swatch batch-swatch-diamond" : "batch-swatch",
+      row
+    );
     swatch.style.background =
       GLIDER_STYLES[batch]?.color ?? styleForBatch(batch).fillColor;
     const text = L.DomUtil.create("span", "batch-text", row);
@@ -1995,16 +2014,18 @@ function startInertialClock(map, grid, layer, displayedFieldTime) {
 
 // --- gliders ----------------------------------------------------------------
 // The WHIRLS glider-group platforms (see docs/gliders.md): the XSPAR spar buoy,
-// the seagliders, and the profiling floats, built server-side into
-// gliders.geojson (a latest Point + a track LineString per platform). Coloured
-// by `type` — the operational map's own amber (XSPAR) / blue (seaglider) /
-// purple (float) — and drawn with a diamond marker so they read apart from the
-// drifters' circles. Not batch-driven, so they ride the layer control, not the
-// batch filter. Rows are keyed by `type`, so the two floats collapse into one
-// "Floats" instrument row (like the two seagliders), each still selectable by id.
+// the seagliders, the wave gliders, and the profiling floats, built server-side
+// into gliders.geojson (a latest Point + a track LineString per platform).
+// Coloured by `type` — the operational map's own amber (XSPAR) / blue
+// (seaglider) / pink (waveglider) / purple (float) — and drawn with a diamond
+// marker so they read apart from the drifters' circles. Not batch-driven, so
+// they ride the layer control, not the batch filter. Rows are keyed by `type`,
+// so the two floats collapse into one "Floats" instrument row (like the two
+// seagliders share theirs), each still selectable by id.
 const GLIDER_STYLES = {
   xspar: { color: "#f59e0b", label: "XSPAR buoy" },
   seaglider: { color: "#38bdf8", label: "Seagliders" },
+  waveglider: { color: "#ec4899", label: "Wave gliders" },
   float: { color: "#a855f7", label: "Floats" },
 };
 const gliderStyle = (type) =>
@@ -2808,8 +2829,8 @@ async function main() {
   const hindcastGroups = hindcast ? buildAdvectionGroups(hindcast, HINDCAST_COLOR) : {};
   renderDriftInfo(forecast, hindcast);
 
-  // Glider-group platforms (XSPAR buoy + seagliders + floats) are instruments in
-  // the same control as the drifter batches: their latest markers join the
+  // Glider-group platforms (XSPAR buoy + seagliders + wave gliders + floats) are
+  // instruments in the same control as the drifter batches: their latest markers join the
   // instrument rows, their tracks the "True track" overlay, and their
   // current-advection lines the Forecast/Hindcast overlays (keyed by `type`, from
   // forecast.geojson's per-instrument heads). Optional so a missing file can't
