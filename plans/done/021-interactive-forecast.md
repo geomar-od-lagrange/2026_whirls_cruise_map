@@ -1,4 +1,4 @@
-> Implemented — see [docs/interactive_forecast.md](../../docs/interactive_forecast.md).
+> Implemented — see [docs/deployment.md](../../docs/deployment.md).
 > The single-click +12 h tool this describes is superseded by the one polyline
 > Deploy tool + batch API ([023](023-simplify-deploy-polyline.md)).
 
@@ -23,7 +23,7 @@ against a **live API** (keep the field on the server). The API won, on transport
 - The API keeps the ~66 MB window in server memory and returns a **~1–2 KB
   polyline** per forecast — less than the existing `forecast.geojson`, and it
   scales with *particles requested*, not with the field. See
-  [docs/interactive_forecast.md](../docs/interactive_forecast.md).
+  [docs/deployment.md](../docs/deployment.md).
 
 ## Plan of work
 

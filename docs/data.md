@@ -182,16 +182,16 @@ and `deployed_at` as annotations, never a physical truncation. A download user
 gets everything and decides what to do with it.
 
 The map's own views over the same data — `tracks.geojson`'s truncation at
-`deployed_at` (the "True track" free-drift segment), `latest.geojson`'s
-last-fix-only view, the current-speed/vorticity rasters, the forecast/hindcast
-overlays — are **rendering** decisions, computed by `derive` into
+`deployed_at` (the "Show tracks" free-drift segment), `latest.geojson`'s
+last-fix-only view, the current-speed/vorticity rasters — are **rendering**
+decisions, computed by `derive` into
 `site/map/data/`, not written back into `/data`. Truncating in `/data` itself
 would throw away information a download user might want (e.g. the transit
 leg); computing it in derive keeps that choice at the layer that actually
 needs a specific view.
 
 **`/data` is observations only.** No CMEMS model field — surface currents
-(u/v), the ζ/f vorticity raster, forecast/hindcast advection — ever lands
+(u/v), the ζ/f vorticity raster — ever lands
 here, regardless of how useful it might be to a downstream user. Those are
 model-derived map overlays, a different kind of artifact from an observed
 track, and `derive`'s CMEMS-fetching (`--tier slow`) already has a separate,

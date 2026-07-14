@@ -1,4 +1,4 @@
-> Implemented — see [docs/interactive_forecast.md](../../docs/interactive_forecast.md).
+> Implemented — see [docs/deployment.md](../../docs/deployment.md).
 
 # Simplify the deploy tool: one multi-click polyline
 

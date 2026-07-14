@@ -4,12 +4,11 @@
  * Leaflet layers:
  *   latest.geojson                 -> circle markers (on by default)
  *   tracks.geojson                 -> trajectory lines (off by default)
- *   forecast.geojson               -> per-drifter current-advection track (off)
- *   hindcast.geojson               -> per-drifter current-advection back-track (off)
- *   speed_±NNh.webp + currents_meta.json -> surface-speed shading, one lossless
- *                                           WebP frame per slider offset (imageOverlay)
- *   currents_±NNh.json             -> leaflet-velocity flow trails, one grid per
- *                                     slider offset (meta.flow_frames; optional)
+ *   speed_<t>Z.webp + currents_meta.json -> surface-speed shading, one lossless
+ *                                           WebP frame per valid time (imageOverlay)
+ *   flowvis_<t>Z.webp              -> static streamline flow overlay, one lossless
+ *                                     WebP frame per valid time (meta.flow_frames;
+ *                                     imageOverlay, swapped on scrub; optional)
  *   inertial_field.json            -> animated near-inertial particle tracks (off)
  *   awaiting.json                  -> sidebar list, no map geometry
  *   build.json                     -> sidebar "data freshness" build time
@@ -18,12 +17,10 @@
 const DATA = {
   latest: "./data/latest.geojson",
   tracks: "./data/tracks.geojson",
-  forecast: "./data/forecast.geojson",
-  hindcast: "./data/hindcast.geojson",
   awaiting: "./data/awaiting.json",
-  // Shading rasters and flow-trail grids are per-frame files named in the metas'
-  // `frames` / `flow_frames` manifests (speed_±NNh.webp / vorticity_±NNh.webp /
-  // currents_±NNh.json), resolved under this base.
+  // Shading + flow rasters are per-frame files named in the metas' `frames` /
+  // `flow_frames` manifests (speed_<t>Z.webp / vorticity_<t>Z.webp /
+  // flowvis_<t>Z.webp), resolved under this base.
   dataBase: "./data/",
   meta: "./data/currents_meta.json",
   vorticityMeta: "./data/vorticity_meta.json",
@@ -32,13 +29,6 @@ const DATA = {
   gliders: "./data/gliders.geojson",
   agulhas: "./data/agulhas.json",
 };
-
-// Flow-trail colour ramp: mostly dark, white only in the fast jet, so the green
-// shading carries magnitude and the trails read as texture that brightens at speed.
-const FLOW_COLORS = [
-  "#101010", "#101010", "#181818", "#242424", "#363636",
-  "#4d4d4d", "#6f6f6f", "#9a9a9a", "#cccccc", "#ffffff",
-];
 
 // Fallback view if no valid positions are present (cruise staging, Table Bay).
 const FALLBACK_CENTER = [-33.9, 18.43];
@@ -56,8 +46,9 @@ const MAX_ZOOM = 12;
 const SHIP = {
   positions:
     "https://localisation.flotteoceanographique.fr/api/v2/vessels/MD/positions",
-  // Cruise-window start; matches the IPSL WHIRLS operational map. endDate is now.
-  cruiseStart: "2026-06-24T00:00:00.000Z",
+  // Start of the data period: the MD track is cropped here so it doesn't run back
+  // through the pre-cruise transit. endDate is now.
+  cruiseStart: "2026-06-28T00:00:00.000Z",
   refreshMs: 5 * 60 * 1000, // API reports ~every 10 min; poll at 5.
 };
 
@@ -74,16 +65,20 @@ const VESSELS = {
   md: {
     name: "R/V Marion Dufresne",
     source: "Flotte Océanographique Française",
-    trackColor: "#1a1a1a",
+    // Dark blue that still reads unmistakably *blue* (an earlier near-black navy
+    // #0b2350 looked black on the map). Deeper than the drifters' deployment_1 blue
+    // (#1f5fa8 / #3a8ddb) and distinct from the seaglider sky-blue (#38bdf8) and the
+    // Agulhas crimson; a white halo keeps the line crisp over the speed-shading overlay.
+    trackColor: "#1e40af",
     haloColor: "#ffffff",
-    markerColor: "#1a1a1a",
+    markerColor: "#1e40af",
     panel: { time: "md-ship-time", readout: "md-ship-readout" },
     rows: (p, prev) => mdRows(p, motionBetween(prev, p)),
   },
   agulhas: {
     name: "R/V S.A. Agulhas II",
     source: "myshiptracking.com (via IPSL WHIRLS)",
-    // Deep crimson: reads apart from the MD's near-black, the drifters'
+    // Deep crimson: reads apart from the MD's dark navy, the drifters'
     // blue/teal, and the gliders' amber/sky.
     trackColor: "#9b1c31",
     haloColor: "#ffffff",
@@ -121,17 +116,18 @@ function styleForBatch(batch) {
 // Pretty labels for known batch keys; unknown keys (e.g. a future deployment_6)
 // fall back to the raw value, so new batches surface readably with no code change.
 const BATCH_LABELS = {
-  pre_deploy: "Drifter pre",
-  deployment_1: "Drifter batch 1",
-  deployment_2: "Drifter batch 2",
-  deployment_3: "Drifter batch 3",
-  deployment_4: "Drifter batch 4",
-  deployment_5: "Drifter batch 5",
+  pre_deploy: "batch X",
+  deployment_1: "batch 1",
+  deployment_2: "batch 2",
+  deployment_3: "batch 3",
+  deployment_4: "batch 4",
+  deployment_5: "batch 5",
 };
 // Instrument rows share this control: drifter batches use BATCH_LABELS; glider-
 // group types (xspar/seaglider/waveglider/float) fall back to their GLIDER_STYLES
-// label so they read as "XSPAR buoy" / "Seagliders" / "Wave gliders" / "Floats"
-// in the same compartment.
+// label so they read as "XSPAR buoy" / "Glider" / "Wave gliders" / "Floats"
+// in the same compartment. The pre-deployment (staged) drifters read as the
+// catch-all "batch X" row, sitting alongside the numbered deployment batches.
 const batchLabel = (batch) =>
   BATCH_LABELS[batch] ?? GLIDER_STYLES[batch]?.label ?? batch;
 
@@ -306,6 +302,384 @@ function selectInstrument(key) {
   applySelection();
 }
 
+// --- at-time position markers ------------------------------------------------
+// Each virtual drift track carries ONE marker at the position it occupies at the
+// app clock's instant, interpolated between the track's bracketing vertices and
+// hidden when the clock falls outside the track's span — the moving head of the
+// clock-clipped trail (plan 035). The observed layers (drifter/glider/ship tracks)
+// don't register here any more: their own latest-position head markers ride the
+// clock instead (see the clock-following block below), so a second dot on the same
+// moving spot would only z-fight.
+//
+// A marker rides the same Leaflet group as its track (so it shows/hides with that
+// layer's toggle) but renders in the top `atTime` pane, so it never hides under a
+// line. Each entry keeps ascending-time samples {times[], lats[], lngs[]}; a clock
+// change repositions or hides every marker, throttled to one rAF per scrub. Clicking
+// a marker highlights its whole SET (setKey: `deploy:<id>` — the deployment's whole
+// array at this instant, the marker click axis of decision 7).
+const AT_TIME_RADIUS = 5;
+const atTimeEntries = [];      // every registered marker entry
+const atTimeSets = {};         // setKey -> [entry, ...]
+let selectedAtTimeSet = null;  // the highlighted set's key, or null
+let atTimeClockMs = null;      // the app clock as epoch ms (null until set in main)
+let atTimeRaf = 0;             // pending rAF handle for a throttled repaint
+
+const atTimeIso = (ms) => new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+
+// Interpolated position on an entry's polyline at epoch `ms`, or null when the clock
+// is outside [first, last] sample time. Samples ascend in time, so a forward scan
+// finds the bracketing pair and lerps between them.
+function sampleAtTime(entry, ms) {
+  const { times, lats, lngs } = entry;
+  if (ms < times[0] || ms > times[times.length - 1]) return null;
+  let i = 0;
+  while (i < times.length - 1 && times[i + 1] < ms) i++;
+  const t0 = times[i], t1 = times[i + 1] ?? t0;
+  const f = t1 === t0 ? 0 : (ms - t0) / (t1 - t0);
+  return {
+    lat: lats[i] + f * ((lats[i + 1] ?? lats[i]) - lats[i]),
+    lng: lngs[i] + f * ((lngs[i + 1] ?? lngs[i]) - lngs[i]),
+  };
+}
+
+// Paint one visible marker: a small filled circle in its layer's colour with a white
+// halo, enlarged + dark-ringed when its set is highlighted.
+function restyleAtTimeMarker(entry, selected) {
+  entry.marker.setStyle({
+    color: selected ? "#111827" : "#fff",
+    weight: selected ? 2 : 1,
+    opacity: 1,
+    fillColor: entry.color,
+    fillOpacity: 1,
+  });
+  entry.marker.setRadius(selected ? AT_TIME_RADIUS + 3 : AT_TIME_RADIUS);
+  if (selected) entry.marker.bringToFront();
+}
+
+// Position/refresh one marker to clock `ms`: move + label it when the clock is inside
+// the track's span, else fully hide it (radius 0, transparent) so it neither shows
+// nor catches a click while its layer is still on the map.
+function updateAtTimeMarker(entry, ms) {
+  const s = ms == null ? null : sampleAtTime(entry, ms);
+  if (!s) {
+    entry.onMap = false;
+    entry.marker.setStyle({ opacity: 0, fillOpacity: 0 });
+    entry.marker.setRadius(0);
+    return;
+  }
+  entry.onMap = true;
+  entry.marker.setLatLng([s.lat, s.lng]);
+  entry.marker.setTooltipContent(`${entry.label} · ${atTimeIso(ms)}`);
+  restyleAtTimeMarker(entry, entry.setKey === selectedAtTimeSet);
+}
+
+// Drive every clock-aware element to `ms`, throttled to one animation frame so a
+// fast scrub coalesces into a single repaint: the at-time markers (the deployments'
+// moving heads walk their scrubber-cropped drift lines), the observed tracks (segments
+// clipped at the clock, heads moved — see clipTrack), and the single-fix heads
+// (updatePointHeads).
+function updateClock(ms) {
+  atTimeClockMs = ms;
+  if (atTimeRaf) return;
+  atTimeRaf = requestAnimationFrame(() => {
+    atTimeRaf = 0;
+    for (const entry of atTimeEntries) updateAtTimeMarker(entry, atTimeClockMs);
+    for (const entry of trackClockEntries) clipTrack(entry, atTimeClockMs);
+    updatePointHeads(atTimeClockMs);
+    // Crop the virtual deployment drift lines to the clock (forward + backward runs).
+    for (const key of Object.keys(deployTracks))
+      clipDeployTrack(deployTracks[key], atTimeClockMs, key === selectedTrack);
+    // Last, so a drifter's forecast (when the clock is past now) overrides its observed
+    // clip / point head and walks the marker along the violet forecast.
+    for (const entry of forecastClockEntries) clipForecast(entry, atTimeClockMs);
+  });
+}
+
+// Re-apply the set highlight to every on-map marker (a hidden, out-of-span marker
+// keeps its zero radius until the clock brings it back).
+function applyAtTimeSelection() {
+  for (const entry of atTimeEntries)
+    if (entry.onMap) restyleAtTimeMarker(entry, entry.setKey === selectedAtTimeSet);
+}
+
+// Toggle the highlighted set: clicking a marker of the current set clears it, another
+// set replaces it (decision 7 — a deployment's whole array at this instant).
+function selectAtTimeSet(setKey) {
+  selectedAtTimeSet = setKey === selectedAtTimeSet ? null : setKey;
+  applyAtTimeSelection();
+}
+
+// Register a time-aware track's at-time marker. `owner` is the Leaflet group the
+// track rides (so the marker shows/hides with that layer); `times/lats/lngs` are
+// parallel sample arrays (normalised here to ascending time — a backward run's
+// vertices descend). Returns the entry so a growing track (the ships) can swap its
+// samples in place. Fewer than two samples can't be interpolated, so no marker.
+function registerAtTimeMarker(owner, { color, label, setKey, times, lats, lngs }) {
+  if (times.length < 2) return null;
+  if (times[0] > times[times.length - 1]) {
+    times.reverse();
+    lats.reverse();
+    lngs.reverse();
+  }
+  const marker = L.circleMarker([lats[0], lngs[0]], {
+    pane: "atTime",
+    radius: 0,
+    color: "#fff",
+    weight: 1,
+    fillColor: color,
+    fillOpacity: 0,
+    opacity: 0,
+    bubblingMouseEvents: false, // its click highlights, doesn't reach the map
+  });
+  marker.bindTooltip("", { direction: "top" });
+  marker.on("click", () => selectAtTimeSet(setKey));
+  const entry = { marker, color, label, setKey, times, lats, lngs, onMap: false };
+  atTimeEntries.push(entry);
+  (atTimeSets[setKey] ??= []).push(entry);
+  owner.addLayer(marker);
+  updateAtTimeMarker(entry, atTimeClockMs);
+  return entry;
+}
+
+// --- clock-following tracks + heads (plan 035) --------------------------------
+// One rule for every observed time-aware layer (drifter true tracks, glider tracks,
+// ship tracks): at clock t the track shows only what has happened BY t — segments
+// whose span lies at or before the clock, the crossing segment trimmed to the
+// interpolated position — and the layer's HEAD MARKER (batch-coloured circle, glider
+// diamond, ship disc) rides that clipped end. Past the track's last sample the full
+// track shows and the head parks at the latest position (the untouched-clock view at
+// load); before its first sample the layer hides entirely (the instrument didn't
+// exist yet). The heads replace the small per-track at-time dots plan 034 added —
+// two markers on the same moving spot would z-fight; the at-time machinery above
+// stays for the virtual deployments (whose marker IS the track's head).
+
+// Head-marker controllers, keyed like the selection registry (drifter D_number,
+// glider id, or a ship name): { at(latlng, html), latest(), hide() }. Registered by
+// the latest-marker builders; looked up by the track builders, so a head only moves
+// once its track's time series is loaded (the lazy drifter tracks) and stays put
+// otherwise.
+const trackHeads = {};
+const registerHead = (key, ctl) => {
+  trackHeads[key] = ctl;
+};
+
+// The single "Show tracks" master (lives in the scrubber box). Governs the *observed*
+// track LINES — drifter, glider, ship — plus the real-drifter forecast lines (#22), but
+// never the heads/at-time markers (which are positions, not tracks) nor the
+// virtual-deployment drift lines (which the deploy tool owns; they are scrubber-cropped
+// but not gated by this master). The
+// observed heads follow the app clock regardless of this toggle (plan 035): their
+// track clips are registered eagerly at load, so scrubbing walks every head even with
+// the lines hidden.
+let tracksOn = false;
+
+// Set once the observed tracks (drifter tracks.geojson + gliders) are built, so the
+// full multi-fix head set is known. Until then the point-head clock stays quiet
+// (heads park at their latest position); after, it owns the single-fix heads.
+let tracksLoaded = false;
+
+const trackClockEntries = [];
+
+// Real-drifter forecast clips (#22). Each is one violet polyline per deployed drifter,
+// its vertices timed from the /api/forecast advection, driving the SAME head as the
+// drifter's observed track. Processed after the observed clips + point heads in
+// updateClock, so in the future (clock past the forecast start ≈ now) the forecast wins
+// the head and walks the drifter marker forward; at/before now it doesn't touch the head
+// (the observed/point clock owns the real position) and hides its line. See clipForecast.
+const forecastClockEntries = [];
+
+// Whether a real-drifter forecast line is visible for its batch — set by the Instruments
+// panel (buildInstrumentRows) so unchecking a drifter batch also drops its forecast
+// trajectories, exactly as it drops that batch's markers and observed tracks. Defaults to
+// "all visible" until the panel wires it. The drifter's marker (its head) is already
+// governed by the batch's marker group, so this gates only the forecast LINE.
+let forecastBatchVisible = () => true;
+
+// Head keys that a track-clip entry drives (registerTrackClock / the ship's
+// syncClock add here). A single-fix instrument never gets one, so the point-head
+// clock below owns its head instead.
+const trackedHeadKeys = new Set();
+
+// Point-in-time head clocks: one per latest marker, keyed on that instrument's own
+// `date_UTC`. Fixes single-fix instruments (e.g. D-509) that, lacking a track
+// LineString, were never clock-clipped and so stayed on the map at every clock. A
+// multi-fix head is driven by clipTrack instead (its key is in trackedHeadKeys), so
+// its point clock is skipped.
+const headPointClocks = []; // { t, headKey }
+const registerPointHead = (headKey, iso) => {
+  const t = Date.parse(iso);
+  if (Number.isFinite(t)) headPointClocks.push({ t, headKey });
+};
+
+// Drive the single-fix point-clocked heads to clock `ms`: a head with no track-clip
+// entry hides before its (only) fix and parks at its latest position at/after it —
+// the same clock rule clipTrack applies to multi-fix heads. Quiet until tracksLoaded,
+// so we never mistake a not-yet-built multi-fix head for a single-fix one. Runs inside
+// updateClock (every scrub) and once tracks finish loading.
+function updatePointHeads(ms) {
+  if (!tracksLoaded) return;
+  for (const { t, headKey } of headPointClocks) {
+    if (trackedHeadKeys.has(headKey)) continue;
+    const head = trackHeads[headKey];
+    if (!head) continue;
+    if (ms == null || ms >= t) head.latest();
+    else head.hide();
+  }
+}
+
+// Register an observed track for clock clipping. `segs` are the per-fix-pair
+// polylines ({ line, t0, t1, a, b } — see addTrackSegments); `coords`/`fixes` give
+// the vertex samples (a vertex with no finite date_UTC can't be placed on the clock
+// and is skipped); `headKey` names the layer's head controller; `tip(fix, latlng, i,
+// fixes)` renders the head's tooltip for the bracketing fix while scrubbed back (the
+// index + array let the ships derive motion from the preceding fix). Under two timed
+// samples there is nothing to scrub. Applies the current clock immediately.
+function registerTrackClock(group, segs, coords, fixes, headKey, tip) {
+  const times = [], lats = [], lngs = [], timedFixes = [];
+  (coords ?? []).forEach(([lng, lat], i) => {
+    const t = Date.parse(fixes?.[i]?.date_UTC);
+    if (Number.isFinite(t)) {
+      times.push(t);
+      lats.push(lat);
+      lngs.push(lng);
+      timedFixes.push(fixes[i]);
+    }
+  });
+  if (times.length < 2) return null;
+  const entry = { group, segs, times, lats, lngs, fixes: timedFixes, headKey, tip, trimmed: null };
+  trackClockEntries.push(entry);
+  if (headKey != null) trackedHeadKeys.add(headKey);
+  clipTrack(entry, atTimeClockMs);
+  return entry;
+}
+
+// Show/hide one segment by group membership (cheap when nothing changes; works
+// whether or not the group itself is on the map).
+function setSegShown(entry, seg, on) {
+  if (seg.on === on) return;
+  seg.on = on;
+  if (on) entry.group.addLayer(seg.line);
+  else entry.group.removeLayer(seg.line);
+}
+
+// Clip one observed track to clock `ms` and move its head. A segment with a
+// non-finite time can't be placed on the clock, so it stays shown whenever any of
+// the track shows (only the before-first-sample branch hides it, with everything
+// else).
+function clipTrack(entry, ms) {
+  if (ms == null) return;
+  const { segs, times, lats, lngs, headKey } = entry;
+  const head = trackHeads[headKey];
+  const last = times[times.length - 1];
+
+  // Restore a previously trimmed crossing segment before re-deciding membership.
+  if (entry.trimmed) {
+    entry.trimmed.line.setLatLngs([entry.trimmed.a, entry.trimmed.b]);
+    entry.trimmed = null;
+  }
+
+  if (ms >= last) {
+    for (const seg of segs) setSegShown(entry, seg, true);
+    head?.latest();
+    return;
+  }
+  if (ms < times[0]) {
+    for (const seg of segs) setSegShown(entry, seg, false);
+    head?.hide();
+    return;
+  }
+
+  // Bracketing sample pair and the interpolated at-clock position.
+  let i = 0;
+  while (i < times.length - 1 && times[i + 1] < ms) i++;
+  const t0 = times[i], t1 = times[i + 1];
+  const f = t1 === t0 ? 0 : (ms - t0) / (t1 - t0);
+  const pos = L.latLng(
+    lats[i] + f * (lats[i + 1] - lats[i]),
+    lngs[i] + f * (lngs[i + 1] - lngs[i])
+  );
+
+  for (const seg of segs) {
+    const timed = Number.isFinite(seg.t0) && Number.isFinite(seg.t1);
+    if (!timed || seg.t1 <= ms) {
+      setSegShown(entry, seg, true);
+    } else if (seg.t0 <= ms) {
+      // The crossing segment: shown, trimmed to the at-clock position.
+      setSegShown(entry, seg, true);
+      seg.line.setLatLngs([seg.a, pos]);
+      entry.trimmed = seg;
+    } else {
+      setSegShown(entry, seg, false);
+    }
+  }
+  head?.at(pos, entry.tip ? entry.tip(entry.fixes[i], pos, i, entry.fixes) : null);
+}
+
+// Clip one real-drifter forecast to clock `ms` and walk its head (#22). Unlike an
+// observed clip this is a single non-interactive violet polyline, so it clips by
+// `setLatLngs` (cheap: no per-segment add/remove) rather than segment membership. The
+// track's first vertex is the drifter's position at ~now (pre-now vertices were dropped
+// when it was built), so it is **inactive** — line hidden, head left to the observed/
+// point clock at the drifter's last real fix — when the clock is at/before now. When
+// **active** (clock past now) it walks the drifter's own head to the forecast position
+// at the clock REGARDLESS of the "Show tracks" master, and additionally draws the violet
+// line from now up to the clock ONLY while that master is on (`tracksOn`, read live: the
+// projected marker still moves with tracks off, just not its line). Runs last in
+// updateClock, so an active forecast wins the head over the observed clip.
+function clipForecast(entry, ms) {
+  if (ms == null) return;
+  const { line, times, lats, lngs, headKey, group } = entry;
+  const start = times[0];
+  if (ms <= start) {
+    if (entry.shown) { group.removeLayer(line); entry.shown = false; }
+    return; // at/before now: the real last-known position is owned by the observed clip
+  }
+  const head = trackHeads[headKey];
+  const lastT = times[times.length - 1];
+  let cut, pos;
+  if (ms >= lastT) {
+    cut = times.length;
+    pos = L.latLng(lats[times.length - 1], lngs[times.length - 1]);
+  } else {
+    let i = 0;
+    while (i < times.length - 1 && times[i + 1] < ms) i++;
+    const t0 = times[i], t1 = times[i + 1];
+    const f = t1 === t0 ? 0 : (ms - t0) / (t1 - t0);
+    pos = L.latLng(lats[i] + f * (lats[i + 1] - lats[i]), lngs[i] + f * (lngs[i + 1] - lngs[i]));
+    cut = i + 1; // vertices 0..i, then the interpolated at-clock point
+  }
+  // The head always walks the forecast in the future; the line shows only when "Show
+  // tracks" is on AND this drifter's batch is selected in the Instruments panel.
+  head?.at(pos, entry.tip);
+  if (tracksOn && forecastBatchVisible(entry.batch)) {
+    const coords = [];
+    for (let k = 0; k < cut; k++) coords.push([lats[k], lngs[k]]);
+    coords.push([pos.lat, pos.lng]);
+    line.setLatLngs(coords);
+    if (!entry.shown) { group.addLayer(line); entry.shown = true; }
+  } else if (entry.shown) {
+    group.removeLayer(line);
+    entry.shown = false;
+  }
+}
+
+// Forget at-time markers by setKey. By default `key` is a prefix (Deploy "Clear all"
+// wipes every "deploy:" marker along with the layers they ride); with `exact` it
+// matches one setKey verbatim (deleting a single deployment — "deploy:2" must not also
+// catch "deploy:20"). Removes them from the map, the registry, the set index, and
+// clears a selection pointing at them.
+function removeAtTimeSet(key, exact = false) {
+  const hit = (k) => (exact ? k === key : k.startsWith(key));
+  for (let i = atTimeEntries.length - 1; i >= 0; i--) {
+    if (hit(atTimeEntries[i].setKey)) {
+      atTimeEntries[i].marker.remove();
+      atTimeEntries.splice(i, 1);
+    }
+  }
+  for (const k of Object.keys(atTimeSets)) if (hit(k)) delete atTimeSets[k];
+  if (selectedAtTimeSet && hit(selectedAtTimeSet)) selectedAtTimeSet = null;
+}
+
 // Shared line style — all track lines are TRACK_COLOR, so both drifter and glider
 // elements use it. Opacity is held constant across states: dimming is by
 // desaturation, not transparency. Weight follows the live zoom (see trackWeight).
@@ -336,8 +710,11 @@ function restyleLine(line, state) {
 // `key` (a drifter D_number or glider id) and selects it on click. Segment i
 // (coords[i] -> coords[i+1]) is tagged with fix i at its start; the final fix is
 // the instrument's latest-position head marker, so every fix stays reachable.
+// Returns the segments with their endpoints + time span ({ line, t0, t1, a, b, on })
+// so registerTrackClock can clip the track at the app clock.
 function addTrackSegments(group, coords, fixes, key, tip) {
   const pts = coords.map(([lng, lat]) => [lat, lng]);
+  const segs = [];
   for (let i = 0; i < pts.length - 1; i++) {
     const seg = L.polyline([pts[i], pts[i + 1]], {
       color: TRACK_COLOR,
@@ -350,11 +727,28 @@ function addTrackSegments(group, coords, fixes, key, tip) {
       registerPart(key, (s) => restyleLine(seg, s));
       seg.on("click", () => selectInstrument(key));
     }
+    segs.push({
+      line: seg,
+      t0: Date.parse(fixes?.[i]?.date_UTC),
+      t1: Date.parse(fixes?.[i + 1]?.date_UTC),
+      a: pts[i],
+      b: pts[i + 1],
+      on: true,
+    });
   }
+  return segs;
 }
 // A drifter head is a per-batch circleMarker: hold its batch colour, enlarge it
 // when selected, and desaturate that batch colour when another instrument is.
+// `_clockHidden` (set by the head's clock controller while the app clock predates
+// the track's first fix) wins over every selection state, so a selection change
+// can't resurface a head that doesn't exist yet at the displayed instant.
 function styleHead(marker, base, state) {
+  if (marker._clockHidden) {
+    marker.setStyle({ opacity: 0, fillOpacity: 0 });
+    marker.setRadius(0);
+    return;
+  }
   const dim = state === "dim";
   marker.setStyle({
     color: dim ? desaturate(base.color) : base.color,
@@ -380,36 +774,61 @@ function buildBatchGroups(geojson) {
       pane: "drifters",
       bubblingMouseEvents: false, // background clicks (not this) clear selection
     });
-    marker.bindTooltip(popupHtml(feature.properties, marker.getLatLng()));
+    const latestHtml = popupHtml(feature.properties, marker.getLatLng());
+    marker.bindTooltip(latestHtml);
     const dNumber = feature.properties?.D_number;
     if (dNumber != null) {
       registerPart(dNumber, (s) => styleHead(marker, base, s));
       marker.on("click", () => selectInstrument(dNumber));
+      // Head controller: once this drifter's track is loaded (registerTrackClock),
+      // the head rides the app clock — at the interpolated position with that fix's
+      // tooltip, parked at the latest fix past the track's end, hidden before its
+      // first (the drifter wasn't in the water yet).
+      const home = marker.getLatLng();
+      registerHead(dNumber, {
+        at(latlng, html) {
+          marker._clockHidden = false;
+          marker.setLatLng(latlng);
+          if (html) marker.setTooltipContent(html);
+          styleHead(marker, base, stateFor(dNumber));
+        },
+        latest() {
+          this.at(home, latestHtml);
+        },
+        hide() {
+          marker._clockHidden = true;
+          styleHead(marker, base, stateFor(dNumber));
+        },
+      });
+      // Single-fix drifters (no track LineString) are clock-driven by this point
+      // clock instead of clipTrack (fixes D-509 staying on the map at every clock).
+      registerPointHead(dNumber, feature.properties?.date_UTC);
     }
     (groups[batch] ??= L.featureGroup()).addLayer(marker);
   }
   return groups;
 }
 
-// A checkbox panel governing all instrument visibility — this control, not the
-// Leaflet layer control, owns it. Instruments are the drifter batches and the
-// glider-group platforms (XSPAR buoy, seagliders, wave gliders, floats), each one
-// row that shows/hides that instrument's markers — the glider rows separated from
-// the drifter batches by a divider and drawn with a diamond swatch matching their
-// map markers. Above them, one master row per *overlay* (True track,
-// Forecast, Hindcast) turns that overlay's per-instrument layers on or off for
-// every instrument at once. Each overlay is `{ label, groups: {key: layer}, on }`
-// keyed by the same instrument key as `markerGroups` — optionally with a `lazy`
-// loader whose (heavy, default-off) groups are fetched and merged in on the
-// master row's first tick rather than at load. They compose with the
-// instrument rows: an overlay's layer for an instrument shows only when both that
-// instrument's row and the overlay's master row are checked, so unchecking an
-// instrument hides its markers *and* every overlay riding on it. Data-driven from
-// `markerGroups`, so new batches/gliders appear automatically; adding an overlay
-// is one more list entry. (Gliders carry a track but no forecast/hindcast, so the
-// Forecast/Hindcast masters simply have no glider layer to act on.) Markers start
-// visible; overlays start at their own `on` (off by default).
-function buildInstrumentRows(div, map, markerGroups, overlays) {
+// The one instrument panel — this control, not the Leaflet layer control, owns
+// marker visibility for every platform. Three families read top-to-bottom, each a
+// two-column grid set off by a divider (plan 037 / #24):
+//   • drifter batches (round swatch, marker fill colour) — "batch 1"…"batch X";
+//   • glider-group platforms (diamond swatch) — Glider / Float / XSPAR / Waveglider;
+//   • the two cruise vessels (round swatch, track colour) — M. Dufresne / Agulhas II.
+// A small "select all / deselect all" text control at the bottom drives every row.
+//
+// The instruments' *track lines* ride the single "Show tracks" master in the scrubber
+// box (plan 036), not a per-tab row. `tracksOverlay.groups` holds the drifter+glider
+// track groups keyed by the same instrument key as `markerGroups` (filled in as they
+// load — see main). A track group shows only when both its instrument row and the
+// master are on, so unchecking an instrument hides its markers *and* its track.
+//
+// `vessels` are eager descriptors `{ name, color, setVisible(on), wantVisible }`
+// built by main(): the two ships are known at config time, so their rows render up
+// front; the row's checkbox drives `setVisible`, which no-ops the map add until the
+// vessel's first fix lands (main's reveal applies the last checkbox state then).
+// Returns `{ setTracksOn(on) }` for the external master (initial state off).
+function buildInstrumentRows(div, map, markerGroups, tracksOverlay, vessels = []) {
   // Pre-deployment drifters are staged (still aboard, not in the water), so they
   // start hidden; deployment batches start visible. sync() (called at build) then
   // reconciles the map to this initial state.
@@ -417,98 +836,113 @@ function buildInstrumentRows(div, map, markerGroups, overlays) {
   for (const batch of Object.keys(markerGroups))
     batchOn[batch] = batch !== "pre_deploy";
 
-  // Only the overlays with layers to show get a master row, so a missing/empty
-  // artifact (no tracks, no forecast) doesn't leave a dead checkbox. An overlay
-  // with a deferred `lazy` loader (the drifter true tracks, fetched on first tick)
-  // is kept even with empty groups — its master row is what fires the loader.
-  const activeOverlays = overlays.filter(
-    (o) => Object.keys(o.groups).length || o.lazy
-  );
+  let tracksMasterOn = false;
 
   const toggle = (layer, show) =>
     layer && (show ? layer.addTo(map) : map.removeLayer(layer));
 
+  // This panel also governs the real-drifter forecast lines: a forecast shows only for a
+  // batch that is checked here (clipForecast reads this live). Re-run the clock after each
+  // sync so a batch toggle re-clips the forecasts at once, like the observed tracks.
+  forecastBatchVisible = (batch) => batchOn[batch] !== false;
+
   function sync() {
     for (const batch of Object.keys(markerGroups)) {
       toggle(markerGroups[batch], batchOn[batch]);
-      for (const overlay of activeOverlays) {
-        toggle(overlay.groups[batch], batchOn[batch] && overlay.on);
-      }
+      toggle(tracksOverlay.groups[batch], batchOn[batch] && tracksMasterOn);
     }
+    updateClock(atTimeClockMs); // reconcile the forecast lines to the new selection
   }
 
-  // Master row per overlay, above the batch rows. A short line swatch in the
-  // overlay's own colour keys the checkbox to the lines it draws on the map.
-  for (const overlay of activeOverlays) {
-    const row = L.DomUtil.create("label", "batch-row", div);
+  // The scrubber's "Show tracks" master flips this; sync() reconciles line visibility.
+  // Reads tracksOverlay.groups live, so track groups that arrive after build (the
+  // eager drifter tracks) reconcile on the next call.
+  function setTracksOn(on) {
+    tracksMasterOn = on;
+    sync();
+  }
+
+  // Every checkable row registers here so the bottom "select all / deselect all"
+  // control can drive them through their REAL change handlers (markers + tracks
+  // reconcile, not just the box visual) — last-write-wins across all three families.
+  const rows = [];
+  const addRow = (parent, { checked, color, diamond, label, onChange }) => {
+    const row = L.DomUtil.create("label", "batch-row", parent);
     const cb = L.DomUtil.create("input", "", row);
     cb.type = "checkbox";
-    cb.checked = overlay.on;
-    const swatch = L.DomUtil.create("span", "batch-line-swatch", row);
-    swatch.style.background = overlay.color;
-    const text = L.DomUtil.create("span", "batch-text", row);
-    text.textContent = overlay.label;
-    cb.addEventListener("change", () => {
-      overlay.on = cb.checked;
-      // First tick of an overlay with a deferred loader (the drifter true tracks,
-      // kept off the critical-path load): fetch its groups once, merge them into
-      // overlay.groups and re-sync so visibility reconciles through the normal
-      // path. Null the loader so it fires exactly once; a missing artifact resolves
-      // to {} and nothing blanks (glider tracks are already in overlay.groups).
-      const load = overlay.lazy;
-      if (load) {
-        overlay.lazy = null;
-        load().then((groups) => {
-          Object.assign(overlay.groups, groups);
-          sync();
-        });
-      }
-      sync();
-    });
-  }
+    cb.checked = checked;
+    // Glider rows draw a diamond swatch matching their map markers; drifters and
+    // ships keep the round swatch (marker fill / track colour respectively).
+    const swatch = L.DomUtil.create(
+      "span", diamond ? "batch-swatch batch-swatch-diamond" : "batch-swatch", row
+    );
+    swatch.style.background = color;
+    L.DomUtil.create("span", "batch-text", row).textContent = label;
+    const apply = () => onChange(cb.checked);
+    cb.addEventListener("change", apply);
+    rows.push({ cb, apply });
+  };
 
-  // Divider separating the overlay (line) rows above from the batch (marker)
-  // rows below.
-  if (activeOverlays.length) L.DomUtil.create("hr", "batch-divider", div);
-
-  // Drifter batches sort ahead of the glider-group types, so one divider before
-  // the first glider row separates the two families. Only inserted once, and only
-  // if a drifter row preceded it (no leading rule when gliders stand alone).
-  let sawBatch = false;
-  let gliderDivider = false;
+  // Drifter batches sort ahead of the glider-group types (float pinned last), so the
+  // family split falls between them: one two-column grid for the drifter batches, a
+  // divider, one grid for the gliders. Rows wrap to one column at the dock's narrow
+  // width (CSS .batch-grid). Only the drifters carry a family header — "batch 1..5" is
+  // not self-explaining, whereas Glider/Float/XSPAR/Waveglider and the two ships name
+  // themselves, so they lean on the plain dividers instead (#24 follow-up).
+  L.DomUtil.create("span", "batch-family-head", div).textContent = "Drifters";
+  const drifterGrid = L.DomUtil.create("div", "batch-grid", div);
+  let gliderGrid = null;
   for (const batch of Object.keys(markerGroups).sort(instrumentOrder)) {
     const isGlider = GLIDER_STYLES[batch] != null;
-    if (isGlider && sawBatch && !gliderDivider) {
+    if (isGlider && !gliderGrid) {
       L.DomUtil.create("hr", "batch-divider", div);
-      gliderDivider = true;
+      gliderGrid = L.DomUtil.create("div", "batch-grid", div);
     }
-    if (!isGlider) sawBatch = true;
     const group = markerGroups[batch];
-    const row = L.DomUtil.create("label", "batch-row", div);
-    const cb = L.DomUtil.create("input", "", row);
-    cb.type = "checkbox";
-    cb.checked = batchOn[batch];
-    // Glider rows key to their instrument colour and draw a diamond swatch
-    // matching their map markers; drifter batches key to their marker fill and
-    // keep the round swatch.
-    const swatch = L.DomUtil.create(
-      "span",
-      isGlider ? "batch-swatch batch-swatch-diamond" : "batch-swatch",
-      row
-    );
-    swatch.style.background =
-      GLIDER_STYLES[batch]?.color ?? styleForBatch(batch).fillColor;
-    const text = L.DomUtil.create("span", "batch-text", row);
-    text.textContent = `${batchLabel(batch)} (${group.getLayers().length})`;
-    cb.addEventListener("change", () => {
-      batchOn[batch] = cb.checked;
-      sync();
+    addRow(isGlider ? gliderGrid : drifterGrid, {
+      checked: batchOn[batch],
+      color: GLIDER_STYLES[batch]?.color ?? styleForBatch(batch).fillColor,
+      diamond: isGlider,
+      label: `${batchLabel(batch)} (${group.getLayers().length})`,
+      onChange: (on) => { batchOn[batch] = on; sync(); },
     });
   }
+
+  // Ships: the third family, folded in from the former separate Ships tab (#24).
+  // Rendered eagerly from config; each row's checkbox toggles that vessel's group
+  // visibility via setVisible, which no-ops until the vessel's first fix lands.
+  if (vessels.length) {
+    L.DomUtil.create("hr", "batch-divider", div);
+    const shipGrid = L.DomUtil.create("div", "batch-grid", div);
+    for (const v of vessels)
+      addRow(shipGrid, {
+        checked: v.wantVisible,
+        color: v.color,
+        diamond: false,
+        label: v.name,
+        onChange: (on) => v.setVisible(on),
+      });
+  }
+
+  // Select all / deselect all: small text links at the bottom that flip every row's
+  // checkbox and fire its handler, so a bulk toggle reconciles markers and tracks
+  // exactly as clicking each box would.
+  const setAll = (on) => { for (const r of rows) { r.cb.checked = on; r.apply(); } };
+  const selRow = L.DomUtil.create("div", "batch-selectall", div);
+  const mkLink = (text, on) => {
+    const b = L.DomUtil.create("button", "batch-selectall-link", selRow);
+    b.type = "button";
+    b.textContent = text;
+    b.addEventListener("click", () => setAll(on));
+  };
+  mkLink("select all", true);
+  L.DomUtil.create("span", "batch-selectall-sep", selRow).textContent = "/";
+  mkLink("deselect all", false);
 
   // Apply the initial visibility (hides the default-off pre-deployment batch,
   // which main() adds to the map before this dock is built).
   sync();
+  return { setTracksOn };
 }
 
 // Surface-currents rows for the dock's Layers tab. Replaces the old
@@ -521,7 +955,7 @@ function buildInstrumentRows(div, map, markerGroups, overlays) {
 // every selection and once at build, so the caller can render the active shading's
 // colour scale into `legendEl` (the dock legend below the radios) and key the lazy
 // ζ·f prefetch to the active shading.
-function buildShadingRows(div, map, shadings, overlays, onShadingChange) {
+function buildShadingRows(div, map, shadings, overlays, onShadingChange, overlayAnimation) {
   const names = Object.keys(shadings);
   let active = names.find((n) => n !== "None" && map.hasLayer(shadings[n])) ?? "None";
   // The active shading's colour-class legend, right under the radios (null when
@@ -553,60 +987,29 @@ function buildShadingRows(div, map, shadings, overlays, onShadingChange) {
   const overlayNames = Object.keys(overlays);
   if (overlayNames.length) {
     if (names.length) L.DomUtil.create("hr", "batch-divider", div);
-    for (const name of overlayNames) {
-      const layer = overlays[name];
-      const row = L.DomUtil.create("label", "batch-row", div);
+    // TEMPORARILY DISABLED (issue #25): the Current-flow overlay and the near-inertial
+    // animation are broken, so their checkboxes — and the "Animate overlays" toggle that
+    // governs the animation — are rendered greyed-out and inert (never added to the map)
+    // pending a follow-up MR. To re-enable, restore the change handlers below and drop
+    // the `disabled` flag + `batch-row-disabled` class (and this note).
+    const disabledRow = (parent, label, subtle) => {
+      const row = L.DomUtil.create(
+        "label", `batch-row${subtle ? " batch-subtle" : ""} batch-row-disabled`, parent
+      );
       const cb = L.DomUtil.create("input", "", row);
       cb.type = "checkbox";
-      cb.checked = map.hasLayer(layer);
-      L.DomUtil.create("span", "batch-text", row).textContent = name;
-      cb.addEventListener("change", () =>
-        cb.checked ? layer.addTo(map) : map.removeLayer(layer)
-      );
-    }
+      cb.checked = false;
+      cb.disabled = true;
+      L.DomUtil.create("span", "batch-text", row).textContent = label;
+      row.title = "Temporarily disabled — see issue #25";
+    };
+    for (const name of overlayNames) disabledRow(div, name, false);
+    if (overlayAnimation) disabledRow(div, "Animate overlays", true);
+    L.DomUtil.create("p", "ft-hint", div).textContent =
+      "Flow & animation temporarily disabled (issue #25).";
   }
 
   onShadingChange?.(active, legendEl); // render the initial legend for the default shading
-}
-
-// The dock's Ships tab. A vessel's row is added lazily (`addVessel`) on its first
-// fix — same "no fix ⇒ no dead toggle" contract as before, but the tab itself
-// always exists, showing a placeholder until a vessel reports. `render(div)`
-// captures the tab body; `addVessel` appends a checkbox that shows/hides the
-// vessel's track group and re-paints. The group is already on the map when
-// `addVessel` is called, so the checkbox starts checked.
-function buildShipsTab(map) {
-  const vessels = [];
-  let body = null;
-  const paint = () => {
-    if (!body) return;
-    body.replaceChildren();
-    if (!vessels.length) {
-      L.DomUtil.create("p", "dock-empty", body).textContent = "No vessel fixes yet.";
-      return;
-    }
-    for (const { group, name } of vessels) {
-      const row = L.DomUtil.create("label", "batch-row", body);
-      const cb = L.DomUtil.create("input", "", row);
-      cb.type = "checkbox";
-      cb.checked = map.hasLayer(group);
-      L.DomUtil.create("span", "batch-text", row).textContent = name;
-      cb.addEventListener("change", () =>
-        cb.checked ? group.addTo(map) : map.removeLayer(group)
-      );
-    }
-  };
-  return {
-    render: (div) => {
-      body = div;
-      paint();
-    },
-    addVessel: (group, name) => {
-      if (vessels.some((v) => v.group === group)) return;
-      vessels.push({ group, name });
-      paint();
-    },
-  };
 }
 
 // One top-right control housing every map control as tabs, so the footprint is
@@ -616,9 +1019,14 @@ function buildShipsTab(map) {
 // by `display`, so tabs keep their state (the deploy tool's arming, the ships
 // list) across switches. A header caret collapses the whole box to just its bar so
 // the controls can be tucked away to clear the map. Click propagation is disabled
-// on the whole box, so no per-tab guard is needed.
-function buildControlDock(map, tabs) {
+// on the whole box, so no per-tab guard is needed. `initialId` names the tab open on
+// first paint — chosen synchronously so the dock never visibly flips tabs after load;
+// it falls back to the first tab when absent or unmatched.
+function buildControlDock(map, tabs, initialId) {
   const control = L.control({ position: "topright" });
+  // Populated in onAdd; lets a late async probe re-select a tab (the reachability
+  // downgrade to Instruments) without the dock having blocked on that network call.
+  const handle = {};
   control.onAdd = () => {
     const div = L.DomUtil.create("div", "map-control control-dock");
     L.DomEvent.disableClickPropagation(div);
@@ -674,60 +1082,172 @@ function buildControlDock(map, tabs) {
       paintCollapse();
     });
 
-    show(0);
+    const initialIdx = Math.max(0, tabs.findIndex((t) => t.id === initialId));
+    show(initialIdx);
     paintCollapse();
+
+    handle.show = show;
+    handle.idToIndex = new Map(tabs.map((t, i) => [t.id, i]));
     return div;
+  };
+  // Select a tab by id after first paint — used only by the async reachability probe to
+  // downgrade to Instruments when the forecast API is absent. A no-op for an unknown id.
+  control.select = (id) => {
+    const i = handle.idToIndex?.get(id);
+    if (i != null) handle.show(i);
   };
   return control;
 }
 
-// Short offset label for a slider frame: "now", "+12h", "-12h".
-function frameOffsetLabel(offsetH) {
-  if (offsetH === 0) return "now";
-  return (offsetH > 0 ? "+" : "") + offsetH + "h";
+// Compact UTC readout for the clock, e.g. "2026-07-13 18:00Z" (the clock is hourly,
+// so seconds are always 00 and dropped).
+function formatClock(ms) {
+  return new Date(ms).toISOString().replace("T", " ").replace(/:\d{2}\.\d+Z$/, "Z");
 }
 
-// Time-slider control (bottom-centre): scrubs the surface-current speed / ζ/f
-// shadings through the CMEMS forecast at 12 h steps (-12 … now … +72 h). `frames`
-// is the metas' shared manifest [{offset_h, valid_time, file}]; `onChange(i)`
-// swaps every registered shading overlay to that frame. It is a plain positioned
-// element (not an L.control) so it can centre and span the map width; Leaflet
-// mouse propagation is disabled so dragging the handle never pans the map.
-function buildTimeSlider(map, frames, nowIdx, onChange) {
+// UTC short-month names for the slider's day-tick labels ("Jul 14" reads faster than
+// a bare "07-14").
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// The app's single clock (bottom-centre): a datetime scrubber at **1 h granularity**
+// over the shading frames' full span `[first valid_time, last valid_time]`. The clock
+// time is `displayedFieldTime` exactly (an ISO string); the caller snaps rasters/flow
+// to the nearest 12 h frame, while the near-inertial animation and the deploy tool's
+// run start consume the exact clock. A drag therefore moves the clock in 1 h steps
+// while the shown field frame changes every 12 h.
+//
+// Options: `t0Ms` (span start, epoch ms), `spanHours` (integer span length),
+// `value` (initial hour offset from t0), `nowMs` (wall-clock, for the now marker),
+// and `onChange(value)` — called with the hour offset on every drag and on a valid
+// type-in jump. The widget carries day tick marks with sparse date labels, a wall-
+// clock "now" marker, a live clock readout, and a type-in datetime jump box (Enter
+// jumps; unparseable input is refused visibly). Plain positioned element (not an
+// L.control) so it can centre and span the map width; Leaflet mouse propagation is
+// disabled so dragging never pans the map.
+function buildTimeSlider(map, { t0Ms, spanHours, value, nowMs, onChange, tracks }) {
+  const HOUR_MS = 3600000;
+  const DAY_MS = 86400000;
+  const lastMs = t0Ms + spanHours * HOUR_MS;
   const el = L.DomUtil.create("div", "time-slider-control");
-  const input = L.DomUtil.create("input", "ts-range", el);
+
+  // Head row: the "Show tracks" master (left) and the live clock readout (right). The
+  // tracks master lives here — not in the Instruments tab — because the observed
+  // tracks clip to *this* clock (plan 036): drifter, glider, and ship track lines
+  // show/hide together (heads and the deploy tool's own drift lines excepted — the
+  // latter are scrubber-cropped but not gated by this master).
+  const head = L.DomUtil.create("div", "ts-head", el);
+  if (tracks) {
+    const tracksLabel = L.DomUtil.create("label", "ts-tracks", head);
+    const tracksCb = L.DomUtil.create("input", "", tracksLabel);
+    tracksCb.type = "checkbox";
+    tracksCb.checked = !!tracks.initial;
+    L.DomUtil.create("span", "", tracksLabel).textContent = "Show tracks";
+    tracksCb.addEventListener("change", () => tracks.onToggle?.(tracksCb.checked));
+  }
+
+  // Right side of the head row: the live clock readout and — when "now" falls inside
+  // the clock span — a "now" chip that snaps the scrubber back to the wall-clock
+  // present (#19). The blue now-dot on the scrub line is deliberately non-interactive
+  // (it must never block grabbing a thumb parked near it), so this chip carries the
+  // click. It drives the exact input→onChange path a drag uses, so every clock-aware
+  // layer re-syncs identically, and dims to "at-now" when the thumb already sits there.
+  const headRight = L.DomUtil.create("div", "ts-head-right", head);
+  const timeEl = L.DomUtil.create("div", "ts-time", headRight);
+  const nowOffset = Math.min(spanHours, Math.max(0, Math.round((nowMs - t0Ms) / HOUR_MS)));
+  let nowBtn = null;
+  if (nowMs >= t0Ms && nowMs <= lastMs) {
+    nowBtn = L.DomUtil.create("button", "ts-nowbtn", headRight);
+    nowBtn.type = "button";
+    nowBtn.title = "Jump the clock to now";
+    L.DomUtil.create("span", "ts-nowbtn-dot", nowBtn);
+    L.DomUtil.create("span", "", nowBtn).textContent = "now";
+  }
+
+  const pctOf = (ms) => (spanHours ? ((ms - t0Ms) / (spanHours * HOUR_MS)) * 100 : 0);
+
+  // The range rides in a positioned wrapper so the wall-clock "now" marker — a small
+  // blue dot sitting on the scrub line itself — can be percent-placed over it. On the
+  // line rather than in the tick lane below, where its old caption collided with the
+  // date labels; the dot ignores the pointer (CSS) so it never blocks grabbing a
+  // thumb parked at/near now.
+  const rangeWrap = L.DomUtil.create("div", "ts-rangewrap", el);
+  const input = L.DomUtil.create("input", "ts-range", rangeWrap);
   input.type = "range";
   input.min = "0";
-  input.max = String(frames.length - 1);
+  input.max = String(spanHours);
   input.step = "1";
-  input.value = String(nowIdx);
-  input.setAttribute("aria-label", "CMEMS forecast time");
+  input.value = String(value);
+  input.setAttribute("aria-label", "Field clock time (UTC)");
+  if (nowMs >= t0Ms && nowMs <= lastMs) {
+    L.DomUtil.create("div", "ts-nowdot", rangeWrap).style.left = pctOf(nowMs) + "%";
+  }
 
+  // Absolutely-positioned tick lane under the range: a mark at each 00Z day boundary
+  // with sparse "Jul 14"-style UTC date labels so they don't collide. Percent
+  // positions map the clock's [t0, last] span onto the track (approximate at the
+  // thumb insets, like the prior flex ticks).
   const ticks = L.DomUtil.create("div", "ts-ticks", el);
-  frames.forEach((f) => {
-    const t = L.DomUtil.create("span", "ts-tick" + (f.offset_h === 0 ? " ts-now" : ""), ticks);
-    t.textContent = frameOffsetLabel(f.offset_h);
+  const days = [];
+  for (let d = Math.ceil(t0Ms / DAY_MS) * DAY_MS; d <= lastMs; d += DAY_MS) days.push(d);
+  const labelEvery = Math.max(1, Math.ceil(days.length / 8)); // <= ~8 labels
+  days.forEach((d, i) => {
+    const t = L.DomUtil.create("div", "ts-tick", ticks);
+    const pct = pctOf(d);
+    t.style.left = pct + "%";
+    if (i % labelEvery === 0) {
+      const dt = new Date(d);
+      const label = L.DomUtil.create("span", "ts-tick-label", t);
+      label.textContent = `${MONTHS[dt.getUTCMonth()]} ${dt.getUTCDate()}`;
+      // Keep the end labels inside the box: left-anchor the first, right-anchor the
+      // last, centre the rest (the default). A centred label at pct 0 / 100 would
+      // otherwise spill half its width past the rounded control edge (bug fix).
+      if (pct <= 6) label.style.transform = "translateX(0)";
+      else if (pct >= 94) label.style.transform = "translateX(-100%)";
+    }
   });
 
-  // Just the selected frame's valid time, small in the box's lower-right corner.
-  // The offset (now / +12 h …) is already the picked tick's label, and that it's
-  // the shading — not the tracks — that moves is plain from watching the map while
-  // scrubbing, so neither needs a header line.
-  const timeEl = L.DomUtil.create("div", "ts-time", el);
-  const setTime = (i) => {
-    timeEl.textContent = formatFixTime(frames[i].valid_time);
+  const setTime = (v) => {
+    timeEl.textContent = formatClock(t0Ms + v * HOUR_MS);
   };
-  setTime(nowIdx);
+  // Dim the now chip to "at-now" when the thumb already sits on the now hour, so it
+  // reads as a satisfied target rather than an always-live button.
+  const syncNowBtn = () => nowBtn?.classList.toggle("at-now", Number(input.value) === nowOffset);
+  setTime(value);
+  syncNowBtn();
 
   L.DomEvent.on(input, "input", () => {
-    const i = Number(input.value);
-    setTime(i);
-    onChange(i);
+    const v = Number(input.value);
+    setTime(v);
+    syncNowBtn();
+    onChange(v);
   });
+  if (nowBtn) {
+    L.DomEvent.on(nowBtn, "click", () => {
+      input.value = String(nowOffset);
+      input.dispatchEvent(new Event("input")); // reuse the drag path (setTime + onChange)
+    });
+  }
+
   L.DomEvent.disableClickPropagation(el);
   L.DomEvent.disableScrollPropagation(el);
   map.getContainer().appendChild(el);
   return { el, setTime };
+}
+
+// The "Show tracks" master's fallback home when there is no scrubber to host it (no
+// CMEMS field): a small standalone chip bottom-centre over the map, same checkbox as
+// the scrubber's inline one. `onToggle(on)` fires on every change.
+function buildTracksChip(map, { initial, onToggle }) {
+  const el = L.DomUtil.create("div", "tracks-chip-control");
+  const label = L.DomUtil.create("label", "ts-tracks", el);
+  const cb = L.DomUtil.create("input", "", label);
+  cb.type = "checkbox";
+  cb.checked = !!initial;
+  L.DomUtil.create("span", "", label).textContent = "Show tracks";
+  cb.addEventListener("change", () => onToggle?.(cb.checked));
+  L.DomEvent.disableClickPropagation(el);
+  map.getContainer().appendChild(el);
+  return el;
 }
 
 // Cursor coordinate readout (lower-left): a plain-text chip showing the
@@ -751,22 +1271,12 @@ function buildCursorReadout(map) {
 // part of the trajectory rather than as separate platforms.
 const TRACK_COLOR = "#e07b39";
 
-// Forecast colour for the current-advection lines and their 1/3/6 h dots — a
-// violet distinct from the orange past track and the blue head, so a glance
-// separates "where it's been" from "where the field carries it next".
-const FORECAST_COLOR = "#8e44ad";
-
-// Hindcast colour — a magenta distinct from the forecast violet, the orange past
-// track and the blue head, so the current-only back-track reads apart from the
-// drifter's *observed* orange trajectory it sits near.
-const HINDCAST_COLOR = "#d81b8c";
-
 // --- interactive deploy endpoint (PoC) --------------------------------------
 // One dynamic endpoint backs the deploy tool: `POST /api/forecast` takes a
 // sequence of (lon, lat, start) seeds — the equally-spaced drops the client lays
 // along a clicked path, each with its staggered water-entry time — and advects
-// every one through the CMEMS window server-side (one GeoJSON LineString per seed,
-// synced-t0 dots). The map and this API are separate endpoints served under one
+// every one through the CMEMS window server-side (one GeoJSON LineString per seed).
+// The map and this API are separate endpoints served under one
 // origin (the plan-017 gateway: /map and /api as sibling backends), so the base is
 // resolved (not hardcoded) by two same-origin rules — no client-controlled override,
 // so a crafted `?api=` link can't retarget the seed POST at a hostile host:
@@ -814,6 +1324,12 @@ function apiErrorText(data, status) {
 // cyan inertial — because these lines are ad-hoc, user-placed, and never persisted.
 const DEPLOY_COLOR = "#16a34a";
 
+// Violet — the forecast drift of the REAL deployed drifters (#22): each in-water
+// drifter's last fix advected forward to the end of the CMEMS field, via the same
+// /api/forecast machinery the deploy tool drives. Distinct from the deploy tool's
+// green (which is user-placed and transient) and from the orange observed track.
+const VIOLET_FORECAST_COLOR = "#7c3aed";
+
 // Tangent-plane km per degree of latitude (R·π/180, R = 6371 km) and knots→km/h.
 // The client owns the deployment geometry now: it resamples the clicked path into
 // equally-spaced drops (cos-lat tangent plane) and staggers each drop's water-entry
@@ -838,53 +1354,17 @@ function buildTrackGroups(geojson) {
     const { D_number, batch, fixes } = feature.properties ?? {};
     const key = batch ?? "unknown";
     const group = (groups[key] ??= L.featureGroup());
-    addTrackSegments(
+    const tip = (fix, latlng) => popupHtml({ D_number, batch, ...fix }, latlng);
+    const segs = addTrackSegments(
       group,
       feature.geometry.coordinates,
       fixes,
       D_number,
-      (fix, latlng) => popupHtml({ D_number, batch, ...fix }, latlng),
+      tip,
     );
-  }
-  return groups;
-}
-
-// Current-advection line (forecast forward, or hindcast backward), grouped by
-// `batch` so each batch's lines+dots toggle with that batch's markers and the
-// master Forecast/Hindcast row (see buildInstrumentRows). For each drifter: one
-// solid line from its head — the time-dependent-current advection path, which
-// curls into the model's inertial loop — in `color`, plus a small dot at each
-// `marks` entry (1/3/6 h). Dots carry no
-// popup — they are plain position marks (the line and dots are non-interactive so
-// they never swallow a click meant for a marker beneath them). Returns
-// { batch: featureGroup }.
-function buildAdvectionGroups(geojson, color) {
-  const groups = {};
-  for (const feature of geojson.features ?? []) {
-    if (feature.geometry?.type !== "LineString") continue;
-    const { batch, marks } = feature.properties ?? {};
-    const key = batch ?? "unknown";
-    const group = (groups[key] ??= L.featureGroup());
-    const coords = feature.geometry.coordinates;
-    L.polyline(
-      coords.map(([lng, lat]) => [lat, lng]),
-      {
-        color,
-        weight: 2,
-        opacity: 0.9,
-        interactive: false,
-      }
-    ).addTo(group);
-    for (const m of marks ?? []) {
-      L.circleMarker([m.lat, m.lon], {
-        radius: 3,
-        color,
-        weight: 1,
-        fillColor: color,
-        fillOpacity: 0.9,
-        interactive: false,
-      }).addTo(group);
-    }
+    // Follow the app clock: the track clips to what has happened by the clock and
+    // the drifter's head marker rides the clipped end (plan 035).
+    registerTrackClock(group, segs, feature.geometry.coordinates, fixes, D_number, tip);
   }
   return groups;
 }
@@ -897,7 +1377,7 @@ function buildAdvectionGroups(geojson, color) {
 // equally-spaced drops it implies, and the transit time. On finish placeDeployment
 // resamples the path, staggers each drop's water-entry time by the ship speed, and
 // POSTs the (lon, lat, start) seeds to /api/forecast; the returned per-drop
-// advection lines + synced-t0 dots are drawn over the drops. These are ad-hoc,
+// advection lines + at-time markers are drawn over the drops. These are ad-hoc,
 // user-placed, ephemeral lines in their own green + `deploy` pane — never a build
 // artifact. A single tool replaces the old click-forecast / jet-fence / Z tools:
 // a free polyline is the general case those special-cased (a Z is four clicks).
@@ -976,31 +1456,27 @@ function drawDeployPreview(previewLayer, vertices, cursor, opts) {
       fill: false, interactive: false,
     }).addTo(previewLayer);
   }
-  const transitH = totalKm / (opts.shipKn * KN_TO_KMH);
+  // The transit estimate only means something along-track; an instantaneous release
+  // has no water-entry stagger to foretell.
+  const tail =
+    opts.timing === "instant"
+      ? "instant"
+      : `~${(totalKm / (opts.shipKn * KN_TO_KMH)).toFixed(1)} h`;
   L.tooltip({ permanent: true, direction: "top", className: "pt-preview-label", offset: [0, -8] })
     .setLatLng(cursor ?? path[path.length - 1])
-    .setContent(`${drops.length} drops · ${totalKm.toFixed(1)} km · ~${transitH.toFixed(1)} h`)
+    .setContent(`${drops.length} drops · ${totalKm.toFixed(1)} km · ${tail}`)
     .addTo(previewLayer);
-}
-
-// The committed ship track: a dashed grey line through the clicked vertices (the
-// route the ship steams), drawn below the drops and forecasts.
-function drawShipTrack(vertices, deployLayer) {
-  if (vertices.length < 2) return;
-  L.polyline(vertices, {
-    pane: "deployTracks", color: "#555", weight: 1.5, opacity: 0.7,
-    dashArray: "4 3", interactive: false,
-  }).addTo(deployLayer);
 }
 
 // The committed drop discs: a white-ringed green disc per drop, tooltip = deploy
 // order + water-entry ETA. `drops` is [{ latlng, start }]. Rendered in the
-// deployDrops pane, so they sit above the tracks but below the +Δt mark dots
+// deployDrops pane, so they sit above the tracks but below the at-time markers
 // regardless of draw order. Each disc is clickable: it highlights the whole deployment's
 // drop set (every disc, enlarged + dark-ringed — see selectDropSet). Its click is
 // swallowed (bubblingMouseEvents:false) so it highlights rather than reaching the map
-// (which would clear selections or add a path vertex).
-function drawDrops(drops, deployLayer, deploymentId) {
+// (which would clear selections or add a path vertex). Drawn into the deployment's own
+// group (`layer`) so it hides/deletes with the deployment.
+function drawDrops(drops, layer, deploymentId) {
   const set = (deployDropSets[deploymentId] ??= []);
   const selected = String(deploymentId) === selectedDropSet;
   drops.forEach((d, i) => {
@@ -1013,7 +1489,7 @@ function drawDrops(drops, deployLayer, deploymentId) {
     disc.on("click", () => selectDropSet(deploymentId));
     set.push(disc);
     restyleDropDisc(disc, selected);
-    disc.addTo(deployLayer);
+    disc.addTo(layer);
   });
 }
 
@@ -1024,19 +1500,36 @@ function drawDrops(drops, deployLayer, deploymentId) {
 // straight onto `state`. Returns { state, handleClick, handleDblClick, handleMove,
 // handleAbort, renderBody }; the dock renders renderBody into its Deploy tab and
 // main() routes background events through the handlers.
-function buildDeployTool(deployLayer, getStartTime) {
+function buildDeployTool(deployLayer, getStartTime, getSpanHours) {
+  // The "∞" duration stop advects to the end of the loaded field: the server truncates
+  // at the field edge, so any horizon ≥ the field span reaches it. getSpanHours() is
+  // that span (from main's clock block, resolved lazily since it is computed after this
+  // tool is constructed); fall back to a generous month if there is no field.
+  const infHorizonH = () => (getSpanHours?.() || 0) || 24 * 30;
   const state = {
     on: false,
-    vertices: [],   // LatLng[] — the clicked path, grows per click
-    spacing: 2,     // km between drops along the path
-    shipKn: 6.5,    // ship transit speed, knots
-    horizonH: 48,   // forecast horizon from the run start, hours
-    forecast: true, // request per-drop drift (else draw geometry only)
+    vertices: [],            // LatLng[] — the clicked path, grows per click
+    spacing: 2,              // km between drops along the path
+    shipKn: 6.5,             // ship transit speed, knots
+    horizonH: 120,           // run duration from the release time, hours (5 d default)
+    direction: "forward",    // advection direction: "forward" | "backward"
+    // Water-entry timing: "alongtrack" staggers each drop by the ship's transit to
+    // it (a real vessel steaming the route); "instant" puts every drop in the water
+    // at the release time (an idealised simultaneous release, e.g. to read pure
+    // flow-field deformation of the line).
+    timing: "alongtrack",
   };
   let statusEl = null;
   let mapRef = null;
+  let releaseEl = null; // the read-only release-time readout in Settings
   const setStatus = (msg) => {
     if (statusEl) statusEl.textContent = msg;
+  };
+  // Update the read-only release-time readout. Called by main() on every scrubber
+  // move (one clock: the release time IS displayedFieldTime, never overridden here —
+  // plan 034, decision 5), and once at render from the current clock.
+  const setRelease = (iso) => {
+    if (releaseEl) releaseEl.textContent = iso ? formatClock(Date.parse(iso)) : "—";
   };
 
   // previewLayer holds the ephemeral path/drops preview (cleared + redrawn per
@@ -1086,34 +1579,24 @@ function buildDeployTool(deployLayer, getStartTime) {
   };
 
   // Render the deploy tool's body into the dock's Deploy tab, laid out top-to-bottom
-  // as: the time-colour bar (the synced-t0 dot legend), then three compartments —
-  // **Settings** (the knobs shared by both placement paths), **Click to place** (the
-  // arm toggle + its explanation), and **Waypoints (CSV)** (import a vessel route) —
-  // then a footer of manage actions (Download / Clear) and the status line. Captures
-  // the map and arms the preview layer on first render.
+  // (plan 037 / #23): **Settings** (release · direction · timing · a duration slider ·
+  // the drop-every/at-speed line), then the **Deployments** manager list, then the
+  // **Deploy** arm toggle beside a **Clear** button, then the collapsible **CSV
+  // import / export** at the very bottom, then the status line. Captures the map and
+  // arms the preview layer on first render.
   const renderBody = (div, map) => {
     div.classList.add("deploy-tool");
     mapRef = map;
     previewLayer.addTo(map);
 
-    // A captioned compartment (a bordered section) appended to the tab body.
-    const section = (caption) => {
-      const s = L.DomUtil.create("div", "pt-section", div);
-      L.DomUtil.create("span", "pt-section-cap", s).textContent = caption;
-      return s;
-    };
-
-    // Compact number row binding onto state: a labelled decimal <input> per knob,
-    // appended to `parent`. Plain type=text (not type=number) with a beforeinput guard
-    // admitting only digits and a single dot, so the decimal separator is a dot
+    // A guarded decimal <input> bound to state[key], no label — composed inline into
+    // the drop-line sentence below. Plain type=text (not type=number) with a beforeinput
+    // guard admitting only digits and a single dot, so the decimal separator is a dot
     // regardless of the browser's locale — a comma (or a pasted "0,5") is refused whole
-    // rather than silently blanked by a de-locale type=number field or mangled into a
-    // wrong value. The change handler still rejects zero/negatives (spacing 0 would hang
-    // the resample).
-    const numRow = (parent, label, key) => {
-      const row = L.DomUtil.create("label", "pt-row", parent);
-      L.DomUtil.create("span", "pt-label", row).textContent = label;
-      const input = L.DomUtil.create("input", "pt-num", row);
+    // rather than silently blanked by a de-locale type=number field. The change handler
+    // still rejects zero/negatives (spacing 0 would hang the resample).
+    const numInput = (parent, key) => {
+      const input = L.DomUtil.create("input", "pt-num pt-num-inline", parent);
       input.type = "text";
       input.inputMode = "decimal"; // mobile keypad; the guard is what enforces dot-only
       input.autocomplete = "off";
@@ -1130,35 +1613,199 @@ function buildDeployTool(deployLayer, getStartTime) {
         const val = parseFloat(input.value);
         if (!Number.isNaN(val) && val > 0) state[key] = val;
       });
+      return input;
     };
 
-    // --- time-colour bar (synced-t0 dot legend) at the very top ---
-    buildDeployLegend(div);
+    // A sliding two-state switch binding onto state[key]: the left and right option
+    // texts flank a knob that sits on the active side (so the two options name
+    // themselves — no separate caption). Clicking either label, or the knob, selects
+    // that side; `onChange` fires after a change. `title` (optional) explains the
+    // control on hover.
+    const switchRow = (parent, key, left, right, onChange, title) => {
+      const row = L.DomUtil.create("div", "pt-switchrow", parent);
+      const leftEl = L.DomUtil.create("span", "pt-switch-label", row);
+      leftEl.textContent = left.text;
+      const sw = L.DomUtil.create("button", "pt-switch", row);
+      sw.type = "button";
+      sw.setAttribute("role", "switch");
+      if (title) sw.title = title;
+      L.DomUtil.create("span", "pt-switch-knob", sw);
+      const rightEl = L.DomUtil.create("span", "pt-switch-label", row);
+      rightEl.textContent = right.text;
+      const paint = () => {
+        const isRight = state[key] === right.value;
+        sw.classList.toggle("on", isRight);
+        sw.setAttribute("aria-checked", String(isRight));
+        leftEl.classList.toggle("active", !isRight);
+        rightEl.classList.toggle("active", isRight);
+      };
+      const setVal = (v) => {
+        if (state[key] === v) return;
+        state[key] = v;
+        paint();
+        onChange?.();
+      };
+      sw.addEventListener("click", () =>
+        setVal(state[key] === left.value ? right.value : left.value)
+      );
+      leftEl.addEventListener("click", () => setVal(left.value));
+      rightEl.addEventListener("click", () => setVal(right.value));
+      paint();
+      return { paint };
+    };
 
-    // --- compartment 1: settings (shared by click + CSV placement) ---
-    const settings = section("Settings");
-    numRow(settings, "Forecast (h)", "horizonH");
-    numRow(settings, "Ship speed (kn)", "shipKn");
-    numRow(settings, "Drop spacing (km)", "spacing");
-    const checkRow = L.DomUtil.create("label", "pt-row", settings);
-    const check = L.DomUtil.create("input", "pt-check", checkRow);
-    check.type = "checkbox";
-    check.checked = state.forecast;
-    check.addEventListener("change", () => {
-      state.forecast = check.checked;
+    // --- compartment 1: the run knobs (no caption — the controls speak for
+    // themselves). A run is release time + direction + timing + duration (plan 034,
+    // decision 4): the release time is read-only and follows the app clock (one clock,
+    // no override); direction and timing are sliding two-state switches; duration is
+    // the run length in hours. Drift is always computed.
+    const settings = L.DomUtil.create("div", "pt-settings", div);
+
+    // Release time: read-only, live-following the scrubber (setRelease). No input —
+    // "release at t" means jump the whole map to t (the scrubber), not type it here.
+    const releaseRow = L.DomUtil.create("div", "pt-row", settings);
+    L.DomUtil.create("span", "pt-label", releaseRow).textContent = "Release";
+    releaseEl = L.DomUtil.create("span", "pt-readonly", releaseRow);
+    setRelease(getStartTime ? getStartTime() : null);
+
+    // Direction: forward advects downstream from the release time, backward walks the
+    // field in reverse (where did water here come from).
+    switchRow(
+      settings, "direction",
+      { value: "forward", text: "Forward" },
+      { value: "backward", text: "Backward" }
+    );
+
+    // Timing: instantaneous (every drop enters at the release time — an idealised
+    // simultaneous release) vs along-track (each drop enters as the ship reaches it,
+    // staggered by ship speed). Instantaneous greys the ship-speed knob, which then
+    // shapes nothing; `paintTiming` is wired after the knob exists.
+    let paintTiming = () => {};
+    switchRow(
+      settings, "timing",
+      { value: "instant", text: "Instantaneous" },
+      { value: "alongtrack", text: "Along track" },
+      () => paintTiming(),
+      "Instantaneous: all drops enter at the release time. " +
+        "Along track: drops enter as the ship reaches them (staggered by ship speed)."
+    );
+
+    // Duration: a 4-stop segmented slider (1d / 2d / 5d / ∞) writing state.horizonH in
+    // hours (24 / 48 / 120 / the field span). No caption — the stops name the run length
+    // themselves. "∞" advects to the end of the loaded field: the server truncates at the
+    // field edge, so infHorizonH() (≥ the span) reaches it. Defaults to 5d (state.horizonH
+    // starts at 120).
+    const durStops = [
+      { label: "1d", h: () => 24 },
+      { label: "2d", h: () => 48 },
+      { label: "5d", h: () => 120 },
+      { label: "∞", h: infHorizonH },
+    ];
+    const durWrap = L.DomUtil.create("div", "pt-duration", settings);
+    const durBtns = durStops.map((stop) => {
+      const b = L.DomUtil.create("button", "pt-duration-stop", durWrap);
+      b.type = "button";
+      b.textContent = stop.label;
+      b.addEventListener("click", () => {
+        state.horizonH = stop.h();
+        paintDuration();
+      });
+      return b;
     });
-    L.DomUtil.create("span", "pt-label", checkRow).textContent = "Forecast drift";
+    const paintDuration = () => {
+      // Active = the stop matching the current horizon; an unmatched value (a prior ∞
+      // pick, whose hour count is the field span) lights the ∞ stop.
+      let active = durStops.findIndex((s) => s.h() === state.horizonH);
+      if (active < 0) active = durStops.length - 1;
+      durBtns.forEach((b, i) => b.classList.toggle("on", i === active));
+    };
+    paintDuration();
 
-    // --- compartment 2: click to place ---
-    const clickSec = section("Click to place");
-    const toggle = L.DomUtil.create("button", "ft-btn ft-toggle", clickSec);
+    // Drop spacing + ship speed on one short line: "Every [ ] km at [ ] kn" — terse so it
+    // never wraps at the dock width. Under Instantaneous timing the ship speed shapes
+    // nothing, so its input is greyed and swapped for an ∞ glyph (the km spacing stays
+    // editable — instantaneous drops still have a spacing along the path).
+    const dropLine = L.DomUtil.create("div", "pt-row pt-dropline", settings);
+    L.DomUtil.create("span", "", dropLine).textContent = "Every";
+    numInput(dropLine, "spacing");
+    L.DomUtil.create("span", "", dropLine).textContent = "km at";
+    const speedWrap = L.DomUtil.create("span", "pt-speed-wrap", dropLine);
+    const speedInput = numInput(speedWrap, "shipKn");
+    const speedInf = L.DomUtil.create("span", "pt-speed-inf", speedWrap);
+    speedInf.textContent = "∞";
+    L.DomUtil.create("span", "", dropLine).textContent = "kn";
+    paintTiming = () => {
+      const instant = state.timing === "instant";
+      speedWrap.classList.toggle("pt-disabled", instant);
+      speedInput.disabled = instant;
+      speedInput.style.display = instant ? "none" : "";
+      speedInf.style.display = instant ? "" : "none";
+    };
+    paintTiming();
+
+    // --- the deployment manager (moved above the arm toggle — #23) ---
+    // One row per placed deployment (id · release · direction · duration · N drops)
+    // with a per-row visibility toggle, CSV export, and delete (plan 034, decision D2).
+    // renderManager is registered module-wide (deployManagerRefresh) so a placement or
+    // a delete repaints the list; it reads the live deployments registry each time.
+    L.DomUtil.create("hr", "pt-hr", div);
+    L.DomUtil.create("span", "pt-section-cap", div).textContent = "Deployments";
+    const managerList = L.DomUtil.create("div", "pt-manager", div);
+    const renderManager = () => {
+      managerList.replaceChildren();
+      const ids = Object.keys(deployments).map(Number).sort((a, b) => a - b);
+      if (!ids.length) {
+        L.DomUtil.create("p", "ft-hint", managerList).textContent = "No deployments placed.";
+        return;
+      }
+      for (const id of ids) {
+        const d = deployments[id];
+        const row = L.DomUtil.create("div", "pt-manage-row", managerList);
+        const toggle = L.DomUtil.create("label", "pt-manage-vis", row);
+        const vis = L.DomUtil.create("input", "pt-check", toggle);
+        vis.type = "checkbox";
+        vis.checked = d.visible;
+        vis.title = "Show / hide this deployment";
+        vis.addEventListener("change", () => setDeploymentVisible(id, vis.checked));
+        const arrow = d.direction === "backward" ? "←" : "→";
+        const rel = d.release ? formatClock(Date.parse(d.release)) : "—";
+        const timing = d.timing === "instant" ? " · instant" : "";
+        L.DomUtil.create("span", "pt-manage-label", toggle).textContent =
+          `#${id} · ${rel} · ${arrow} ${d.durationH}h · ${d.nDrops} drop${d.nDrops === 1 ? "" : "s"}${timing}`;
+        const csv = L.DomUtil.create("button", "pt-manage-btn", row);
+        csv.type = "button";
+        csv.textContent = "CSV";
+        csv.title = "Export this deployment's waypoints";
+        csv.addEventListener("click", () => {
+          const n = downloadOneDeployment(id);
+          setStatus(n ? `downloaded #${id} (${n} waypoint${n === 1 ? "" : "s"})` : "no drops");
+        });
+        const del = L.DomUtil.create("button", "pt-manage-btn pt-manage-del", row);
+        del.type = "button";
+        del.textContent = "✕";
+        del.title = "Delete this deployment";
+        del.addEventListener("click", () => {
+          deleteDeployment(id);
+          renderManager();
+          setStatus(`deleted #${id}`);
+        });
+      }
+    };
+    deployManagerRefresh = renderManager;
+    renderManager();
+
+    // --- Deploy arm toggle + Clear, side by side (#23) ---
+    // The toggle arms click-to-place: it sets the map crosshair cursor and suppresses
+    // double-click zoom (so a finishing dbl-click doesn't also zoom). Clear wipes every
+    // placed deployment (was the footer's "Clear all"). The hint below explains the
+    // click gesture.
+    const armRow = L.DomUtil.create("div", "pt-arm-row", div);
+    const toggle = L.DomUtil.create("button", "ft-btn ft-toggle", armRow);
     toggle.type = "button";
     const paint = () => {
-      toggle.textContent = state.on ? "Click-to-place: ON" : "Click-to-place: OFF";
+      toggle.textContent = state.on ? "Deploy: ON" : "Deploy: OFF";
       toggle.classList.toggle("on", state.on);
       map.getContainer().classList.toggle("deploy-cursor", state.on);
-      // Suppress double-click zoom while armed, so a finishing dbl-click doesn't
-      // also zoom the map.
       if (state.on) map.doubleClickZoom.disable();
       else map.doubleClickZoom.enable();
     };
@@ -1171,18 +1818,32 @@ function buildDeployTool(deployLayer, getStartTime) {
       paint();
     });
     paint();
-    L.DomUtil.create("p", "ft-hint", clickSec).textContent =
+    const clear = L.DomUtil.create("button", "ft-btn", armRow);
+    clear.type = "button";
+    clear.textContent = "Clear";
+    clear.addEventListener("click", () => {
+      clearAllDeployments(deployLayer);
+      resetPath();
+      renderManager();
+      setStatus("");
+    });
+    L.DomUtil.create("p", "ft-hint", div).textContent =
       "click a path · double-click to finish · right-click / Esc to cancel";
 
-    // --- compartment 3: import a vessel route from a waypoint list ---
-    // The parsed rows are the ship *route* (like a clicked path), so the drops — hence
-    // the number of drifters — follow from the route length and the Drop spacing / Ship
-    // speed knobs, not from the row count. Start time is pulled live from the time
-    // scrubber (getStartTime). The textarea is the source of truth (the input "mask");
-    // "Upload file" only reads a .csv into it, so one parseWaypoints serves paste and
-    // upload alike (see docs/interactive_forecast.md). Order top-to-bottom: upload
-    // button, the paste box, then the place button.
-    const csvSec = section("Waypoints (CSV)");
+    // --- CSV import / export (collapsible, at the very bottom — #23) ---
+    // Import a vessel route from a waypoint list, and export placed deployments. Kept
+    // behind a `⌄` menu (collapsed by default) so the common path — settings, the
+    // manager, the arm toggle — stays uncluttered.
+    //
+    // Import: the parsed rows are the ship *route* (like a clicked path), so the drops
+    // — hence the number of drifters — follow from the route length and the drop
+    // spacing / ship speed knobs, not from the row count. Start time is pulled live
+    // from the time scrubber (getStartTime). The textarea is the source of truth (the
+    // input "mask"); "Upload file" only reads a .csv into it, so one parseWaypoints
+    // serves paste and upload alike (see docs/deployment.md).
+    const csvSec = L.DomUtil.create("details", "pt-csv", div);
+    L.DomUtil.create("summary", "pt-csv-summary", csvSec).textContent =
+      "CSV import / export";
 
     const fileInput = L.DomUtil.create("input", "", csvSec);
     fileInput.type = "file";
@@ -1233,31 +1894,20 @@ function buildDeployTool(deployLayer, getStartTime) {
     L.DomUtil.create("p", "ft-hint", csvSec).textContent =
       "rows are the vessel route · drops follow from spacing + speed";
 
-    // --- footer: manage the placed deployments + status ---
-    L.DomUtil.create("hr", "pt-hr", div); // rule above the manage actions
-    const download = L.DomUtil.create("button", "ft-btn", div);
+    // Export: every placed deployment's drops as one flat waypoint CSV. Lives in the
+    // same menu as the import; a per-deployment CSV export stays inline in each manager
+    // row above.
+    const download = L.DomUtil.create("button", "ft-btn", csvSec);
     download.type = "button";
-    download.textContent = "Download CSV";
-    // Export the placed drops (every deployment) as a flat waypoint CSV. Reads the live
-    // deployWaypoints registry on click; empty = nothing placed, so it just says so.
+    download.textContent = "Download all CSV";
     download.addEventListener("click", () => {
       const n = downloadDeployWaypoints();
       setStatus(n ? `downloaded ${n} waypoint(s)` : "no drops placed yet");
     });
 
-    const clear = L.DomUtil.create("button", "ft-btn", div);
-    clear.type = "button";
-    clear.textContent = "Clear";
-    clear.addEventListener("click", () => {
-      deployLayer.clearLayers();
-      resetDeployHighlights(); // drop the highlight registries along with the layers they point at
-      resetPath();
-      setStatus("");
-    });
-
     statusEl = L.DomUtil.create("p", "ft-status", div);
   };
-  return { state, handleClick, handleDblClick, handleMove, handleAbort, renderBody };
+  return { state, handleClick, handleDblClick, handleMove, handleAbort, renderBody, setRelease };
 }
 
 // Parse a block of waypoint text into LatLngs (decimal degrees, negative = S/W).
@@ -1314,26 +1964,61 @@ function parseWaypoints(text) {
 // drop #1 enters at the field's instant.
 async function placeDeployment(vertices, deployLayer, setStatus, startTime, opts) {
   const { drops, totalKm } = resamplePolyline(vertices, opts.spacing);
-  return commitDeployment(vertices, drops, totalKm, deployLayer, setStatus, startTime, opts);
+  return commitDeployment(drops, totalKm, deployLayer, setStatus, startTime, opts);
 }
 
-// Stagger each drop's water-entry time by the ship speed, draw the ship track + drops,
-// and (if the forecast checkbox is on) POST the seeds to /api/forecast and draw the
-// returned per-drop advection lines + synced-t0 dots. Shared by the clicked path and
-// the CSV/paste import — `routeVertices` is the ship route (clicked vertices, or the
-// waypoint rows) drawn as the dashed track; `drops` are the committed drops.
-async function commitDeployment(routeVertices, drops, totalKm, deployLayer, setStatus, startTime, opts) {
-  const deploymentId = ++deployCounter; // namespaces this placement's dot columns + drop rows
+// Pre-flight a placement against the advertised /limits before any POST (plan 034,
+// decision D3). Returns a human-readable rejection string, or null when the placement
+// is servable — or when limits are unknown (the probe failed), in which case the
+// server's own bounded request model is left to enforce them via the error path.
+//   nSeeds     — number of drops (each a seed)
+//   durationH  — run length in hours (opts.horizonH)
+//   direction  — "forward" | "backward"
+//   releaseIso — the release time (app clock at placement); may be null
+function validatePlacement(limits, nSeeds, durationH, direction, releaseIso) {
+  if (!limits) return null;
+  if (limits.max_seeds && nSeeds > limits.max_seeds)
+    return `too many drops for one request (${nSeeds} > ${limits.max_seeds} max) — increase spacing or shorten the path`;
+  const budget = nSeeds * durationH;
+  if (limits.max_seed_hours && budget > limits.max_seed_hours)
+    return `drops × duration too large (${nSeeds} × ${durationH} h = ${budget.toFixed(0)} > ${limits.max_seed_hours} seed-hours) — fewer drops or a shorter duration`;
+  const win = limits.window;
+  const rel = Date.parse(releaseIso);
+  if (win && win.length === 2 && Number.isFinite(rel)) {
+    const lo = Date.parse(win[0]), hi = Date.parse(win[1]);
+    const end = rel + (direction === "backward" ? -1 : 1) * durationH * 3600e3;
+    if (Math.max(rel, end) < lo || Math.min(rel, end) > hi)
+      return `release + ${durationH} h ${direction} lies outside the field window (${win[0]}…${win[1]})`;
+  }
+  return null;
+}
+
+// Stagger each drop's water-entry time by the ship speed, draw the drops into this
+// deployment's own map group, POST the seeds to /api/forecast, and draw the returned
+// per-drop drift lines + at-time markers. Shared by the clicked path and the CSV/paste
+// import; `drops` are the committed drops. The run's direction + duration come from
+// `opts`; the release time is the app clock (`startTime`, drop #1's water entry).
+// Registers the deployment in the manager (its own group + metadata) and repaints the
+// list on every exit path.
+async function commitDeployment(drops, totalKm, deployLayer, setStatus, startTime, opts) {
+  const deploymentId = ++deployCounter; // namespaces this placement's drops, tracks, markers
+  const direction = opts.direction === "backward" ? "backward" : "forward";
+  // This deployment owns a child group of the umbrella deployLayer, holding every
+  // element it draws (drops, drift lines, at-time markers), so the manager can hide or
+  // delete it wholesale (setDeploymentVisible / deleteDeployment).
+  const group = L.featureGroup().addTo(deployLayer);
+  // Along-track timing staggers each drop's water entry by the ship's transit to it;
+  // instantaneous puts every drop in the water at the release time (cum_km 0).
+  const instant = opts.timing === "instant";
   const seeds = drops.map((d) => ({
     lon: Number(d.latlng.lng.toFixed(5)),
     lat: Number(d.latlng.lat.toFixed(5)),
-    start: seedTime(startTime, d.cumKm, opts.shipKn),
+    start: seedTime(startTime, instant ? 0 : d.cumKm, opts.shipKn),
   }));
   const dropRecords = drops.map((d, i) => ({ latlng: d.latlng, start: seeds[i].start }));
   // The drops ARE this deployment's waypoints: capture them (5-decimal lon/lat +
-  // absolute water-entry time, matching the seeds) so the Deploy control's
-  // "Download CSV" button can export them without re-deriving any geometry. Both
-  // branches below place drops, so registering here covers drift-on and drift-off.
+  // absolute water-entry time, matching the seeds) so the manager's per-row and the
+  // "Download all CSV" exports need no geometry re-derivation.
   deployWaypoints[deploymentId] = drops.map((d, i) => ({
     deployment: deploymentId,
     drop: i + 1,
@@ -1342,34 +2027,46 @@ async function commitDeployment(routeVertices, drops, totalKm, deployLayer, setS
     start: seeds[i].start,
     cumKm: d.cumKm,
   }));
-  drawShipTrack(routeVertices, deployLayer);
+  // Register for the manager. Release is the app clock at placement (drop #1's water
+  // entry); repaint after each terminal state so the row appears immediately.
+  deployments[deploymentId] = {
+    group,
+    parent: deployLayer,
+    release: startTime,
+    direction,
+    durationH: opts.horizonH,
+    nDrops: drops.length,
+    timing: instant ? "instant" : "alongtrack",
+    visible: true,
+  };
+  const done = (status) => {
+    setStatus(status);
+    deployManagerRefresh?.();
+  };
 
   const transitH = totalKm / (opts.shipKn * KN_TO_KMH);
-  const geom = `${drops.length} drops · ${totalKm.toFixed(1)} km · ~${transitH.toFixed(1)} h transit`;
-  if (!opts.forecast) {
-    drawDrops(dropRecords, deployLayer, deploymentId);
-    setStatus(`${geom} · drift off`);
-    return;
-  }
+  const geom = instant
+    ? `${drops.length} drops · ${totalKm.toFixed(1)} km · instant release`
+    : `${drops.length} drops · ${totalKm.toFixed(1)} km · ~${transitH.toFixed(1)} h transit`;
 
-  // Reject an over-cap deployment explicitly, before POSTing: the request model caps
-  // seeds server-side, so an over-cap POST would 422. Ask the API for the cap (one
-  // source of truth) and, when it's known, say so up front — the drops are still
-  // placed (drift off) and exportable. If the cap is unknown (the limits probe failed,
-  // e.g. API down), fall through and let the server enforce it via the error path.
+  // Pre-validate against /limits before the POST (decision D3): seed cap, seeds×duration
+  // budget, and release+duration vs the loaded window. On a violation the drops are
+  // still placed (exportable) — we skip the doomed POST and say why.
   const limits = await getDeployLimits();
-  if (limits && drops.length > limits.max_seeds) {
-    drawDrops(dropRecords, deployLayer, deploymentId);
-    setStatus(
-      `${geom} · too many drops for one request (${drops.length} > ${limits.max_seeds} max) — increase spacing or shorten the path`,
-    );
+  const invalid = validatePlacement(
+    limits, drops.length, opts.horizonH, direction, startTime
+  );
+  if (invalid) {
+    drawDrops(dropRecords, group, deploymentId);
+    done(`${geom} · ${invalid}`);
     return;
   }
 
-  setStatus(`${geom} · forecasting…`);
+  done(`${geom} · computing drift…`);
   // The whole batch advects server-side in ~1–2 s even at the seed cap (vectorized RK4),
-  // well inside the gateway's 60 s timeout — one POST, no retry/cache handshake.
-  const body = JSON.stringify({ seeds, horizon_h: opts.horizonH });
+  // well inside the gateway's 60 s timeout — one POST, no retry/cache handshake. The v2
+  // API takes the run-level direction + duration; it no longer takes mark_step_h.
+  const body = JSON.stringify({ seeds, horizon_h: opts.horizonH, direction });
   try {
     const resp = await fetch(FORECAST_API, {
       method: "POST",
@@ -1378,167 +2075,112 @@ async function commitDeployment(routeVertices, drops, totalKm, deployLayer, setS
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      drawDrops(dropRecords, deployLayer, deploymentId);
-      setStatus(`${geom} · ${apiErrorText(data, resp.status)}`);
+      drawDrops(dropRecords, group, deploymentId);
+      done(`${geom} · ${apiErrorText(data, resp.status)}`);
       return;
     }
-    const horizonH = data.properties?.horizon_h ?? opts.horizonH;
-    const markStepH = data.properties?.mark_step_h ?? DEPLOY_MARK_STEP_H;
-    const runStart = data.properties?.run_start ?? startTime;
-    drawDeployForecastLines(data.features ?? [], deployLayer, markStepH, runStart, deploymentId);
-    updateDeployLegend(horizonH, markStepH); // ticks + bands match the grid these dots used
-    // Drops and mark dots live in stacked panes (deployDrops < deployDots), so the
-    // draw order here doesn't matter — the discs sit below the delayed dots either way.
-    drawDrops(dropRecords, deployLayer, deploymentId);
     const p = data.properties ?? {};
-    // A plan whose run start predates (or postdates) the loaded field window gets
+    const runStart = p.run_start ?? startTime;
+    // One green drift line per drop, clipped to the app clock (plan 036). Each track
+    // also gets an at-time marker keyed to this deployment, so scrubbing shows the
+    // array's shape at any instant (decisions 6/7).
+    drawDeployForecastLines(data.features ?? [], group, runStart, deploymentId);
+    // Drops sit in their own pane (deployDrops), below the at-time markers, so the
+    // draw order here doesn't matter.
+    drawDrops(dropRecords, group, deploymentId);
+    // A run whose release (or its far end) falls outside the loaded field window gets
     // every seed skipped — say so, rather than a bare "0/N drift" that reads as a bug.
-    if (p.forecasts === 0 && p.n_seeds > 0) {
+    if (p.tracks === 0 && p.n_seeds > 0) {
       const w = p.window ? ` (field ${p.window[0]}…${p.window[1]})` : "";
-      setStatus(`${geom} · 0 drift — run start outside the field window${w}`);
+      done(`${geom} · 0 tracks — release outside the field window${w}`);
     } else {
-      setStatus(`${geom} · ${p.forecasts}/${p.n_seeds} drift`);
+      const skipped = p.skipped ? ` · ${p.skipped} skipped` : "";
+      done(`${geom} · ${p.tracks}/${p.n_seeds} drift${skipped}`);
     }
   } catch (err) {
-    drawDrops(dropRecords, deployLayer, deploymentId);
-    setStatus(`${geom} · request failed — is \`pixi run serve-api\` running?`);
+    drawDrops(dropRecords, group, deploymentId);
+    done(`${geom} · request failed — is \`pixi run serve-api\` running?`);
   }
 }
 
-// Synced-snapshot dot colours. Every drop is dotted at the *same* wall-clock times
-// (run start + k·mark_step h), so a dot's colour — keyed to its absolute time since
-// the run start — makes one colour the whole array at one t0: read a pattern off the
-// map by picking a colour. The palette is matplotlib's **tab20c**: a categorical map
-// of five hue families (blue, orange, green, purple, grey), each in four shades from
-// dark to light. It's indexed by mark ordinal (k = hours / mark_step), so consecutive
-// marks step through it — every fourth mark opens a new hue family, the three between
-// are lightness steps of that hue. Adjacent marks stay easy to tell apart, and the
-// family boundary gives a coarse "which quarter of the run" read. Used discrete, not
-// interpolated: blending across a qualitative palette's entries muddies it. The index
-// wraps past 20 marks (rare at the default 3 h / 48 h = 16). mark_step falls back to
-// the server's _DEFAULT_MARK_STEP_H, the horizon to _DEFAULT_HORIZON_H.
-const DEPLOY_HORIZON_H = 48;
-const DEPLOY_MARK_STEP_H = 3;
-const DEPLOY_TAB20C = [
-  "#3182bd", "#6baed6", "#9ecae1", "#c6dbef", // blues
-  "#e6550d", "#fd8d3c", "#fdae6b", "#fdd0a2", // oranges
-  "#31a354", "#74c476", "#a1d99b", "#c7e9c0", // greens
-  "#756bb1", "#9e9ac8", "#bcbddc", "#dadaeb", // purples
-  "#636363", "#969696", "#bdbdbd", "#d9d9d9", // greys
-];
-
-// The tab20c swatch for the mark at absolute run-relative `hours`: its ordinal
-// k = round(hours / mark_step) (marks sit on run_start + k·step, so this is exact),
-// mapped 1-based into the palette and wrapped, so the first mark takes the first
-// swatch.
-function deployMarkColor(hours, markStepH) {
-  const step = markStepH > 0 ? markStepH : DEPLOY_MARK_STEP_H;
-  const k = Math.max(0, Math.round(hours / step) - 1);
-  return DEPLOY_TAB20C[k % DEPLOY_TAB20C.length];
-}
-
-// Shared synced-snapshot dot legend: a caption, the tab20c band bar from the run
-// start to the forecast horizon (the same swatch sequence deployMarkColor steps
-// through), and three ticks (run · mid · horizon) marking the span's midpoint and end.
-// Appended to the Deploy control, so a dot's colour reads as its t0 — the array's
-// shape at one instant since the run began — and the caption points at the
-// click-to-highlight interaction. Repainted per placement (updateDeployLegend) so both
-// the hour ticks and the number of colour bands track the horizon + mark step the dots
-// were actually coloured over — the "Forecast (h)" knob / the server-echoed horizon_h
-// and mark_step_h — not a fixed 48 h / 3 h.
-let deployLegendMidTick = null;
-let deployLegendEndTick = null;
-let deployLegendBar = null;
-
-function updateDeployLegend(horizonH, markStepH) {
-  const h = horizonH > 0 ? horizonH : DEPLOY_HORIZON_H;
-  const step = markStepH > 0 ? markStepH : DEPLOY_MARK_STEP_H;
-  if (deployLegendMidTick) deployLegendMidTick.textContent = `+${+(h / 2).toFixed(1)} h`;
-  if (deployLegendEndTick) deployLegendEndTick.textContent = `+${+h.toFixed(1)} h`;
-  if (deployLegendBar) {
-    // One hard-edged band per mark over the horizon (left = run, right = horizon), so
-    // the bar shows the discrete swatch sequence, not a smooth gradient.
-    const n = Math.max(1, Math.round(h / step));
-    const colors = [];
-    for (let k = 0; k < n; k++) colors.push(deployMarkColor((k + 1) * step, step));
-    deployLegendBar.style.background = hardStopBand(colors);
-  }
-}
-
-function buildDeployLegend(div) {
-  const legend = L.DomUtil.create("div", "pt-legend", div);
-  L.DomUtil.create("span", "pt-legend-cap", legend).textContent =
-    "dot = array at run +Δt · click one → its whole Δt";
-  deployLegendBar = L.DomUtil.create("div", "pt-legend-bar", legend);
-  const ticks = L.DomUtil.create("div", "pt-legend-ticks", legend);
-  L.DomUtil.create("span", "", ticks).textContent = "run";
-  deployLegendMidTick = L.DomUtil.create("span", "", ticks);
-  deployLegendEndTick = L.DomUtil.create("span", "", ticks);
-  updateDeployLegend(DEPLOY_HORIZON_H, DEPLOY_MARK_STEP_H); // default until first placement
-}
-
-// --- deploy-dot highlight ----------------------------------------------------
-// The synced-t0 dots ARE the array's shape at one instant: every "+3 h" dot of a
-// deployment shares one wall-clock time. Clicking one dot highlights EVERY dot at
-// that same mark hour of that same deployment (enlarged + dark-ringed), so the array
-// at one t0 is read by click, not just by colour. Each placed deployment gets its own
-// id (deployCounter), so a +3 h click lifts only that run's +3 h dots and leaves
-// another deployment's alone. Cleared by re-clicking the group, a background click, or
-// Clear (resetDeployHighlights). A dot's own click is swallowed (bubblingMouseEvents:
-// false) so it highlights rather than adding a path vertex / clearing a track selection.
+// Each placed deployment gets its own id (deployCounter), namespacing its drop set,
+// tracks, at-time markers, and waypoint rows so one deployment's highlights and
+// exports never bleed into another's.
 let deployCounter = 0;
-const deployDotGroups = {}; // `${deploymentId}|${hours}` -> [{ marker, base }]
-let selectedDeployDot = null; // the selected group key, or null
 
-function restyleDeployDot(marker, base, selected) {
-  marker.setStyle({
-    color: selected ? "#111827" : "#fff",
-    weight: selected ? 2 : 1,
-    fillColor: base.fillColor,
-    fillOpacity: 0.95,
-  });
-  marker.setRadius(selected ? base.radius + 3 : base.radius);
-  if (selected) marker.bringToFront();
+// --- deployment manager ------------------------------------------------------
+// The per-deployment manager (plan 034, decision D2) replaces the single global
+// Clear: one row per placed deployment with a visibility toggle, CSV export, and
+// delete. Each placement records its metadata here and owns a Leaflet featureGroup
+// (a child of the umbrella deployLayer) holding all its map elements — ship track,
+// drops, drift lines, and at-time markers — so hiding or deleting one deployment is a
+// single group add/remove on the umbrella parent without disturbing the others.
+//   id -> { group, parent, release, direction, durationH, nDrops, visible }
+const deployments = {};
+// Set by the Deploy tab's renderBody so a placement/delete from module scope repaints
+// the manager list; null until the tab is first rendered (deploys can't be placed
+// before then, since the tool arms in renderBody).
+let deployManagerRefresh = null;
+
+// Drop one deployment's registries + selections, without touching its Leaflet group
+// (the caller removes/clears that). Shared by delete and clear-all.
+function forgetDeployment(id) {
+  delete deployDropSets[id];
+  for (const key of Object.keys(deployTracks))
+    if (key.startsWith(`${id}#`)) delete deployTracks[key];
+  delete deployWaypoints[id];
+  delete deployments[id];
+  removeAtTimeSet(`deploy:${id}`, true); // exact — "deploy:2" must not catch "deploy:20"
+  if (selectedDropSet === String(id)) selectedDropSet = null;
+  if (selectedTrack && selectedTrack.startsWith(`${id}#`)) selectedTrack = null;
 }
 
-function applyDeployDotSelection() {
-  for (const key of Object.keys(deployDotGroups))
-    for (const { marker, base } of deployDotGroups[key])
-      restyleDeployDot(marker, base, key === selectedDeployDot);
+// Delete one deployment: remove its group from the umbrella parent, forget its
+// registries, and drop any selection pointing at it. The caller repaints the manager.
+function deleteDeployment(id) {
+  const d = deployments[id];
+  if (d) d.parent.removeLayer(d.group);
+  forgetDeployment(id);
 }
 
-// Restack the +Δt dots within the deployDots pane so later marks paint above earlier
-// ones (DOM order is paint order there): bring every group to front in ascending
-// hour, so a +3 h dot never hides the +48 h dot that overtook it. Sorts across all
-// placed deployments; the selection pass afterwards lifts any highlighted group back
-// on top.
-function restackDeployDots() {
-  const keys = Object.keys(deployDotGroups).sort(
-    (a, b) => Number(a.split("|")[1]) - Number(b.split("|")[1]),
-  );
-  for (const key of keys)
-    for (const { marker } of deployDotGroups[key]) marker.bringToFront();
+// Show/hide one deployment by adding/removing its group from the umbrella parent. The
+// at-time markers ride the group, so they hide with it; the scrubber still repositions
+// the (detached) markers harmlessly, so they reappear in place when shown again.
+function setDeploymentVisible(id, on) {
+  const d = deployments[id];
+  if (!d || d.visible === on) return;
+  d.visible = on;
+  if (on) d.parent.addLayer(d.group);
+  else d.parent.removeLayer(d.group);
 }
 
-// Toggle: clicking the selected group clears it; another group replaces it.
-function selectDeployDot(key) {
-  selectedDeployDot = key === selectedDeployDot ? null : key;
-  applyDeployDotSelection();
+// Wipe every placed deployment: remove all their groups from the umbrella layer and
+// forget all registries + selections. The Deploy tab's "Clear all" (decision D2).
+function clearAllDeployments(deployLayer) {
+  deployLayer.clearLayers();
+  resetDeployHighlights(); // clears the id-keyed registries + the "deploy:" markers
+  for (const id of Object.keys(deployments)) delete deployments[id];
 }
 
 // --- deploy drop-set + track highlight ---------------------------------------
-// Two more read-by-click axes beside the dot columns (which lift all dots at one Δt):
+// Two read-by-click axes beside the at-time markers (which lift a deployment's whole
+// array at the clock's instant):
 //   • DROP SET — clicking any drop disc lifts EVERY drop disc of that deployment
 //     (enlarged + dark-ringed), so the whole array of water-entry points reads at once.
 //   • TRACK — clicking a forecast line, on bare track between the markers, lifts that
 //     ONE drifter's trajectory (thickened + recoloured magenta).
 // The drop set keys off the deployment id; the track off deployment id + drop index.
-// All three axes (dot column, drop set, track) are independent — a disc / line / dot
-// click is swallowed so it toggles its own axis without disturbing the others. Cleared
-// by re-clicking, a background click, or Clear (resetDeployHighlights).
+// The axes (at-time marker set, drop set, track) are independent — a marker / disc /
+// line click is swallowed so it toggles its own axis without disturbing the others.
+// Cleared by re-clicking, a background click, or Clear (resetDeployHighlights).
 const DEPLOY_DROP_RADIUS = 4;
 const deployDropSets = {}; // deploymentId -> [disc markers]
-const deployTracks = {};   // `${deploymentId}#${index}` -> line
+// `${deploymentId}#${index}` -> { line, hitLine, times, lats, lngs, forward }: one green
+// polyline per drift, CROPPED at the scrubber (clipDeployTrack — release→clock forward,
+// clock→release backward) with the moving at-time head at its clipped end. No analysed/
+// forecast dash split; it restyles + rises to the front on selection (restyleTrack), and
+// the crop re-raises a selected track after each redraw.
+const deployTracks = {};
 // The drop data behind the discs, kept for the CSV export (see deployWaypointsCsv):
 // deploymentId -> [{ deployment, drop, lat, lon, start, cumKm }]. Populated in
 // placeDeployment, cleared with the rest in resetDeployHighlights.
@@ -1564,13 +2206,50 @@ function selectDropSet(deploymentId) {
   applyDropSetSelection();
 }
 
-function restyleTrack(line, selected) {
-  line.setStyle({
-    color: selected ? "#d81b8c" : DEPLOY_COLOR, // magenta pops off the green track set
-    weight: selected ? 4 : 2,
-    opacity: selected ? 1 : 0.9,
-  });
-  if (selected) line.bringToFront();
+// Restyle one virtual track's line: magenta + thicker when its drifter is picked,
+// deploy-green otherwise.
+function restyleTrack(entry, selected) {
+  const color = selected ? "#d81b8c" : DEPLOY_COLOR; // magenta pops off the green track set
+  entry.line.setStyle({ color, weight: selected ? 4 : 2, opacity: selected ? 1 : 0.9 });
+  if (selected) entry.line.bringToFront();
+}
+
+// Crop one virtual deployment's drift line + hit-line to clock `ms` (the drops' own
+// clock). A forward run shows release→clock (grows as the clock advances); a backward
+// run shows clock→release (grows as the clock rewinds); the line hides entirely outside
+// the run's span on its not-yet-happened side. A selected track is re-raised after the
+// redraw — setLatLngs drops a prior bringToFront — so the highlight stays on top.
+function clipDeployTrack(entry, ms, selected) {
+  const { line, hitLine, times, lats, lngs, forward } = entry;
+  if (!times || times.length < 2) return;
+  const n = times.length;
+  const earliest = times[0], latest = times[n - 1];
+  const full = () => lats.map((la, i) => [la, lngs[i]]);
+  let coords;
+  if (ms == null) {
+    coords = full();
+  } else if (forward ? ms < earliest : ms > latest) {
+    coords = []; // the run hasn't started at this clock — hide the line
+  } else if (forward ? ms >= latest : ms <= earliest) {
+    coords = full(); // the whole run has happened by this clock
+  } else {
+    let i = 0;
+    while (i < n - 1 && times[i + 1] < ms) i++;
+    const t0 = times[i], t1 = times[i + 1];
+    const f = t1 === t0 ? 0 : (ms - t0) / (t1 - t0);
+    const pos = [lats[i] + f * (lats[i + 1] - lats[i]), lngs[i] + f * (lngs[i + 1] - lngs[i])];
+    if (forward) {
+      coords = [];
+      for (let k = 0; k <= i; k++) coords.push([lats[k], lngs[k]]);
+      coords.push(pos); // release → clock
+    } else {
+      coords = [pos];
+      for (let k = i + 1; k < n; k++) coords.push([lats[k], lngs[k]]); // clock → release
+    }
+  }
+  line.setLatLngs(coords);
+  hitLine.setLatLngs(coords);
+  if (selected && coords.length) line.bringToFront();
 }
 
 function applyTrackSelection() {
@@ -1584,23 +2263,25 @@ function selectDeployTrack(key) {
   applyTrackSelection();
 }
 
-// Clear every deploy highlight — dot columns, drop sets, and tracks — and forget their
-// registries. Called by the Deploy tool's Clear button along with the layers.
+// Clear every deploy highlight — at-time marker sets, drop sets, and tracks — and
+// forget their id-keyed registries. Called by clearAllDeployments (the Deploy tab's
+// "Clear all") along with wiping the layers; removeAtTimeSet drops every "deploy:"
+// marker by prefix.
 function resetDeployHighlights() {
-  for (const key of Object.keys(deployDotGroups)) delete deployDotGroups[key];
   for (const id of Object.keys(deployDropSets)) delete deployDropSets[id];
   for (const key of Object.keys(deployTracks)) delete deployTracks[key];
   for (const id of Object.keys(deployWaypoints)) delete deployWaypoints[id];
-  selectedDeployDot = null;
+  removeAtTimeSet("deploy:");
   selectedDropSet = null;
   selectedTrack = null;
 }
 
 // --- waypoint CSV export -----------------------------------------------------
 // The placed drops ARE the deployment waypoints — where each drifter enters the
-// water and when (the staggered ship-transit ETA) — so the Deploy tool's
-// "Download CSV" button dumps them flat for the ship, no server round-trip and no
-// re-derivation (deployWaypoints already mirrors the drawn drops).
+// water and when (the staggered ship-transit ETA) — so the Deploy tool dumps them flat
+// for the ship, no server round-trip and no re-derivation (deployWaypoints already
+// mirrors the drawn drops). The manager row exports one deployment; "Download all CSV"
+// exports every placed one. Columns are identical either way (plan 034, decision 5).
 const DEPLOY_CSV_COLUMNS = ["deployment", "drop", "latitude", "longitude", "water_entry_utc", "cum_km"];
 
 // Total placed drops across every deployment (0 when nothing is placed yet).
@@ -1608,106 +2289,236 @@ function deployWaypointCount() {
   return Object.values(deployWaypoints).reduce((n, rows) => n + rows.length, 0);
 }
 
-// Flatten every placed deployment's drops into one CSV string, ordered by
-// deployment then drop, or null when nothing is placed. Values are plain
-// numbers / ISO strings with no separators, so no quoting is needed.
-function deployWaypointsCsv() {
-  if (!deployWaypointCount()) return null;
-  const ids = Object.keys(deployWaypoints).map(Number).sort((a, b) => a - b);
+// Flatten the given deployment ids' drops into one CSV string (ordered by deployment
+// then drop), or null when none of them have drops. `ids` defaults to every placed
+// deployment. Values are plain numbers / ISO strings with no separators, so no quoting
+// is needed.
+function deployWaypointsCsv(ids = Object.keys(deployWaypoints).map(Number)) {
+  const ordered = ids.filter((id) => deployWaypoints[id]?.length).sort((a, b) => a - b);
+  if (!ordered.length) return null;
   const lines = [DEPLOY_CSV_COLUMNS.join(",")];
-  for (const id of ids)
+  for (const id of ordered)
     for (const w of deployWaypoints[id])
       lines.push([w.deployment, w.drop, w.lat, w.lon, w.start, +w.cumKm.toFixed(3)].join(","));
   return lines.join("\n") + "\n";
 }
 
-// Trigger a client-side download of the placed waypoints as deploy_waypoints.csv
-// (an ephemeral object URL + a synthetic anchor click). Returns the drop count so
-// the caller can report it; 0 means nothing was placed (no file offered).
-function downloadDeployWaypoints() {
-  const csv = deployWaypointsCsv();
-  if (!csv) return 0;
+// Trigger a client-side download of a CSV string as `filename` (an ephemeral object URL
+// + a synthetic anchor click). A null csv is a no-op.
+function downloadCsv(csv, filename) {
+  if (!csv) return;
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "deploy_waypoints.csv";
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+// Download every placed deployment's waypoints as deploy_waypoints.csv. Returns the
+// drop count so the caller can report it; 0 means nothing was placed (no file offered).
+function downloadDeployWaypoints() {
+  const csv = deployWaypointsCsv();
+  downloadCsv(csv, "deploy_waypoints.csv");
   return deployWaypointCount();
 }
 
-// A mark's absolute wall-clock time (ISO-8601, whole seconds — the drop discs' ETA
-// format): the run start plus its run-relative `hours`. Returns null when the run
-// start is unknown (no field window echoed), so the caller falls back to the
-// hours-only label.
-function markIso(runStartISO, hours) {
-  if (!runStartISO) return null;
-  const ms = new Date(runStartISO).getTime() + hours * 3600 * 1000;
-  return new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+// Download one deployment's waypoints as deploy_<id>_waypoints.csv (the manager row's
+// CSV button). Returns that deployment's drop count (0 = nothing to export).
+function downloadOneDeployment(id) {
+  const csv = deployWaypointsCsv([id]);
+  downloadCsv(csv, `deploy_${id}_waypoints.csv`);
+  return deployWaypoints[id]?.length ?? 0;
 }
 
-// Draw one deployment's per-drop drift: a green line per forecast feature (in the
-// deployTracks pane, click-highlightable as a single trajectory via a fat transparent
-// hit-line), plus its synced-t0 dots (in the deployDots pane above the tracks and drop
-// discs) — coloured by absolute mark hour (deployMarkColor) and clickable to highlight
-// every same-hour dot of this deployment (`deploymentId`). A
-// thin white ring keeps the colour legible over the currents overlay. Each dot's
-// tooltip pairs the run-relative hours with the mark's absolute ISO time (from
-// `runStart`). GeoJSON coords are [lon,lat]; Leaflet wants [lat,lng]. (The ship
-// track + drops are drawn client-side by the caller; the API returns only forecast
-// features.) A closing restack keeps later marks painted above earlier ones.
-function drawDeployForecastLines(features, deployLayer, markStepH, runStart, deploymentId) {
+// Draw one deployment's per-drop drift: per `role: "track"` feature, one green
+// polyline CROPPED at the scrubber by the clock (clipDeployTrack — release→clock for a
+// forward run, clock→release for a backward one, matching the observed tracks and
+// drifter forecasts), plus a fat transparent hit-line for click-to-highlight of that one
+// trajectory (selectDeployTrack; a selected track is raised to the front), and an at-time
+// marker at the clock instant keyed to this deployment (decisions 6/7). Each feature carries its own
+// `start`, `direction`, and `cadence_s`, so vertex i sits at start + direction·i·
+// cadence_s — the per-vertex times the at-time marker reads off; a backward run's
+// samples are normalised to ascending time. GeoJSON coords are [lon,lat]; Leaflet
+// wants [lat,lng]. (The drops are drawn client-side by the caller; the API returns
+// only track features.) Everything is drawn into `layer` — the deployment's own
+// group — so it hides/deletes with it.
+function drawDeployForecastLines(features, layer, runStart, deploymentId) {
   const ll = ([lon, lat]) => [lat, lon];
   for (const f of features) {
-    if (f.properties?.role !== "forecast") continue;
+    const props = f.properties ?? {};
+    if (props.role !== "track") continue;
     const coords = f.geometry?.coordinates ?? [];
     if (coords.length < 2) continue;
-    const latlngs = coords.map(ll);
-    const trackKey = `${deploymentId}#${f.properties.index}`;
-    // The visible drift line (non-interactive), plus a fat transparent hit-line over the
-    // same path so its thin stroke is easy to click on bare track. A track click lifts
-    // this one trajectory (selectDeployTrack); the hit-line's click is swallowed so it
-    // doesn't reach the map. Both sit in the lowest pane, so a click where a disc/dot
-    // overlaps hits that marker instead of the track.
-    const line = L.polyline(latlngs, {
+    let latlngs = coords.map(ll);
+    const trackKey = `${deploymentId}#${props.index}`;
+    const startMs = Date.parse(props.start ?? runStart);
+    const dir = props.direction === "backward" ? -1 : 1;
+    const cadenceMs = (props.cadence_s ?? 0) * 1000;
+    let times = latlngs.map((_, i) => startMs + dir * i * cadenceMs);
+    if (dir < 0) {
+      latlngs = latlngs.slice().reverse();
+      times = times.slice().reverse();
+    }
+
+    // The drift line, drawn empty and grown by the clock (clipDeployTrack): it is
+    // CROPPED at the scrubber like the observed tracks and drifter forecasts — a forward
+    // run shows release→clock, a backward run shows clock→release. Non-interactive, in the
+    // lowest deploy pane, so a click where a disc/marker overlaps hits that instead; the
+    // hit-line covers the same clipped path so the thin stroke stays easy to click.
+    const line = L.polyline([], {
       pane: "deployTracks", color: DEPLOY_COLOR, weight: 2, opacity: 0.9,
       interactive: false,
-    }).addTo(deployLayer);
-    L.polyline(latlngs, {
+    }).addTo(layer);
+    const hitLine = L.polyline([], {
       pane: "deployTracks", color: "#000", weight: 12, opacity: 0,
       bubblingMouseEvents: false,
     })
       .on("click", () => selectDeployTrack(trackKey))
-      .addTo(deployLayer);
-    deployTracks[trackKey] = line;
-    restyleTrack(line, trackKey === selectedTrack);
-    for (const m of f.properties?.marks ?? []) {
-      const base = { radius: 4, fillColor: deployMarkColor(m.hours, markStepH) };
-      const key = `${deploymentId}|${m.hours}`;
-      const dot = L.circleMarker([m.lat, m.lon], {
-        pane: "deployDots",
-        radius: base.radius,
-        color: "#fff",
-        weight: 1,
-        fillColor: base.fillColor,
-        fillOpacity: 0.95,
-        bubblingMouseEvents: false, // its click highlights, doesn't reach the map
-      });
-      const iso = markIso(runStart, m.hours);
-      dot.bindTooltip(iso ? `+${m.hours} h · ${iso}` : `+${m.hours} h`, { direction: "top" });
-      dot.on("click", () => selectDeployDot(key));
-      (deployDotGroups[key] ??= []).push({ marker: dot, base });
-      restyleDeployDot(dot, base, key === selectedDeployDot);
-      dot.addTo(deployLayer);
-    }
+      .addTo(layer);
+    const entry = {
+      line, hitLine, forward: dir > 0,
+      times, lats: latlngs.map((p) => p[0]), lngs: latlngs.map((p) => p[1]),
+    };
+    deployTracks[trackKey] = entry;
+    restyleTrack(entry, trackKey === selectedTrack);
+    clipDeployTrack(entry, atTimeClockMs, trackKey === selectedTrack); // initial crop
+
+    // At-time marker: rides the deployment's group, coloured deploy-green, click
+    // highlights the whole deployment's array at the clock's instant (setKey
+    // `deploy:<id>`).
+    registerAtTimeMarker(layer, {
+      color: DEPLOY_COLOR,
+      label: `#${(props.index ?? 0) + 1}`,
+      setKey: `deploy:${deploymentId}`,
+      times,
+      lats: latlngs.map((p) => p[0]),
+      lngs: latlngs.map((p) => p[1]),
+    });
   }
-  // DOM/paint order within deployDots must run late-marks-on-top; the incremental
-  // per-feature draw above interleaves hours, so restack once the dots are all in.
-  restackDeployDots();
-  applyDeployDotSelection();
+}
+
+// Register one CLOCK-CLIPPED violet forecast per real deployed drifter (#22). Each
+// role:"track" feature carries `index` (its seed's slot in the POSTed batch) and a
+// `start`/`cadence_s`, so vertex i sits at `start + i·cadence`; `seeds[index].dNumber`
+// maps the track back to its drifter's head. Pre-now vertices are dropped so the track
+// begins at the clock's "now", then it is registered in forecastClockEntries — a single
+// non-interactive violet polyline in the driftForecast pane (below every marker), shown
+// clipped to the clock only in the future and only while "Show tracks" is on, with the
+// drifter's own head walking its end (see clipForecast). GeoJSON coords are [lon,lat].
+function drawDrifterForecastLines(features, layer, seeds, nowMs) {
+  for (const f of features) {
+    const props = f.properties ?? {};
+    if (props.role !== "track") continue;
+    const coords = f.geometry?.coordinates ?? [];
+    if (coords.length < 2) continue;
+    const seed = seeds[props.index];
+    const headKey = seed?.dNumber;
+    if (headKey == null) continue;
+    const startMs = Date.parse(props.start);
+    const cadenceMs = (props.cadence_s ?? 0) * 1000;
+    if (!Number.isFinite(startMs) || cadenceMs <= 0) continue;
+    // Keep only the vertices at/after now, so the forecast starts at the clock's "now".
+    const lats = [], lngs = [], times = [];
+    coords.forEach(([lon, lat], i) => {
+      const t = startMs + i * cadenceMs;
+      if (t >= nowMs) {
+        lats.push(lat);
+        lngs.push(lon);
+        times.push(t);
+      }
+    });
+    if (times.length < 2) continue; // nothing left in the future to draw
+    const line = L.polyline([], {
+      pane: "driftForecast",
+      color: VIOLET_FORECAST_COLOR,
+      weight: 2,
+      opacity: 0.85,
+      interactive: false,
+    });
+    forecastClockEntries.push({
+      line, times, lats, lngs, headKey, batch: seed.batch, group: layer,
+      tip: `${headKey} · forecast`, shown: false,
+    });
+  }
+  // Apply the current clock so a forecast landing mid-scrub places itself at once.
+  updateClock(atTimeClockMs);
+}
+
+// Fire-and-forget forecast of the real deployed drifters (#22). Seeds every
+// in-water drifter (latest.geojson batch === deployment_*, so gliders/floats/xspar/
+// waveglider are excluded) at its last fix and forward-advects to the end of the
+// CMEMS field via the same /api/forecast endpoint the deploy tool uses. NOT awaited
+// by main — the map is already live; the violet forecasts register when the POST
+// resolves and then behave under the clock (future-only, clipped to the scrubber, gated
+// by "Show tracks", walking each drifter's own head — see drawDrifterForecastLines /
+// clipForecast). Gated on getDeployLimits(): a static-only deploy with no /api server
+// returns null there, so we add nothing and stay silent (no error on the map).
+async function kickDrifterForecasts(latest, map, spanHours, nowMs) {
+  if (!latest || !spanHours) return; // no field to advect through
+  const limits = await getDeployLimits();
+  if (limits == null) return; // dynamic /api/forecast absent — no forecasts, silently
+
+  // `dNumber` rides each seed (client-side only) so the returned track — keyed by its
+  // seed `index` — maps back to the drifter's head; it is stripped before the POST.
+  let seeds = (latest.features ?? [])
+    .filter(
+      (f) =>
+        f.geometry?.type === "Point" &&
+        String(f.properties?.batch).startsWith("deployment_")
+    )
+    .map((f) => ({
+      lon: f.geometry.coordinates[0],
+      lat: f.geometry.coordinates[1],
+      start: f.properties.date_UTC,
+      dNumber: f.properties.D_number,
+      batch: f.properties.batch, // so the Instruments row that governs this batch also governs its forecast line
+    }))
+    .filter((s) => s.start != null && Number.isFinite(Date.parse(s.start)));
+  if (!seeds.length) return; // no in-water drifters yet
+  // Stay under the per-request seed cap so the whole POST isn't rejected once a large
+  // batch is in the water (a full deployment can outnumber the cap). A truncated set
+  // just leaves some drifters without a forecast — the same partial-coverage property
+  // window-skipped seeds already have — rather than losing every forecast to a 4xx.
+  if (limits.max_seeds && seeds.length > limits.max_seeds)
+    seeds = seeds.slice(0, limits.max_seeds);
+
+  // One horizon large enough that every seed reaches end-of-data: the server advects
+  // each seed from its own start and truncates at the field's last frame, so no track
+  // overshoots. Start from the full field span, then clamp to the API's caps so the
+  // whole POST isn't rejected: an explicit horizon cap if present, and the seeds ×
+  // duration budget (max_seed_hours) divided across our seed count. A clamped horizon
+  // just means the longest-lived forecasts stop short of the field edge — a graceful
+  // degradation, far better than an all-or-nothing rejection. Seeds whose start
+  // predates the window are silently skipped server-side.
+  let horizonH = spanHours;
+  if (limits.max_horizon_h) horizonH = Math.min(horizonH, limits.max_horizon_h);
+  if (limits.max_seed_hours)
+    horizonH = Math.min(horizonH, Math.floor(limits.max_seed_hours / seeds.length));
+  if (horizonH <= 0) return; // budget too tight for even one hour — nothing to draw
+
+  // A dedicated group so the layer drops in atomically when the response lands.
+  const group = L.featureGroup().addTo(map);
+  try {
+    const resp = await fetch(FORECAST_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        seeds: seeds.map(({ lon, lat, start }) => ({ lon, lat, start })), // drop dNumber
+        horizon_h: horizonH,
+        direction: "forward",
+      }),
+    });
+    if (!resp.ok) return; // best-effort: leave the empty group, draw nothing
+    const data = await resp.json().catch(() => ({}));
+    drawDrifterForecastLines(data.features ?? [], group, seeds, nowMs);
+  } catch (err) {
+    // Network/API failure is non-fatal — the map stands without violet forecasts.
+    console.warn("Drifter forecast unavailable:", err);
+  }
 }
 
 // --- near-inertial animation -------------------------------------------------
@@ -1748,17 +2559,22 @@ const INERTIAL_MAX_AGE = 300; // frames before forced respawn (~5s @ 60fps)
 // trails, high -> short ones. Purely cosmetic.
 const INERTIAL_FADE_ALPHA = 0.05;
 // Degrees of geographic displacement per (m/s) of NI speed, per frame.
-// Decouples the *visual* advection from real time (like leaflet-velocity's
-// velocityScale). With NI-only advection this doubles as the orbit magnifier:
+// Decouples the *visual* advection from real time (a visual advection scale).
+// With NI-only advection this doubles as the orbit magnifier:
 // the ~350 m physical inertial circle is sub-pixel, so this scales it up to a
 // visible loop. The orbital *angular* rate is fixed by the 24 h loop, so this
 // sets the circle's RADIUS (and thus the tangential speed), not its period —
 // larger = bigger, faster circles. Nudge to taste.
 const INERTIAL_ADVECT_SCALE = 0.0072;
 const INERTIAL_LINE_WIDTH = 1.3; // thin, so overlapping trails don't clump
+// Static-snapshot mode (#17): when overlay animation is off, each particle is
+// integrated forward this many steps at the *frozen* displayed field time to draw
+// its streamline in one pass (the animated mode instead builds trails over frames).
+// Enough steps to read as a flow line, few enough to redraw cheaply on scrub/pan.
+const INERTIAL_STILL_STEPS = 24;
 
 // Cyan, distinct from the orange true track, the violet forecast / magenta
-// hindcast advection lines, and the dark->white flow-trail ramp.
+// hindcast advection lines, and the dark streamlines of the flow overlay.
 const INERTIAL_COLOR = "#22d3ee";
 
 // Precomputed ONCE from the fetched artifact: the grid geometry (header) plus
@@ -1893,7 +2709,7 @@ class InertialLayer extends L.Layer {
 // you zoom in instead of thinning to a handful of particles. Initial ages are
 // randomized so the whole pool doesn't restart in lockstep.
 function startInertialClock(map, grid, layer, displayedFieldTime) {
-  if (!grid) return;
+  if (!grid) return { setAnimated() {}, refresh() {} };
   const { lo1, lo2, la1, la2 } = grid.header;
 
   // Anchor the reconstruction's phase to the *displayed* field time rather than
@@ -1945,14 +2761,30 @@ function startInertialClock(map, grid, layer, displayedFieldTime) {
     }
   }
 
-  const tick = () => {
-    if (!map.hasLayer(layer)) {
+  // Animation gate (#17). When `animated`, the rAF loop below free-runs, building
+  // fading trails frame by frame. When off, the loop parks (no rAF) and the field
+  // shows a STILL streamline snapshot re-drawn only on discrete state changes
+  // (clock scrub, pan/zoom) — so scrubbing no longer competes with a continuous
+  // per-frame repaint. `scheduled` keeps at most one rAF in flight either way.
+  let animated = true;
+  let scheduled = false;
+  const schedule = () => {
+    if (!scheduled) {
+      scheduled = true;
       requestAnimationFrame(tick);
+    }
+  };
+
+  function tick() {
+    scheduled = false;
+    if (!animated) return; // static: loop is parked; stills are drawn on demand
+    if (!map.hasLayer(layer)) {
+      schedule();
       return;
     }
     const ctx = layer.getContext();
     if (!ctx) {
-      requestAnimationFrame(tick);
+      schedule();
       return;
     }
     const { width, height } = ctx.canvas;
@@ -1967,7 +2799,7 @@ function startInertialClock(map, grid, layer, displayedFieldTime) {
 
     const vb = viewBounds();
     if (vb.empty) {
-      requestAnimationFrame(tick); // viewport is off the field — nothing to draw
+      schedule(); // viewport is off the field — nothing to draw
       return;
     }
 
@@ -2006,9 +2838,70 @@ function startInertialClock(map, grid, layer, displayedFieldTime) {
     }
     ctx.stroke();
 
-    requestAnimationFrame(tick);
+    schedule();
+  }
+
+  // The frozen snapshot: hard-clear, then draw each particle's instantaneous
+  // streamline by integrating it forward INERTIAL_STILL_STEPS at the DISPLAYED
+  // field time (dt with no loop sweep). The pool is read, never mutated, so
+  // toggling animation back on resumes from the live particle positions.
+  const renderStill = () => {
+    if (!map.hasLayer(layer)) return;
+    const ctx = layer.getContext();
+    if (!ctx) return;
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    const vb = viewBounds();
+    if (vb.empty) return;
+    const dt = refOffsetS();
+    ctx.strokeStyle = INERTIAL_COLOR;
+    ctx.lineWidth = INERTIAL_LINE_WIDTH;
+    ctx.beginPath();
+    for (const p of particles) {
+      let lon = p.lon;
+      let lat = p.lat;
+      for (let step = 0; step < INERTIAL_STILL_STEPS; step++) {
+        const sample = sampleInertialField(grid, lon, lat, dt);
+        if (!sample) break; // ran onto land/off-grid: end this streamline
+        const newLat = lat + sample.v * INERTIAL_ADVECT_SCALE;
+        const newLon = lon + (sample.u * INERTIAL_ADVECT_SCALE) / Math.cos((lat * Math.PI) / 180);
+        const a = map.latLngToContainerPoint([lat, lon]);
+        const b = map.latLngToContainerPoint([newLat, newLon]);
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        lon = newLon;
+        lat = newLat;
+      }
+    }
+    ctx.stroke();
   };
-  requestAnimationFrame(tick);
+
+  // Coalesced still redraw for discrete state changes (clock scrub, pan/zoom): at
+  // most one raster per frame, and a no-op while animating (the loop owns the canvas).
+  let stillPending = false;
+  const refresh = () => {
+    if (animated || stillPending) return;
+    stillPending = true;
+    requestAnimationFrame(() => {
+      stillPending = false;
+      renderStill();
+    });
+  };
+  map.on("moveend zoomend", refresh);
+  // Turning the layer on while static would otherwise show a blank canvas until the
+  // next scrub/pan — draw the still as soon as it lands.
+  map.on("layeradd", (e) => {
+    if (e.layer === layer && !animated) renderStill();
+  });
+
+  const setAnimated = (on) => {
+    if (on === animated) return;
+    animated = on;
+    if (on) schedule(); // resume the free-running loop
+    else renderStill(); // freeze to a still at the current instant
+  };
+
+  schedule(); // animated by default
+  return { setAnimated, refresh };
 }
 // ---------------------------------------------------------------------------
 
@@ -2023,10 +2916,12 @@ function startInertialClock(map, grid, layer, displayedFieldTime) {
 // so the two floats collapse into one "Floats" instrument row (like the two
 // seagliders share theirs), each still selectable by id.
 const GLIDER_STYLES = {
-  xspar: { color: "#f59e0b", label: "XSPAR buoy" },
-  seaglider: { color: "#38bdf8", label: "Seagliders" },
-  waveglider: { color: "#ec4899", label: "Wave gliders" },
-  float: { color: "#a855f7", label: "Floats" },
+  xspar: { color: "#f59e0b", label: "XSPAR" },
+  // Data key stays `seaglider` (baked into gliders.geojson + the build pipeline);
+  // only the visible row label reads "Glider" (#24). See docs/gliders.md.
+  seaglider: { color: "#38bdf8", label: "Glider" },
+  waveglider: { color: "#ec4899", label: "Waveglider" },
+  float: { color: "#a855f7", label: "Float" },
 };
 const gliderStyle = (type) =>
   GLIDER_STYLES[type] ?? { color: "#38bdf8", label: type ?? "Glider" };
@@ -2073,13 +2968,45 @@ function buildGliderMarkerGroups(geojson) {
     if (feature.geometry?.type !== "Point") continue;
     const { id, type } = feature.properties ?? {};
     const [lng, lat] = feature.geometry.coordinates;
+    const latestHtml = gliderPopupHtml(feature.properties, { lat, lng });
     const marker = L.marker([lat, lng], {
       icon: gliderIcon(type),
       zIndexOffset: 500,
-    }).bindTooltip(gliderPopupHtml(feature.properties, { lat, lng }));
+    }).bindTooltip(latestHtml);
     if (id != null) {
-      registerPart(id, (s) => marker.setIcon(gliderIcon(type, s)));
+      // Clock-hide by opacity (the option survives the selection restyle's setIcon)
+      // PLUS pointer-events off — an invisible diamond must not hover its tooltip or
+      // swallow a click meant for the map (e.g. a deploy-path vertex).
+      const setHidden = (hidden) => {
+        marker._clockHidden = hidden;
+        marker.setOpacity(hidden ? 0 : 1);
+        const el = marker.getElement();
+        if (el) el.style.pointerEvents = hidden ? "none" : "";
+      };
+      registerPart(id, (s) => {
+        marker.setIcon(gliderIcon(type, s)); // recreates the DOM element…
+        if (marker._clockHidden) setHidden(true); // …so re-assert hidden on it
+      });
       marker.on("click", () => selectInstrument(id));
+      // Head controller (see buildBatchGroups): the diamond rides the app clock along
+      // the platform's track.
+      const home = L.latLng(lat, lng);
+      registerHead(id, {
+        at(latlng, html) {
+          marker.setLatLng(latlng);
+          if (html) marker.setTooltipContent(html);
+          setHidden(false);
+        },
+        latest() {
+          this.at(home, latestHtml);
+        },
+        hide() {
+          setHidden(true);
+        },
+      });
+      // Single-fix platforms (no track LineString) ride this point clock, like the
+      // single-fix drifters above.
+      registerPointHead(id, feature.properties?.date_UTC);
     }
     (groups[type] ??= L.featureGroup()).addLayer(marker);
   }
@@ -2102,13 +3029,17 @@ function buildGliderTrackGroups(geojson) {
     if (feature.geometry?.type !== "LineString") continue;
     const { id, type, fixes } = feature.properties ?? {};
     const group = (groups[type] ??= L.featureGroup());
-    addTrackSegments(
+    const tip = (fix, latlng) => gliderPopupHtml({ id, type, ...fix }, latlng);
+    const segs = addTrackSegments(
       group,
       feature.geometry.coordinates,
       fixes,
       id,
-      (fix, latlng) => gliderPopupHtml({ id, type, ...fix }, latlng),
+      tip,
     );
+    // Follow the app clock: track clipped at the clock, the platform's diamond head
+    // riding the clipped end (plan 035).
+    registerTrackClock(group, segs, feature.geometry.coordinates, fixes, id, tip);
   }
   return groups;
 }
@@ -2139,7 +3070,7 @@ function renderAwaiting(ids) {
 // …), so neighbours never interpolate. The shading rasters snap to N_BINS flat
 // colour classes (see N_BINS in _currents.py) and ship those class colours as
 // `colorbar`; rendering them banded makes the legend show the raster's exact
-// classes, not a smooth ramp. Also drives the deploy dot band (updateDeployLegend).
+// classes, not a smooth ramp.
 function hardStopBand(colors) {
   const n = colors.length;
   const stops = [];
@@ -2171,46 +3102,23 @@ function shadingLegendHtml(meta, diverging) {
 }
 
 // The sidebar "Surface currents" panel keeps only the displayed-time readout (the
-// colour scale now lives in the Currents dock). Pass the selected `frame`
-// ({offset_h, valid_time}) to show which forecast step is on the map; without it,
-// the now frame. Re-called on every slider scrub.
-function renderCurrentsInfo(meta, frame) {
+// colour scale now lives in the Currents dock). Shows the **clock** time; when the
+// shown raster/flow frame (snapped to the nearest 12 h) differs from the clock, it
+// also names that frame's valid time. `clockIso` is the exact clock instant and
+// `frame` the shown frame ({valid_time, file}); both come from the caller's clock.
+// Re-called on every scrub.
+function renderCurrentsInfo(meta, clockIso, frame) {
   const timeEl = document.getElementById("currents-time");
   if (!meta) {
     timeEl.textContent = "Surface currents unavailable.";
     return;
   }
-  const shown = frame ?? meta.frames?.find((f) => f.offset_h === (meta.now_offset_h ?? 0));
-  const at = shown ? formatFixTime(shown.valid_time) : formatFixTime(meta.valid_time);
-  const off = shown && shown.offset_h !== 0 ? ` (${frameOffsetLabel(shown.offset_h)})` : "";
-  timeEl.textContent = `Showing ${at}${off} — CMEMS analysis/forecast.`;
-}
-
-// Renderer for the combined forecast+hindcast sidebar panel. Both advect through
-// the same time-dependent hourly field and share every caveat (spelled out in the
-// panel's static note), so one status line covers them. valid_time (the t=0 the
-// integration is anchored to) is baked into every feature,
-// read off the first available (forecast, else hindcast). Three states: no
-// artifact (CMEMS down / not built), built but empty (every instrument head sits
-// in a coastal NaN cell — the pre-deployment cluster at port does this), and
-// built with lines.
-function renderDriftInfo(forecast, hindcast) {
-  const timeEl = document.getElementById("drift-time");
-  if (!timeEl) return;
-  const fFeatures = forecast?.features;
-  const hFeatures = hindcast?.features;
-  if (!fFeatures && !hFeatures) {
-    timeEl.textContent = "Drift forecast & hindcast unavailable.";
-    return;
+  const clock = clockIso ?? meta.valid_time;
+  let msg = `Showing ${formatFixTime(clock)}`;
+  if (frame && Date.parse(frame.valid_time) !== Date.parse(clock)) {
+    msg += ` — field frame ${formatFixTime(frame.valid_time)}`;
   }
-  const valid =
-    fFeatures?.[0]?.properties?.valid_time ?? hFeatures?.[0]?.properties?.valid_time;
-  if (!valid) {
-    timeEl.textContent =
-      "No drift lines — every instrument head is on land or off-grid.";
-    return;
-  }
-  timeEl.textContent = `Current-advection through the time-dependent field, anchored at ${formatFixTime(valid)}.`;
+  timeEl.textContent = msg + " — CMEMS analysis/forecast.";
 }
 
 // --- ship tracks (R/V Marion Dufresne live + R/V S.A. Agulhas II baked) ------
@@ -2373,69 +3281,137 @@ const isValidFix = (p) =>
   p && Number.isFinite(p.lat) && Number.isFinite(p.lon) && !!p.date;
 const byDate = (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime();
 
-// Cased polyline (white halo + coloured core, legible on any basemap), a dot at
-// each fix, and a ship marker, in one feature group — for the given `vessel`
-// spec (colours, name, and per-fix rows). Holds the time-sorted position list so
-// live polling can append only the new tail: setPositions replaces the whole
-// track; append extends it past the last fix, drawing only the fresh points.
+// A plain track at the drifter-track width in the vessel's own colour (no cased halo,
+// no per-fix dots — plan 034, decision 8), plus a ship marker, in one feature group
+// for the given `vessel` spec (colours, name, per-fix rows). The track is drawn as one
+// polyline per fix-to-fix segment (like the drifter tracks — addTrackSegments), each
+// segment carrying that fix's hover tooltip, so the along-track times stay readable
+// without dots. The track and the ship marker follow the app clock (plan 035): the
+// track clips to the fixes at or before the clock and the marker rides its clipped
+// end (showing the bracketing fix's tooltip), parking at the latest fix when the
+// clock is at or past it. Holds the time-sorted position list so live polling appends
+// only the new tail: setPositions replaces the whole track, append extends it past
+// the last fix.
 function makeShipLayer(vessel) {
-  // The cased track is non-interactive: it carries no popup, and an interactive
-  // polyline would swallow clicks meant for the dots painted on top of it.
-  const opts = (color, weight) => ({
-    pane: "shipTrack",
-    color,
-    weight,
-    opacity: 0.95,
-    interactive: false,
-  });
-  const halo = L.polyline([], opts(vessel.haloColor, 5));
-  const core = L.polyline([], opts(vessel.trackColor, 2.5));
-  // Per-fix dots use the pane's default SVG renderer, not a canvas: a canvas
-  // renderer spans the whole viewport and would intercept every click across the
-  // map. SVG keeps each dot an individually hit-testable element, and empty pane
-  // area stays click-through (so the drifters above this pane stay clickable).
-  // Added after the lines, so the dots paint on top of the cased track.
-  const dots = L.layerGroup();
+  const track = L.layerGroup();
   const marker = L.marker([0, 0], {
     pane: "ship",
     icon: shipIcon(vessel.markerColor),
     opacity: 0, // hidden until the first fix lands
   }).bindTooltip("");
-  const group = L.featureGroup([halo, core, dots, marker]);
+  const group = L.featureGroup([track, marker]);
   let positions = [];
+  const segs = []; // { line, t0, t1, a, b, on } — parallel to the fix pairs
+  let clockEntry = null; // the clock-clipping entry; created once ≥ 2 fixes are in
 
-  // A small dot at fix `p`, sharing the latest-position tooltip but filled with
-  // this fix's own data and its motion relative to the preceding fix `prev`.
-  function dotFor(p, prev) {
-    const dot = L.circleMarker([p.lat, p.lon], {
+  // The ship marker doubles as the track's head: moved by clipTrack via this
+  // controller, so scrubbing walks the vessel along its own track. Clock-hiding
+  // also turns pointer events off — an invisible disc must not hover its tooltip.
+  const setHidden = (hidden) => {
+    marker.setOpacity(hidden ? 0 : 1);
+    const el = marker.getElement();
+    if (el) el.style.pointerEvents = hidden ? "none" : "";
+  };
+  const headKey = `ship:${vessel.name}`;
+  registerHead(headKey, {
+    at(latlng, html) {
+      marker.setLatLng(latlng);
+      if (html) marker.setTooltipContent(html);
+      setHidden(false);
+    },
+    latest() {
+      const last = positions[positions.length - 1];
+      if (!last) return;
+      this.at(
+        [last.lat, last.lon],
+        shipPopupHtml(vessel, last, positions[positions.length - 2])
+      );
+    },
+    hide() {
+      setHidden(true);
+    },
+  });
+
+  // One track segment (prev → p) in the vessel's colour at the drifter-track weight,
+  // carrying fix `p`'s tooltip. Interactive for the hover, but its click is swallowed
+  // (a ship has no highlight axis) so it doesn't clear a selection.
+  function segFor(p, prev) {
+    const seg = L.polyline([[prev.lat, prev.lon], [p.lat, p.lon]], {
       pane: "shipTrack",
-      radius: 2.5,
-      color: vessel.haloColor,
-      weight: 1,
-      fillColor: vessel.trackColor,
-      fillOpacity: 1,
+      color: vessel.trackColor,
+      weight: 2,
+      opacity: 0.95,
+      bubblingMouseEvents: false,
     });
-    dot.bindTooltip(shipPopupHtml(vessel, p, prev));
-    return dot;
+    seg.bindTooltip(shipPopupHtml(vessel, p, prev), { sticky: true });
+    track.addLayer(seg);
+    segs.push({
+      line: seg,
+      t0: Date.parse(prev.date),
+      t1: Date.parse(p.date),
+      a: [prev.lat, prev.lon],
+      b: [p.lat, p.lon],
+      on: true,
+    });
+  }
+
+  // (Re)build the clock-clipping entry from the current fixes (ascending by
+  // construction) and re-apply the clock. Created on the first call with ≥ 2 timed
+  // fixes, its sample arrays swapped in place after (the ships grow over the cruise).
+  function syncClock() {
+    const times = [], lats = [], lngs = [], fixes = [];
+    for (const p of positions) {
+      const t = Date.parse(p.date);
+      if (Number.isFinite(t)) {
+        times.push(t);
+        lats.push(p.lat);
+        lngs.push(p.lon);
+        fixes.push(p);
+      }
+    }
+    if (times.length < 2) return;
+    if (!clockEntry) {
+      clockEntry = {
+        group: track,
+        segs,
+        times,
+        lats,
+        lngs,
+        fixes,
+        headKey,
+        tip: (fix, latlng, i, fs) => shipPopupHtml(vessel, fix, fs[i - 1]),
+        trimmed: null,
+      };
+      trackClockEntries.push(clockEntry);
+      trackedHeadKeys.add(headKey);
+    } else {
+      Object.assign(clockEntry, { times, lats, lngs, fixes });
+    }
+    clipTrack(clockEntry, atTimeClockMs);
   }
 
   function showLatest() {
     const last = positions[positions.length - 1];
     if (!last) return;
     const prev = positions[positions.length - 2];
-    marker.setLatLng([last.lat, last.lon]).setOpacity(1);
-    marker.setTooltipContent(shipPopupHtml(vessel, last, prev));
     renderShipInfo(vessel, last, prev);
+    // Under two timed fixes there is no clock entry driving the marker yet — show
+    // the lone fix directly (the pre-035 behaviour). After that, clipTrack owns it.
+    if (!clockEntry) {
+      marker.setLatLng([last.lat, last.lon]).setOpacity(1);
+      marker.setTooltipContent(shipPopupHtml(vessel, last, prev));
+    }
   }
 
   function setPositions(next) {
     positions = next.filter(isValidFix).sort(byDate);
-    const latlngs = positions.map((p) => [p.lat, p.lon]);
-    halo.setLatLngs(latlngs);
-    core.setLatLngs(latlngs);
-    dots.clearLayers();
-    positions.forEach((p, i) => dots.addLayer(dotFor(p, positions[i - 1])));
+    track.clearLayers();
+    segs.length = 0;
+    if (clockEntry) clockEntry.trimmed = null; // its trimmed segment was discarded
+    for (let i = 1; i < positions.length; i++)
+      segFor(positions[i], positions[i - 1]);
     showLatest();
+    syncClock();
   }
 
   function append(newer) {
@@ -2447,16 +3423,24 @@ function makeShipLayer(vessel) {
     for (const p of fresh) {
       const prev = positions[positions.length - 1];
       positions.push(p);
-      halo.addLatLng([p.lat, p.lon]); // extend in place, no full-track rebuild
-      core.addLatLng([p.lat, p.lon]);
-      dots.addLayer(dotFor(p, prev)); // one fresh dot, no full-track rebuild
+      segFor(p, prev); // one fresh segment, no full-track rebuild
     }
     showLatest();
+    syncClock();
   }
+
+  // The "Show tracks" master toggles the track lines without touching the marker/
+  // head: add or remove the `track` layerGroup from the vessel group. clipTrack still
+  // walks the (detached) segments so re-showing lands them at the right clock.
+  const setTrackShown = (on) => {
+    if (on) group.addLayer(track);
+    else group.removeLayer(track);
+  };
 
   return {
     group,
     append,
+    setTrackShown,
     lastDate: () => positions[positions.length - 1]?.date,
   };
 }
@@ -2512,26 +3496,44 @@ async function main() {
 
   const currentOverlays = {};
 
-  // Layer stack, bottom -> top: speed shading -> near-inertial animation ->
-  // flow -> ship track+dots -> drifters -> ship marker. The ship track sits
-  // *below* the drifters so its per-fix dots can't intercept clicks meant for
-  // the drifter markers where the two overlap — the cruise starts from the
-  // drifters' staging port, so the early ship track runs right through the
-  // pre-deploy cluster. The ship's current position marker stays on top.
+  // Layer stack, bottom -> top. The governing rule (#20): EVERY line/track pane
+  // sits BELOW EVERY marker pane, so no marker is ever occluded by a track — e.g.
+  // sg284's glider diamond must never hide under the MD ship track.
+  //
+  // Below Leaflet's default markerPane (600) — all tracks and forecast lines:
+  //   shading 350, flow 355 (static streamline overlay), inertial 360 (raster/animation underlays)
+  //   observed drifter/glider track lines: default overlayPane 400 (unchanged)
+  //   shipTrack 410      — the ship route + its per-fix dots
+  //   driftForecast 420  — the violet real-drifter forecast lines (#22)
+  //   deployTracks 430   — the PoC deploy tool's drift lines
+  //   deployDrops 440    — the deploy tool's drop discs (placement points of the
+  //                        PoC tool, part of the drift geometry — kept just above
+  //                        the deploy lines but still below every real marker; if
+  //                        they should ever read as markers instead, raise > 600)
+  // Marker panes, all above every line above (600 and up):
+  //   glider diamonds: default markerPane 600 (buildGliderMarkerGroups gives no
+  //                    pane, so they land here — now strictly above all tracks)
+  //   drifters 650, ship 660, atTime 670 (moving heads), tooltipPane 680, popup 700
+  //
+  // The old order interleaved track panes among the marker panes (shipTrack 640 >
+  // markerPane 600; deployTracks/Drops 663/664 > drifters 650 / ship 660), which is
+  // exactly what let the MD track paint over sg284. Lowering every line pane below
+  // 600 fixes it and keeps the pre-deploy-cluster property that motivated shipTrack
+  // < drifters (the ship track's early dots still can't intercept marker clicks —
+  // it is now below every marker pane, not just the drifters').
   map.createPane("shading").style.zIndex = 350;
+  map.createPane("flow").style.zIndex = 355; // static streamline overlay, over the shading colour
   map.createPane("inertial").style.zIndex = 360;
-  map.createPane("shipTrack").style.zIndex = 640;
+  map.createPane("shipTrack").style.zIndex = 410;
+  map.createPane("driftForecast").style.zIndex = 420;
+  map.createPane("deployTracks").style.zIndex = 430;
+  map.createPane("deployDrops").style.zIndex = 440;
   map.createPane("drifters").style.zIndex = 650;
   map.createPane("ship").style.zIndex = 660;
-  // PoC interactive-forecast geometry, above the instruments so a placed forecast
-  // is never occluded, below the tooltip pane (680) so its marks label. Split into
-  // three stacked panes so the layering is by-element, not by draw order: tracks
-  // (ship route + drift lines) lowest, deployment drop discs above them, and the
-  // +Δt mark dots on top — so a drop never hides a delayed dot and a dot never
-  // hides under a line.
-  map.createPane("deployTracks").style.zIndex = 663;
-  map.createPane("deployDrops").style.zIndex = 664;
-  map.createPane("deployDots").style.zIndex = 665;
+  // At-time position markers (the virtual drift tracks' moving heads) ride a single
+  // top marker pane above every track/disc/marker but below the tooltip pane, so a
+  // marker never hides under a line and its own tooltip still floats over it.
+  map.createPane("atTime").style.zIndex = 670;
 
   // Hover tooltips must float above every marker. Leaflet's default tooltipPane is
   // z-index 650 — tied with the drifters pane and *below* the ship pane (660) — so
@@ -2551,16 +3553,19 @@ async function main() {
   // Deploy tool reads it live: the dblclick handler passes it, and the CSV-import
   // button pulls it through the getStartTime getter, so both start at the shown field.
   let displayedFieldTime = null;
-  const deployTool = buildDeployTool(deployLayer, () => displayedFieldTime);
+  const deployTool = buildDeployTool(
+    deployLayer, () => displayedFieldTime, () => spanHours
+  );
 
   // Lower-left cursor lon/lat readout (decimal degrees), independent of any data.
   buildCursorReadout(map);
 
   // Background map clicks: in Deploy mode a click adds a vertex to the path and a
   // double-click finishes it (committing the deployment, its drift locked to
-  // displayedFieldTime); otherwise a click clears any track selection or synced-dot
-  // highlight. Track elements and deploy dots set bubblingMouseEvents:false, so their
-  // clicks don't reach here — only genuine background clicks do.
+  // displayedFieldTime); otherwise a click clears any track / at-time-marker / drop-set
+  // highlight. Track elements, at-time markers, and drop discs set
+  // bubblingMouseEvents:false, so their clicks don't reach here — only genuine
+  // background clicks do.
   map.on("click", (e) => {
     if (deployTool.state.on) {
       deployTool.handleClick(e.latlng);
@@ -2570,9 +3575,9 @@ async function main() {
       selectedInstrument = null;
       applySelection();
     }
-    if (selectedDeployDot != null) {
-      selectedDeployDot = null;
-      applyDeployDotSelection();
+    if (selectedAtTimeSet != null) {
+      selectedAtTimeSet = null;
+      applyAtTimeSelection();
     }
     if (selectedDropSet != null) {
       selectedDropSet = null;
@@ -2621,27 +3626,70 @@ async function main() {
     map.fitBounds(bounds, { padding: [40, 40], maxZoom: 9 });
   }
 
-  // Surface currents, from one CMEMS forecast window: speed + ζ/f shadings and the
-  // flow trails — one frame each per 12 h slider offset (-12 … +72 h), the shadings
-  // as lossless-WebP rasters sharing one colour scale, the flow as leaflet-velocity
-  // grids (meta.flow_frames). All scrub together.
+  // Surface currents, from the absolute-time CMEMS frames: speed + ζ/f shadings and
+  // the flow overlay — one frame each per 12 h step across the covered span, the
+  // shadings as lossless-WebP rasters on a frozen colour scale, the flow as pre-rendered
+  // static streamline WebP (meta.flow_frames). All snap to the app clock together.
   const meta = await fetchJSON(DATA.meta, { optional: true });
-  // Lock the interactive forecast's start time to the displayed field's instant
-  // (the now frame at load; the slider updates it as the displayed field changes).
-  displayedFieldTime = meta?.valid_time ?? null;
   const vorticityMeta = await fetchJSON(DATA.vorticityMeta, { optional: true });
   const inertialField = await fetchJSON(DATA.inertialField, { optional: true });
 
-  // Resolve a frame file under the data dir, and the index of a meta's `now` frame.
+  // Resolve a frame file under the data dir.
   const frameUrl = (file) => DATA.dataBase + file;
-  const nowIndex = (m) =>
-    Math.max(0, (m?.frames ?? []).findIndex((f) => f.offset_h === (m.now_offset_h ?? 0)));
 
-  // Warm the browser cache with a meta's frames so the slider scrubs smoothly.
-  // Lifted out of the slider block because the shading radios trigger the lazy ζ/f
-  // prefetch on first selection (see onShadingChange, below), not a Leaflet
-  // baselayerchange event.
-  const prefetchFrames = (fs) => (fs ?? []).forEach((f) => { new Image().src = frameUrl(f.file); });
+  // The index of the frame in a manifest whose valid_time is nearest a given instant
+  // (epoch ms). The frames carry no offset any more — the anchor is computed here from
+  // their absolute valid_times.
+  const nearestFrameIndex = (frames, ms) => {
+    let best = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < (frames?.length ?? 0); i++) {
+      const d = Math.abs(Date.parse(frames[i].valid_time) - ms);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return best;
+  };
+
+  // The app clock spans the shading frames' full range [first valid_time, last
+  // valid_time] at 1 h granularity (the slider steps 1 h; rasters/flow snap to the
+  // nearest 12 h frame). It opens at the now-nearest *frame*, so the initial displayed
+  // field is a real frame, not an interpolated hour. `meta.frames` is the canonical
+  // span (vorticity/flow share the same times).
+  const HOUR_MS = 3600000;
+  const clockFrames = meta?.frames ?? [];
+  const clockT0 = clockFrames.length ? Date.parse(clockFrames[0].valid_time) : 0;
+  const clockTN = clockFrames.length
+    ? Date.parse(clockFrames[clockFrames.length - 1].valid_time)
+    : 0;
+  const spanHours = Math.max(0, Math.round((clockTN - clockT0) / HOUR_MS));
+  const nowMs = Date.now();
+  const nowFrameIdx = nearestFrameIndex(clockFrames, nowMs);
+  // The clock instant as a clean ISO-Z string (no millis), matching the frame shape.
+  const clockIso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+  // Lock the interactive forecast's start time to the displayed field's instant: the
+  // now-nearest frame at load, then the exact clock time as the slider moves.
+  displayedFieldTime = clockFrames.length ? clockFrames[nowFrameIdx].valid_time : null;
+  // Seed the app clock so clock-aware elements registered later (drifter tracks on
+  // the True-track tick, deployments on placement, ships on first fix) clip and
+  // place themselves at the displayed instant right away. Falls back to now when
+  // there is no currents field to scrub.
+  atTimeClockMs = displayedFieldTime ? Date.parse(displayedFieldTime) : Date.now();
+
+  // Warm the browser cache with a **band** of frames around now (±FRAME_PREFETCH
+  // indices) so nearby scrubbing is smooth without bulk-prefetching the whole (now
+  // ~50, later ~140) frame set. Anything outside the band loads on demand (both a
+  // shading raster and the flow overlay fetch naturally on setUrl). Lifted out of the slider
+  // block because the shading radios trigger the ζ/f band prefetch on first selection
+  // (see onShadingChange), not a Leaflet baselayerchange event.
+  const FRAME_PREFETCH = 8;
+  const prefetchBand = (fs, center, radius = FRAME_PREFETCH) => {
+    const lo = Math.max(0, center - radius);
+    const hi = Math.min((fs?.length ?? 0) - 1, center + radius);
+    for (let i = lo; i <= hi; i++) new Image().src = frameUrl(fs[i].file);
+  };
   let vortPrefetched = false;
 
   // The two shadings (speed, ζ/f) both fill the same `shading` pane, so only one
@@ -2654,11 +3702,11 @@ async function main() {
   const shadingLayers = [];
 
   // Speed shading: a lossless-WebP Mercator raster in the bottom data pane, shown
-  // by default, initialised at the `now` frame. The image is at the native CMEMS
+  // by default, initialised at the now-nearest frame. The image is at the native CMEMS
   // grid resolution (one pixel per cell); `crisp` disables the browser's default
   // bilinear upscaling so the cells render as sharp pixels instead of a smooth blur.
   if (meta && meta.bounds && meta.frames?.length) {
-    const speedLayer = L.imageOverlay(frameUrl(meta.frames[nowIndex(meta)].file), meta.bounds, {
+    const speedLayer = L.imageOverlay(frameUrl(meta.frames[nowFrameIdx].file), meta.bounds, {
       pane: "shading",
       className: "crisp-raster",
     });
@@ -2666,13 +3714,14 @@ async function main() {
     currentShading["Current speed"] = speedLayer;
     shadingLayers.push({ layer: speedLayer, frames: meta.frames });
   }
-  renderCurrentsInfo(meta);
+  renderCurrentsInfo(meta, displayedFieldTime, clockFrames[nowFrameIdx]);
 
   // Vorticity ζ/f: the alternative shading in the same pane, off by default (its
   // radio unselected until picked, which swaps it in for the speed raster).
   if (vorticityMeta && vorticityMeta.bounds && vorticityMeta.frames?.length) {
+    const vortNowIdx = nearestFrameIndex(vorticityMeta.frames, nowMs);
     const vorticityLayer = L.imageOverlay(
-      frameUrl(vorticityMeta.frames[nowIndex(vorticityMeta)].file),
+      frameUrl(vorticityMeta.frames[vortNowIdx].file),
       vorticityMeta.bounds,
       { pane: "shading", className: "crisp-raster" }
     );
@@ -2680,127 +3729,166 @@ async function main() {
     shadingLayers.push({ layer: vorticityLayer, frames: vorticityMeta.frames });
   }
 
-  // Re-point the flow trails to the slider's frame `i`; assigned by the flow block
-  // below (null until then, and if there is no flow data). Declared here so the
-  // slider's onChange can call it even though the flow layer is built further down.
+  // Re-point the flow overlay to frame index `i`; assigned by the flow block below
+  // (null until then, and if there is no flow data). Declared here so the clock's
+  // onChange can call it even though the flow layer is built further down.
   let scrubFlow = null;
-  // The slider's current frame index, tracked live so the flow block can re-sync to
-  // it once `scrubFlow` is assigned — the initial now-frame fetch is awaited, and a
-  // scrub during that window would otherwise leave the flow pinned to now.
-  let displayedFrameIndex = nowIndex(meta);
+  // The frame index currently shown (the nearest 12 h frame to the clock). Tracked
+  // live so the flow block can re-sync once `scrubFlow` is assigned, and so onChange
+  // only re-points overlays when the snapped frame actually changes (the clock steps
+  // 1 h; the frame changes every 12 h).
+  let displayedFrameIndex = nowFrameIdx;
 
-  // One-shot background prefetch of the remaining speed + flow frames, fired on the
-  // slider's *first move* (below) instead of on idle — so a metered viewer who never
-  // touches the slider pays only the two now frames. `flowPrefetch` is wired up by
-  // the flow block once `loadFlow` exists (like `scrubFlow`), null until then.
+  // Overlay animation gate (#17). The near-inertial canvas runs a continuous rAF loop
+  // that repaints every frame regardless of the clock, so during a scrub it competes
+  // with the raster/track work and stutters. The "Animate overlays" toggle (in the
+  // Currents tab) governs it: off = freeze it to a STILL snapshot of the current frame,
+  // redrawn only on discrete changes, no free-running rAF. Default OFF. (The current
+  // flow is now a pre-rendered static streamline raster swapped per frame — plan 038 —
+  // so it is always fluent and no longer part of this toggle.) `overlayAnimators`
+  // collects each animated overlay's setter; `overlayInertial` also feeds the clock's
+  // still-refresh.
+  let overlaysAnimated = false;
+  const overlayAnimators = [];
+  let overlayInertial = null; // the near-inertial controller (assigned in its block below)
+  const setOverlaysAnimated = (on) => {
+    overlaysAnimated = on;
+    for (const fn of overlayAnimators) fn(on);
+  };
+
+  // One-shot band prefetch of shading + flow frames around now, fired on the clock's
+  // *first move* (below) instead of on idle — so a viewer who never touches the clock
+  // pays only the now frame, and even then only a ±band, never the whole growing set.
+  // `flowPrefetch` is wired up when the flow block runs, null till then.
   let framesPrefetched = false;
   let flowPrefetch = null;
 
-  // Time slider: scrub the shadings *and* the flow trails through the forecast
-  // together. It drives the speed frames' offsets/times (vorticity and flow share
-  // the same offsets); moving it re-points every registered shading overlay and the
-  // flow trails, updates the sidebar displayed-time line, and re-locks the deploy
-  // tool's start to the displayed field. The near-inertial animation follows too —
-  // it reads displayedFieldTime live (see startInertialClock). Only built when there
-  // is more than one frame to move between.
+  // The single "Show tracks" master (its checkbox lives in the scrubber below).
+  // Flipping it sets module-wide `tracksOn` and reconciles every track LINE at once —
+  // drifter + glider (through the Instruments rows, composed with each batch toggle),
+  // each vessel's track, and the virtual deployment drift lines — while leaving the
+  // heads, drops, and at-time markers alone. `setInstrumentTracks` is wired when the
+  // Instruments tab renders; `shipLayers` fills as vessels report. Re-runs the clock so
+  // freshly loaded (lazy) track clips place themselves at the displayed instant.
+  let setInstrumentTracks = () => {};
+  const shipLayers = [];
+  // Eventual consistency (#18): the checkbox must flip instantly, never blocking on the
+  // heavy line add/remove + re-clip it triggers. So the handler only records the desired
+  // state in `tracksOn` and returns — the checkbox repaints immediately. The reconcile
+  // (adding/removing many polylines across every batch + glider + ship, then re-clipping
+  // via updateClock) is deferred off the event and coalesced: at most one reconcile in
+  // flight, and it reads `tracksOn` LIVE at run time, so a rapid on→off→on collapses to
+  // the final value (last-write-wins). `setTimeout(0)` — not rAF/microtask — because rAF
+  // and microtasks both run before the next paint, which would re-block the very repaint
+  // we want; a macrotask yields a paint of the flipped checkbox first, then reconciles.
+  let tracksReconcileScheduled = false;
+  const setTracksVisible = (on) => {
+    tracksOn = on; // control state leads — instantly consistent
+    if (tracksReconcileScheduled) return;
+    tracksReconcileScheduled = true;
+    setTimeout(() => {
+      tracksReconcileScheduled = false;
+      const desired = tracksOn; // reconcile to whatever the control last said
+      for (const s of shipLayers) s.setTrackShown(desired);
+      setInstrumentTracks(desired);
+      updateClock(atTimeClockMs); // re-apply the clock (heads/lines) for the new state
+    }, 0);
+  };
+
+  // The app clock: a 1 h-granularity datetime scrubber over the frames' full span.
+  // Its value is the hour offset from clockT0; the clock instant is displayedFieldTime
+  // exactly. Moving it snaps every registered shading overlay and the flow overlay to
+  // the nearest 12 h frame (only when that snapped frame changes), updates the sidebar
+  // displayed-time line, and re-locks the deploy tool's start to the displayed field.
+  // The near-inertial animation follows too — it reads displayedFieldTime live (see
+  // startInertialClock). It also hosts the "Show tracks" master (plan 036). Only built
+  // when there is more than one frame to move between; with no field, a standalone chip
+  // hosts the master instead (below).
   if (meta?.frames?.length > 1) {
-    const frames = meta.frames;
-    buildTimeSlider(map, frames, nowIndex(meta), (i) => {
-      // First slider move: warm the remaining speed *and* flow frames in the
-      // background so subsequent scrubbing is smooth. Until this fires an untouched
-      // slider pays only the two now frames — mirroring the ζ/f frames, which
-      // likewise prefetch on first selection (see onShadingChange). One-shot; the
-      // flow half is wired up by the flow block below (null until then).
-      if (!framesPrefetched) {
-        framesPrefetched = true;
-        prefetchFrames(frames);
-        flowPrefetch?.();
-      }
-      for (const s of shadingLayers) {
-        const file = s.frames[i]?.file;
-        if (file) s.layer.setUrl(frameUrl(file));
-      }
-      const f = frames[i];
-      displayedFieldTime = f.valid_time;
-      displayedFrameIndex = i;
-      renderCurrentsInfo(meta, f);
-      scrubFlow?.(i);
+    buildTimeSlider(map, {
+      t0Ms: clockT0,
+      spanHours,
+      value: Math.round((Date.parse(clockFrames[nowFrameIdx].valid_time) - clockT0) / HOUR_MS),
+      nowMs,
+      tracks: { initial: false, onToggle: setTracksVisible },
+      onChange: (value) => {
+        const ms = clockT0 + value * HOUR_MS;
+        displayedFieldTime = clockIso(ms);
+        // Drive every clock-aware element to the new instant (rAF-throttled, so a
+        // fast scrub stays continuous): tracks clip to what has happened by the
+        // clock, head markers ride the clipped ends, the deployments' at-time
+        // markers move, and the virtual drift lines grow up to the clock.
+        updateClock(ms);
+        // While overlays are static (#17), the near-inertial snapshot reads the
+        // displayed field time — re-draw it for the new instant (coalesced, no-op when
+        // animating). The flow snapshot follows its own scrubFlow debounce below.
+        overlayInertial?.refresh();
+        // The Deploy tab's read-only release readout follows the clock (one clock: the
+        // release time IS the displayed field time — plan 034, decision 5).
+        deployTool.setRelease(displayedFieldTime);
+        // First move: warm a band of shading + flow frames around now (one-shot).
+        if (!framesPrefetched) {
+          framesPrefetched = true;
+          prefetchBand(clockFrames, nowFrameIdx);
+          flowPrefetch?.();
+        }
+        const idx = nearestFrameIndex(clockFrames, ms);
+        if (idx !== displayedFrameIndex) {
+          displayedFrameIndex = idx;
+          for (const s of shadingLayers) {
+            const file = s.frames[idx]?.file;
+            if (file) s.layer.setUrl(frameUrl(file));
+          }
+          scrubFlow?.(idx);
+        }
+        renderCurrentsInfo(meta, displayedFieldTime, clockFrames[idx]);
+      },
     });
+  } else {
+    // No scrubber (no currents field) → host the "Show tracks" master on a standalone
+    // chip so tracks stay toggleable in the static/no-CMEMS fallback.
+    buildTracksChip(map, { initial: false, onToggle: setTracksVisible });
   }
 
-  // Flow trails: dark->white ramp keyed to speed, so the bright jet pops over the
-  // shading. The magnitude is sqrt-compressed server-side so slow eddies animate,
-  // which means the readout would show scaled m/s — so displayValues is off and
-  // true speed is read from the shading legend instead. One leaflet-velocity grid
-  // per slider offset (meta.flow_frames): the now frame loads on the critical path,
-  // the rest prefetch on the slider's first move, and scrubbing to an un-prefetched
-  // frame fetches it on demand — the same lazy pattern as the shading frames.
+  // Current flow: a **pre-rendered static streamline** raster per frame
+  // (meta.flow_frames — flowvis_<t>Z.webp), Mercator-warped to the same bounds as the
+  // speed shading, so it swaps frame-by-frame as a plain imageOverlay exactly like the
+  // shadings — fluent time-scrubbing with no client-side particle animation (plan 038,
+  // replacing the leaflet-velocity trails). Off by default (its Currents-tab checkbox
+  // turns it on); it lives in its own `flow` pane just above the shading, so the dark
+  // streamlines read as texture over the colour.
   const flowFrames = meta?.flow_frames ?? [];
-  if (flowFrames.length && typeof L.velocityLayer === "function") {
-    const flowCache = new Map(); // offset_h -> velocity data (fetched once, reused)
-    const loadFlow = (frame) => {
-      if (flowCache.has(frame.offset_h)) return Promise.resolve(flowCache.get(frame.offset_h));
-      return fetchJSON(frameUrl(frame.file), { optional: true }).then((d) => {
-        if (d) flowCache.set(frame.offset_h, d);
-        return d;
-      });
+  if (flowFrames.length && meta?.bounds) {
+    // No `crisp-raster` (unlike the shadings): the streamlines are anti-aliased lines,
+    // so the browser's default smooth scaling reads better than nearest-neighbour.
+    const flowLayer = L.imageOverlay(frameUrl(flowFrames[nowFrameIdx].file), meta.bounds, {
+      pane: "flow",
+    });
+    currentOverlays["Current flow"] = flowLayer;
+
+    // Re-point to frame `i` — a bare setUrl swap, the same fluent path the shadings use;
+    // the browser shows the (prefetched) image instantly, so scrubbing never stalls. The
+    // swap is harmless while the overlay is toggled off — it just updates the url the
+    // layer shows once added.
+    scrubFlow = (i) => {
+      const file = flowFrames[i]?.file;
+      if (file) flowLayer.setUrl(frameUrl(file));
     };
-    const nowFrame = flowFrames[nowIndex(meta)];
-    const nowData = nowFrame && (await loadFlow(nowFrame));
-    if (nowData) {
-      // The frame currently on the layer — read back by the pan/zoom re-seed so it
-      // redraws the *displayed* frame, not always the now slice.
-      let currentFlowData = nowData;
-      const flowLayer = L.velocityLayer({
-        displayValues: false,
-        data: nowData,
-        colorScale: FLOW_COLORS,
-        maxVelocity: meta?.vmax ?? 1.5,
-        velocityScale: 0.1,
-        lineWidth: 1.2,
-      });
-      flowLayer.addTo(map);
-      currentOverlays["Current flow"] = flowLayer;
+    // Re-sync to the clock in case the user scrubbed before this block ran.
+    if (displayedFrameIndex !== nowFrameIdx) scrubFlow(displayedFrameIndex);
 
-      // leaflet-velocity paints faded trails in screen space and does not
-      // reproject the existing frame on pan/zoom, so old trails ghost in place.
-      // Clear its canvas when interaction starts, and re-seed the field for the
-      // new view when it ends, so the flow tracks the map.
-      map.on("movestart zoomstart", () => {
-        const cv = flowLayer._canvasLayer?._canvas;
-        if (cv) cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
-      });
-      map.on("moveend zoomend", () => flowLayer.setData(currentFlowData));
-
-      // Slider hook: load frame `i` (cached or on-demand) and swap it in. A request
-      // token drops a slow earlier fetch that resolves after a later one, so rapid
-      // scrubbing never lands on a stale frame.
-      let flowReq = 0;
-      scrubFlow = (i) => {
-        const frame = flowFrames[i];
-        if (!frame) return;
-        const token = ++flowReq;
-        loadFlow(frame).then((d) => {
-          if (d && token === flowReq) {
-            currentFlowData = d;
-            flowLayer.setData(d);
-          }
-        });
-      };
-
-      // Re-sync to the slider in case the user scrubbed while the now frame was still
-      // fetching (interactive since the slider block above; `scrubFlow` only exists
-      // now). A no-op when untouched — `displayedFrameIndex` is still the now index.
-      if (displayedFrameIndex !== nowIndex(meta)) scrubFlow(displayedFrameIndex);
-
-      // Warm the remaining flow frames on the slider's first move (one-shot, wired
-      // to the slider block above), not on idle — so an untouched slider costs only
-      // the now frame. If that first move already happened while the now frame was
-      // still fetching, run it now; otherwise it waits for the move. Scrubbing to an
-      // un-prefetched frame still fetches it on demand.
-      flowPrefetch = () => flowFrames.forEach(loadFlow);
-      if (framesPrefetched) flowPrefetch();
-    }
+    // Warm a band of flow frames around now on the clock's first move (one-shot, wired to
+    // the slider block above) — like the shadings, so an untouched clock costs only the
+    // now frame, and even a touched one only a ±band, never the whole growing set.
+    flowPrefetch = () => {
+      const lo = Math.max(0, nowFrameIdx - FRAME_PREFETCH);
+      const hi = Math.min(flowFrames.length - 1, nowFrameIdx + FRAME_PREFETCH);
+      for (let i = lo; i <= hi; i++) {
+        const file = flowFrames[i]?.file;
+        if (file) new Image().src = frameUrl(file);
+      }
+    };
+    if (framesPrefetched) flowPrefetch();
   }
 
   // Near-inertial animation: flowing particle tracks reconstructed client-side
@@ -2812,43 +3900,42 @@ async function main() {
     const { layer: inertialLayer, grid: inertialGrid } = buildInertialField(inertialField);
     currentOverlays["Near-inertial animation"] = inertialLayer;
     // Follow the slider: the animation anchors its phase to the displayed field time
-    // (read live) instead of free-running from "now" — see startInertialClock.
-    startInertialClock(map, inertialGrid, inertialLayer, () => displayedFieldTime);
+    // (read live) instead of free-running from "now" — see startInertialClock. The
+    // returned controller feeds the "Animate overlays" toggle (#17): setAnimated flips
+    // between the free-running loop and a still snapshot, and `refresh` (via
+    // overlayInertial) redraws that still on each clock scrub.
+    overlayInertial = startInertialClock(map, inertialGrid, inertialLayer, () => displayedFieldTime);
+    overlayAnimators.push(overlayInertial.setAnimated);
+    // startInertialClock defaults to `animated` (a running rAF loop); sync it to the
+    // overlaysAnimated default (off) so the loop parks instead of spinning forever while
+    // the layer is off the map. (The overlay + its toggle are disabled pending issue #25;
+    // this also stops the wasted background loop until they are re-enabled.)
+    overlayInertial.setAnimated(overlaysAnimated);
   }
 
-  // The current-advection forecast/hindcast, each grouped by batch (off by
-  // default; optional so a missing file can't blank the map). Not layer-control
-  // overlays: the batch control governs them, so unchecking a batch hides its
-  // forecast and hindcast along with its markers. The drifter true tracks
-  // (tracks.geojson, ~0.7 MB) are the heaviest of the three and default off, so
-  // they are *not* fetched here — the "True track" overlay carries a `lazy` loader
-  // that fetches and builds them on the master row's first tick (see below).
-  const forecast = await fetchJSON(DATA.forecast, { optional: true });
-  const forecastGroups = forecast ? buildAdvectionGroups(forecast, FORECAST_COLOR) : {};
-  const hindcast = await fetchJSON(DATA.hindcast, { optional: true });
-  const hindcastGroups = hindcast ? buildAdvectionGroups(hindcast, HINDCAST_COLOR) : {};
-  renderDriftInfo(forecast, hindcast);
-
   // Glider-group platforms (XSPAR buoy + seagliders + wave gliders + floats) are
-  // instruments in the same control as the drifter batches: their latest markers join the
-  // instrument rows, their tracks the "True track" overlay, and their
-  // current-advection lines the Forecast/Hindcast overlays (keyed by `type`, from
-  // forecast.geojson's per-instrument heads). Optional so a missing file can't
-  // blank the map.
+  // instruments in the same control as the drifter batches: their latest markers join
+  // the instrument rows and their tracks ride the "Show tracks" master (keyed by
+  // `type`). Optional so a missing file can't blank the map.
   const gliders = await fetchJSON(DATA.gliders, { optional: true });
   const gliderMarkerGroups = gliders ? buildGliderMarkerGroups(gliders) : {};
   const gliderTrackGroups = gliders ? buildGliderTrackGroups(gliders) : {};
 
   // One instrument list governs drifter batches *and* gliders. Marker rows =
-  // drifter batches + glider platforms; the True-track overlay carries both the
-  // drifter trajectories and the glider tracks, so its master toggle acts on
-  // every instrument at once.
+  // drifter batches + glider platforms; the "Show tracks" master carries both the
+  // drifter trajectories and the glider tracks, so it acts on every instrument at once.
   const markerGroups = { ...batchGroups, ...gliderMarkerGroups };
 
+  // The track groups the "Show tracks" master governs: glider tracks ride
+  // gliders.geojson (already fetched for the markers); the drifter true tracks
+  // (tracks.geojson) are merged in when they load (eager, below). The master only
+  // toggles their line VISIBILITY — the heads follow the clock regardless.
+  const tracksOverlay = { groups: { ...gliderTrackGroups } };
+
   // Markers last, so they sit on top of the shading and flow layers. Added
-  // directly; the Layers tab's rows (not a layer control) govern their visibility
-  // — and the tracks', forecast's, and hindcast's. (sync() reconciles the initial
-  // checkbox state, e.g. hiding pre-deploy.)
+  // directly; the Instruments tab's rows (not a layer control) govern their
+  // visibility, the "Show tracks" master governs their tracks. (sync() reconciles the
+  // initial checkbox state, e.g. hiding pre-deploy.)
   for (const group of Object.values(markerGroups)) {
     group.addTo(map);
   }
@@ -2872,48 +3959,73 @@ async function main() {
     }
     if (name === "Vorticity ζ/f" && !vortPrefetched && vorticityMeta?.frames) {
       vortPrefetched = true;
-      prefetchFrames(vorticityMeta.frames);
+      prefetchBand(vorticityMeta.frames, nearestFrameIndex(vorticityMeta.frames, nowMs));
     }
   };
 
+  // The two cruise vessels, built eagerly here (before the dock) so their rows can
+  // render up front in the merged instrument panel (#24) rather than a separate Ships
+  // tab. `makeShipLayer` is a pure constructor — the group exists immediately but is
+  // held OFF the map until the vessel's first fix lands (the "no fix ⇒ no dead toggle"
+  // contract). Each vessel exposes `setVisible(on)` for its instrument-row checkbox and
+  // `reveal()` for the pollers below: `setVisible` records the desired state and applies
+  // it only once a fix exists (no-ops before), so toggling the row pre-fix is safe;
+  // `reveal` marks the first fix in and applies the last checkbox state. The pollers
+  // (pollShip / loadAgulhas) reference these consts, defined further down.
+  const ship = makeShipLayer(VESSELS.md);
+  const agulhas = makeShipLayer(VESSELS.agulhas);
+  ship.setTrackShown(tracksOn); // adopt the current master state (off by default)
+  agulhas.setTrackShown(tracksOn);
+  shipLayers.push(ship, agulhas);
+  const mkVessel = (name, color, shipLayer) => {
+    const v = { name, color, wantVisible: true, hasFix: false, ship: shipLayer };
+    v.setVisible = (on) => {
+      v.wantVisible = on;
+      if (on && v.hasFix) v.ship.group.addTo(map);
+      else map.removeLayer(v.ship.group);
+    };
+    v.reveal = () => {
+      v.hasFix = true;
+      if (v.wantVisible) v.ship.group.addTo(map);
+    };
+    return v;
+  };
+  const vessels = [
+    mkVessel("M. Dufresne", VESSELS.md.markerColor, ship),
+    mkVessel("Agulhas II", VESSELS.agulhas.markerColor, agulhas),
+  ];
+
   // The former top-right boxes are now one tabbed dock (buildControlDock):
-  //   • Instruments — the overlay masters (track / forecast / hindcast) + the
-  //     drifter/glider batch rows;
+  //   • Deploy — the deployment planner + its per-deployment manager;
+  //   • Instruments — one panel of marker rows for every platform: drifter batches,
+  //     glider-group platforms, AND the two vessels (the former Ships tab, merged in —
+  //     #24); tracks ride the scrubber's "Show tracks" master, not a per-tab row;
   //   • Currents — the mutually-exclusive shading radios (None / speed / ζ·f, the
   //     "None" added only when there is a shading to turn off) plus the flow /
-  //     near-inertial overlay checkboxes; present only when CMEMS is up;
-  //   • Ships — one row per vessel, filled lazily on first fix (buildShipsTab);
-  //   • Deploy — the PoC placement tool's body.
+  //     near-inertial overlay checkboxes; present only when CMEMS is up.
   // Only one body shows at a time, so the top-right footprint stays bounded on a
   // 13" laptop instead of overflowing into the time slider.
-  const shipsTab = buildShipsTab(map);
+  //
+  // Deploy is the app's primary capability (plan 034, D1), so it leads the strip and
+  // opens by default — chosen synchronously at build, so the dock never flashes another
+  // tab first. The /limits probe runs off the critical path and only DOWNGRADES: when
+  // the API is unreachable (getDeployLimits resolves null — the static/Pages fallback),
+  // it re-selects Instruments. The Deploy tab stays present either way (placing drops +
+  // exporting CSV works without the drift API).
   const hasCurrents =
     Object.keys(currentShading).length || Object.keys(currentOverlays).length;
   if (Object.keys(currentShading).length) currentShading["None"] = L.layerGroup();
-  buildControlDock(map, [
+  const deployTab = { id: "deploy", label: "Deploy", render: (div) => deployTool.renderBody(div, map) };
+  const otherTabs = [
     {
       id: "instruments",
       label: "Instruments",
-      render: (div) =>
-        buildInstrumentRows(div, map, markerGroups, [
-          {
-            label: "True track",
-            // Glider tracks ride gliders.geojson (already fetched for the markers),
-            // so they start in `groups` eagerly and merged, as today. The drifter
-            // true tracks (tracks.geojson) default off and are the heaviest
-            // artifact, so they load once on the master row's first tick via the
-            // `lazy` loader — buildInstrumentRows merges the resolved groups in.
-            groups: { ...gliderTrackGroups },
-            lazy: async () => {
-              const tracks = await fetchJSON(DATA.tracks, { optional: true });
-              return tracks ? buildTrackGroups(tracks) : {};
-            },
-            on: false,
-            color: TRACK_COLOR,
-          },
-          { label: "Forecast (1/3/6 h)", groups: forecastGroups, on: false, color: FORECAST_COLOR },
-          { label: "Hindcast (1/3/6 h)", groups: hindcastGroups, on: false, color: HINDCAST_COLOR },
-        ]),
+      render: (div) => {
+        // The tracks master (scrubber checkbox) drives this tab's track composition
+        // via the returned setTracksOn.
+        const inst = buildInstrumentRows(div, map, markerGroups, tracksOverlay, vessels);
+        setInstrumentTracks = inst.setTracksOn;
+      },
     },
     ...(hasCurrents
       ? [
@@ -2921,24 +4033,55 @@ async function main() {
             id: "currents",
             label: "Currents",
             render: (div) =>
-              buildShadingRows(div, map, currentShading, currentOverlays, onShadingChange),
+              buildShadingRows(div, map, currentShading, currentOverlays, onShadingChange, {
+                initial: overlaysAnimated,
+                onToggle: setOverlaysAnimated,
+              }),
           },
         ]
       : []),
-    { id: "ships", label: "Ships", render: shipsTab.render },
-    { id: "deploy", label: "Deploy", render: (div) => deployTool.renderBody(div, map) },
-  ]).addTo(map);
+  ];
+  // Build the dock immediately with Deploy leading and open, and deliberately do NOT
+  // await the /limits probe: a cold or hanging API pod (limits() calls _get_field_index)
+  // could otherwise stall the dock — and the ship setup below it — up to the gateway's
+  // edge timeout even though the map, currents, scrubber, and at-time markers are already
+  // live. The memoized probe only downgrades: if it resolves unreachable, the dock falls
+  // back to Instruments. The deploy tool's own later getDeployLimits() reuses this fetch.
+  const dock = buildControlDock(map, [deployTab, ...otherTabs], "deploy");
+  dock.addTo(map);
+  getDeployLimits().then((limits) => {
+    if (limits == null) dock.select("instruments");
+  });
+
+  // Eager-load the drifter true tracks so every drifter head follows the app clock
+  // from the start (plan 035): the clock clips register on build regardless of the
+  // "Show tracks" master (which governs only line visibility), and knowing the full
+  // track set is what lets the point-head clock tell single- from multi-fix (fixes
+  // D-509 riding the map at every clock). Kept off the critical path (not awaited) —
+  // when it lands, merge the groups, reconcile line visibility, mark the point-head
+  // set complete, and re-apply the clock.
+  fetchJSON(DATA.tracks, { optional: true }).then((tracks) => {
+    if (tracks) Object.assign(tracksOverlay.groups, buildTrackGroups(tracks));
+    tracksLoaded = true;
+    setInstrumentTracks(tracksOn); // reconcile visibility for the merged track groups
+    updateClock(atTimeClockMs);    // drive the freshly-registered clips + point heads
+  });
+
+  // Violet forecast drift for the real deployed drifters (#22): fire once, async,
+  // now that the map + clock span are live. Not awaited — the layer appears when the
+  // /api/forecast POST resolves, and silently no-ops if the dynamic API is absent.
+  kickDrifterForecasts(latest, map, spanHours, nowMs);
 
   // R/V Marion Dufresne live track (client-side; Flotte Océanographique Française
   // API). Last, and deliberately not awaited: it is the one third-party fetch, so
   // blocking on it would stall the same-origin layers and controls above behind a
   // slow host. Each poll requests only the window since the last fix and appends.
-  // The vessel row joins the Ships tab on the first fix (not before, so an
-  // empty/failed start never shows a dead toggle) and the marker reveals then; the
-  // interval keeps trying, so a later poll revives the layer once the API recovers.
+  // The vessel's marker reveals on the first fix (not before, so an empty/failed start
+  // never shows a dead marker) via vessels[0].reveal(), which applies the instrument
+  // row's last checkbox state; the interval keeps trying, so a later poll revives the
+  // layer once the API recovers. `ship`/`vessels` are built above (before the dock).
   // Polls are skipped while the tab is hidden — and resumed on return — to avoid
   // hammering a third-party host in the background.
-  const ship = makeShipLayer(VESSELS.md);
   let shipShown = false;
   async function pollShip() {
     if (document.hidden) return;
@@ -2946,8 +4089,7 @@ async function main() {
     if (!ship.lastDate()) {
       renderShipInfo(VESSELS.md, null);
     } else if (!shipShown) {
-      ship.group.addTo(map);
-      shipsTab.addVessel(ship.group, VESSELS.md.name);
+      vessels[0].reveal();
       shipShown = true;
     }
   }
@@ -2964,7 +4106,7 @@ async function main() {
   // MD's cadence so a rebuild's new fixes appear without a page reload; append
   // (the whole file each time, seeding on the first and adding only fresh fixes
   // after) keeps that flat as the track grows over the cruise, as it does for MD.
-  const agulhas = makeShipLayer(VESSELS.agulhas);
+  // `agulhas`/`vessels` are built above (before the dock); reveal on the first fix.
   let agulhasShown = false;
   async function loadAgulhas() {
     if (document.hidden) return;
@@ -2975,8 +4117,7 @@ async function main() {
     }
     agulhas.append(fixes);
     if (!agulhasShown) {
-      agulhas.group.addTo(map);
-      shipsTab.addVessel(agulhas.group, VESSELS.agulhas.name);
+      vessels[1].reveal();
       agulhasShown = true;
     }
   }

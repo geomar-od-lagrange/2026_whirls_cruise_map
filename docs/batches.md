@@ -65,45 +65,44 @@ deck, or that showed only brief ship-transit motion, stayed `pre_deploy`.
 ## GUI: the instrument filter
 
 An **"Instruments"** control sits at the top-right of the map. It lists one
-checkbox per instrument — each drifter batch present in `latest.geojson` **and**
-each glider platform (XSPAR buoy, seagliders; see [gliders.md](gliders.md)) — with
-a colour swatch (a round one for drifter batches, the instrument colour for
-gliders) and the row's marker count. Unchecking a box removes that instrument's
-markers; rechecking restores them. Deployment batches and gliders start visible;
-the staging `pre_deploy` batch starts **hidden** (the drifters are still aboard,
-not in the water), so the map opens on the deployed drifters — recheck its row to
-show the staged ones.
+checkbox per instrument in three families read top-to-bottom, each a **two-column
+grid** set off by a divider: the **drifter batches** present in `latest.geojson`,
+the **glider platforms** (Glider, Float, XSPAR, Waveglider; see
+[gliders.md](gliders.md)), and the two **ships** (M. Dufresne, Agulhas II — the
+former separate Ships tab, folded in here). Each row carries a colour swatch (round
+for drifter batches and ships, a diamond for gliders) and — for the instruments — the
+row's live marker count. Unchecking a box removes that instrument's markers;
+rechecking restores them. Deployment batches and gliders start visible; the staging
+`pre_deploy` batch starts **hidden** (the drifters are still aboard, not in the water),
+so the map opens on the deployed drifters — recheck its row to show the staged ones.
+A small **select all / deselect all** text control at the bottom drives every row at
+once (firing each row's real handler, so markers and tracks reconcile).
 
-The control is **data-driven**: it builds one `L.featureGroup` per distinct
-instrument key — a drifter `batch`, or a glider `type` — and renders a row for
-each. A new batch or a new glider therefore appears automatically once the data
-contains it — no client code change. Known keys get friendly labels
-(`pre_deploy` → "Drifter pre", `deployment_1` → "Drifter batch 1", the gliders →
-"XSPAR buoy" / "Seagliders"); any other key is shown verbatim, so an unanticipated
-instrument is still legible.
+The control is **data-driven** for the drifter/glider rows: it builds one
+`L.featureGroup` per distinct instrument key — a drifter `batch`, or a glider `type` —
+and renders a row for each. A new batch or a new glider therefore appears automatically
+once the data contains it — no client code change. Known keys get friendly labels
+(`pre_deploy` → "batch X", `deployment_1` → "batch 1", the gliders → "XSPAR buoy" /
+"Glider"); any other key is shown verbatim, so an unanticipated instrument is still
+legible. The two ship rows are rendered eagerly from config (the vessels are known up
+front); a ship row toggles its vessel's visibility, but the vessel only joins the map
+once its first fix lands, so toggling before then is safe and applied on the fix.
 
-Master **overlay** rows head the list — **True track**, **Forecast** and
-**Hindcast** — each with a short line swatch in its own colour (the marker swatches
-below key each instrument to its markers; the line swatches key overlays to their
-lines). A horizontal divider separates these line rows from the instrument (marker)
-rows below. Each overlay row turns its lines and dots (see
-[trajectories.md](trajectories.md), [forecast.md](forecast.md)) on or off for every
-instrument at once, and composes with the per-instrument rows: an instrument's
-overlay shows only when both its own row and that overlay's row are checked. So
-unchecking an instrument hides its markers *and* its trajectory, forecast and
-hindcast together. All overlays start hidden. (Gliders ride the True-track,
-Forecast and Hindcast overlays too; a glider with a single fix has no track, only
-its marker.)
+The Instruments control carries **only marker rows** — one per drifter batch,
+glider platform, and vessel. The observed *track lines* are governed elsewhere: a
+single **Show tracks** master in the time-slider (scrubber) box shows or hides every
+observed track line at once (see [trajectories.md](trajectories.md)). The two still
+compose: an instrument's track shows only when both its own marker row here **and**
+the "Show tracks" master are on, so unchecking an instrument hides its markers *and*
+its trajectory together. (Gliders and ships ride the same "Show tracks" master; a
+platform with a single fix has no track, only its marker.)
 
-This control — not a Leaflet layer control — governs all instrument visibility
-(markers and the trajectory/forecast/hindcast overlays). The field layers and the
-vessels live in two separate titled Leaflet layer controls stacked below it:
-**Currents** and **Ships** (the two vessels). In Currents the two shadings (speed,
-ζ/f vorticity) are **mutually-exclusive radios** — plus a *None* radio to turn
-shading off — since both fill the one `shading` pane; the flow trails and
-near-inertial animation, which coexist with either shading, are **checkboxes**.
-The three controls share one `.map-control` style so they read as one set, and
-each is built only when it has something to show (no dead, empty box).
+This control — not a Leaflet layer control — governs instrument (and vessel) marker
+visibility; it and the **Currents** control are two tabs of the one top-right
+[control dock](controls.md). In Currents the two shadings (speed, ζ/f vorticity) are
+**mutually-exclusive radios** — plus a *None* radio to turn shading off — since both
+fill the one `shading` pane; the flow overlay and near-inertial animation, which
+coexist with either shading, are **checkboxes**.
 
 ### Why a custom control, not the Leaflet layer control
 

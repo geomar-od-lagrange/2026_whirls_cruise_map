@@ -52,6 +52,22 @@ the result. This catches both conceptual mistakes and quality issues.
 committing to architecture changes. Once validated, clean up or move to
 permanent locations.
 
+**Adapt the environment, don't work around it:** When dev tooling is missing
+(a pytest plugin, a linter, a profiler), `pixi add` it and commit the
+manifest/lock change alongside the work that needed it. Don't build subprocess
+or shell workarounds around an absent tool — the pixi env is part of the
+workspace, not a fixed constraint.
+
+**Debugging discipline:** Hand focused debugging down to a cheaper agent with
+a dense handoff of the facts already established, so nothing gets re-derived
+in an expensive context. Reproduce a failure **once** with a tight timeout,
+dumping complete output to a temp file, and inspect the dump — don't rerun
+long commands blind. For a stubborn bug, a second, independent *reasoning-only*
+pass over the code (no profiling) is cheap and catches what instrumentation
+was pointed away from. `pytest.ini` sets a hard per-test timeout so hangs fail
+loudly; run tests in the foreground — never as a background task an agent then
+waits on.
+
 **No git worktrees:** Work in the single primary workdir and switch branches
 there; branch in place for isolated work rather than spawning worktrees. Stray
 worktrees checking out `main` block the primary checkout and pile up as stale

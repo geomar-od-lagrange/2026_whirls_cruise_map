@@ -9,21 +9,24 @@ ratio ``ζ/f``. With both ζ and f negative for a Southern-Hemisphere cyclone,
 Rossby-number sign, identical in both hemispheres, so cyclones and anticyclones
 read directly as opposite-signed lobes that the speed magnitude alone hides.
 
-Derived from the **same forecast window** the speed/flow overlays use
+Derived from the **same fetched window** the speed/flow overlays use
 (:func:`whirls_cruise_map._currents.fetch_shading_window`): vorticity is a spatial
 derivative of the ``uo``/``vo`` already in hand, so it needs no extra fetch and
-renders at the same near-native 1/12° grid. One frame per slider offset
-(``-12 … +72 h``); each is a snapshot diagnostic of that instant, not an advected
-field.
+renders at the same near-native 1/12° grid. One frame per requested absolute time (the
+same incremental render plan the speed frames follow — see
+:func:`._currents.plan_render`); each is a snapshot diagnostic of that instant, not an
+advected field.
 
 Structured exactly like the surface-speed shading
 (:func:`._currents.to_speed_frames`) — one diagnostic 2-D field per frame through
-the shared :func:`._raster.mercator_rgba_webp` helper on one shared colour scale —
+the shared :func:`._raster.mercator_rgba_webp` helper on one frozen colour scale —
 with two differences that follow from ζ/f being **signed**: a *diverging* colour
-map and a *symmetric* ``±vmax`` clip, reported to the client as a ``vmin`` key in
+map and a *symmetric* ``±VORT_CLIP`` clip, reported to the client as a ``vmin`` key in
 the meta so the legend spans −vmax…0…+vmax rather than 0…vmax.
 """
 from __future__ import annotations
+
+from datetime import datetime
 
 import cmocean
 import matplotlib
@@ -39,11 +42,15 @@ OMEGA = 7.2921159e-5  # Earth's rotation rate (rad/s); f = 2*OMEGA*sin(lat)
 _EARTH_RADIUS_M = 6_371_000.0
 
 # Diverging map (blue-green ↔ white ↔ dark-red across the sampled stops) for the
-# signed field, clipped symmetrically at this percentile of |ζ/f| so a few
-# grid-scale spikes don't wash the scale out. ``curl`` is cmocean's field-curl
-# map — built for exactly this quantity.
+# signed field, clipped symmetrically at a **frozen** ±VORT_CLIP (|ζ/f|) so a few
+# grid-scale spikes don't wash the scale out. A constant, not a per-build pooled
+# percentile: re-pooling over a growing frame history would drift the scale and force
+# every immutable old frame back into build memory. Frozen 2026-07-13 from the pooled
+# 98th-percentile |ζ/f| of the then-current 8-frame window (which rendered 0.30), so
+# the legend never breathes across builds. ``curl`` is cmocean's field-curl map —
+# built for exactly this quantity.
 VORT_CMAP = cmocean.cm.curl
-CLIP_PERCENTILE = 98
+VORT_CLIP = 0.3  # |ζ/f|
 
 
 def zeta_over_f(field: xr.Dataset) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -86,52 +93,46 @@ def _colorbar_stops(n: int = _currents.N_BINS) -> list[str]:
 
 
 def to_vorticity_frames(
-    window: xr.Dataset, offsets: list[int] = _currents.SHADING_OFFSETS_H
+    window: xr.Dataset, frame_times: list[datetime]
 ) -> tuple[list[dict], dict]:
-    """Render ζ/f for each slider offset as a compact **lossless WebP** (cmocean
-    ``curl``, symmetric ``±vmax`` clip, land transparent) and return
+    """Render ζ/f for each requested frame time as a compact **lossless WebP** (cmocean
+    ``curl``, symmetric ``±VORT_CLIP`` clip, land transparent) and return
     ``(frames, meta)`` — the signed, diverging twin of
     :func:`._currents.to_speed_frames`.
 
-    ``vmax`` is the ``CLIP_PERCENTILE`` of ``|ζ/f|`` pooled over *every* frame, so
-    the symmetric ``[−vmax, +vmax]`` scale (and its single legend) holds across the
-    slider; each field maps onto the diverging map with zero at its neutral
-    midpoint. Frames are ``{offset_h, valid_time, file, image}``; ``meta`` matches
-    ``currents_meta.json``'s slider shape plus a ``vmin`` (= ``−vmax``) marking the
-    symmetric range for the client legend.
+    The clip is the **frozen** :data:`VORT_CLIP`, so the symmetric ``[−clip, +clip]``
+    scale (and its single legend) holds across every frame and every immutable old
+    frame stays colour-consistent; each field maps onto the diverging map with zero at
+    its neutral midpoint. Frames are ``{valid_time, file, image}``; ``meta`` carries
+    ``bounds/vmin/vmax/units/colorbar`` (``vmin = −vmax`` marking the symmetric range)
+    for the build to write into ``vorticity_meta.json`` alongside the full-span
+    ``frames`` manifest and top-level ``valid_time`` it assembles itself.
     """
-    slices = _currents.select_frames(window, offsets)
-    fields = [zeta_over_f(ds) for _, ds in slices]  # (zof, lats, lons) per frame
-    vmax = float(np.nanpercentile(np.abs(np.stack([z for z, _, _ in fields])), CLIP_PERCENTILE))
-
     def to_rgba(warped):
-        # [-vmax, vmax] -> [0, 1] so zero maps to the diverging map's midpoint, then
+        # [-clip, clip] -> [0, 1] so zero maps to the diverging map's midpoint, then
         # quantize to N_BINS flat classes before the lookup (see _currents.N_BINS).
         # N_BINS is even, so zero (-> 0.5) stays a bin *edge*: 6 classes per sign.
-        t = _currents._quantize_unit(np.clip(warped / vmax, -1.0, 1.0) * 0.5 + 0.5)
+        t = _currents._quantize_unit(np.clip(warped / VORT_CLIP, -1.0, 1.0) * 0.5 + 0.5)
         rgba = VORT_CMAP(t)
         rgba[np.isnan(warped), 3] = 0.0  # land transparent
         return rgba
 
     frames, bounds = [], None
-    for (offset, ds), (zof, lats, lons) in zip(slices, fields):
+    for ft in frame_times:
+        zof, lats, lons = zeta_over_f(_currents._slice_at(window, ft))
         image, bounds = _raster.mercator_rgba_webp(zof, lats, lons, to_rgba)
         frames.append(
             {
-                "offset_h": offset,
-                "valid_time": _currents.valid_time(ds),
-                "file": _currents.frame_filename("vorticity", offset),
+                "valid_time": _currents.frame_valid_time(ft),
+                "file": _currents.frame_filename("vorticity", ft),
                 "image": image,
             }
         )
     meta = {
-        "valid_time": _currents._now_valid_time(frames),
         "bounds": bounds,
-        "vmin": -vmax,
-        "vmax": vmax,
+        "vmin": -VORT_CLIP,
+        "vmax": VORT_CLIP,
         "units": "ζ/f",
         "colorbar": _colorbar_stops(),
-        "now_offset_h": 0,
-        "frames": [{k: f[k] for k in ("offset_h", "valid_time", "file")} for f in frames],
     }
     return frames, meta

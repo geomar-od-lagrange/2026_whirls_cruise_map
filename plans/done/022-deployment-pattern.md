@@ -1,4 +1,4 @@
-> Implemented — see [docs/interactive_forecast.md](../../docs/interactive_forecast.md).
+> Implemented — see [docs/deployment.md](../../docs/deployment.md).
 > The jet-fence and Z patterns this describes are superseded by the one polyline
 > Deploy tool + batch API ([023](023-simplify-deploy-polyline.md)); the open
 > `t0`-inversion problem here is unchanged.
@@ -6,7 +6,7 @@
 # Interactive deployment-pattern planner (jet frame)
 
 Prototype: extend the interactive click-to-forecast tool
-(`plans/021-interactive-forecast.md`, `docs/interactive_forecast.md`) so the
+(`plans/021-interactive-forecast.md`, `docs/deployment.md`) so the
 planner lays a whole **drifter deployment fence** across a jet and forecasts
 every drifter, instead of forecasting one clicked point.
 

@@ -2,7 +2,7 @@
 
 A toggleable raster of the surface **relative vorticity normalized by the Coriolis
 parameter** — the Rossby number ζ/f — drawn over the same map as the current-speed
-shading and flow trails. It is the diagnostic that makes the eddy field legible:
+shading and flow overlay. It is the diagnostic that makes the eddy field legible:
 cyclones and anticyclones appear as opposite-signed lobes, which the speed
 magnitude alone cannot distinguish (both an eddy's core and its rim can be slow or
 fast regardless of rotation sense).
@@ -40,10 +40,12 @@ Derived from the **same CMEMS forecast window** the speed and flow overlays use
 (`_currents.fetch_shading_window`, `cmems_mod_glo_phy-cur_anfc_0.083deg`, 1/12° ≈
 8 km). Vorticity is a spatial derivative of the `uo`/`vo` already fetched, so it
 adds **no download** and renders at the same near-native grid as the speed frames.
-Like the speed shading it is **time-sliced**: one frame per 12 h slider offset
-(−12 … +72 h; see [currents.md](currents.md)), each a **snapshot** diagnostic of
+Like the speed shading it is **time-sliced**: one frame per 12 h step on a growing
+absolute-time grid anchored at `FIELD_TMIN` and running through the product's
+forecast edge (see [currents.md](currents.md)), each a **snapshot** diagnostic of
 the instantaneous field at that step — not an advected or time-integrated quantity.
-The frames share one symmetric colour scale so ζ/f reads the same at every time.
+The frames share one symmetric colour scale (the frozen `VORT_CLIP` clip) so ζ/f
+reads the same at every time.
 
 Derivatives carry the sphere's metric factors — `∂/∂x = 1/(R cos φ) · ∂/∂λ`,
 `∂/∂y = 1/R · ∂/∂φ` (λ, φ in radians, R = 6371 km) — computed with `np.gradient`

@@ -23,7 +23,7 @@ branch.
 of lines. A hand-rolled tolerant parser (~30 lines) is smaller than wiring a
 library, and keeps the client free of a new CDN `<script>` (the map already pulls
 Leaflet + leaflet-velocity from a CDN, but the offline-VSAT / future-CSP concerns in
-[interactive_forecast.md](../docs/interactive_forecast.md) argue against adding
+[deployment.md](../docs/deployment.md) argue against adding
 more). PapaParse would be the pick if we needed quoting/streaming/type inference; we
 don't. Noted as the alternative, not chosen.
 
@@ -74,5 +74,5 @@ vessel-route fixture. Pasting/loading them and clicking Place must resample the
 ## Docs
 
 Add an "Importing a deployment" section to
-[interactive_forecast.md](../docs/interactive_forecast.md) (the export section's
+[deployment.md](../docs/deployment.md) (the export section's
 inbound twin). Move this plan to `done/` when merged.

@@ -2,8 +2,9 @@
 
 Live positions and tracks for the two cruise vessels — **R/V Marion Dufresne**
 and **R/V S.A. Agulhas II** — drawn over the drifter map. Both use the same
-on-map rendering (a cased track, a dot at every fix, and a boat marker) and the
-same sidebar readout; they differ only in **where the data comes from** and, as a
+on-map rendering (a plain coloured track and a boat marker, both following the
+app clock) and the same sidebar readout; they differ only in
+**where the data comes from** and, as a
 consequence, **whether it is fetched live in the browser or baked at build time**.
 
 That fork is the central design fact here, so it comes first.
@@ -111,7 +112,7 @@ are *wind*, not vessel motion). So the tooltip/sidebar "Speed (derived)" and
 great-circle distance between two fixes over their time gap, and the initial
 great-circle bearing between them (degrees true, with a 16-point compass label).
 The same per-segment derivation labels every fix on the track, not just the
-latest — each dot shows its own.
+latest — each segment's hover tooltip shows its own.
 
 Speed is shown in **both knots and m/s** (`12.3 kn / 6.33 m/s`), so it reads on
 the same scale as the drifters' m/s velocities. Below ~0.5 kn — about 150 m over
@@ -149,8 +150,8 @@ advancing — it never throws and never blanks the map.
   polling cost stays flat as the track grows rather than re-pulling the whole
   history each time.
 - **Initial load** fetches the whole cruise window, `cruiseStart … now`.
-  `cruiseStart` (`app.js`, the `SHIP` config) is `2026-06-24T00:00:00Z`, matching
-  the IPSL WHIRLS window start; it is a one-line constant to adjust.
+  `cruiseStart` (`app.js`, the `SHIP` config) is `2026-06-28T00:00:00Z`, where the
+  MD ship track crops; it is a one-line constant to adjust.
 
 ### Also fetched at build time, for deployment detection
 
@@ -206,7 +207,7 @@ Dufresne's 5-minute cadence, so a scheduled rebuild's new fixes appear without a
 page reload. It feeds the whole file to the same `append` path the Marion
 Dufresne uses — seeding the track on the first load, then adding only fixes newer
 than the last one — so redraw cost stays flat as the track grows over the cruise
-rather than rebuilding every dot each poll. The layer follows the same "no fix ⇒
+rather than redrawing the whole track each poll. The layer follows the same "no fix ⇒
 no dead toggle" contract: the overlay and marker appear only once at least one
 fix has loaded.
 
@@ -220,25 +221,33 @@ the `[label, value]` pairs the tooltip and sidebar both render (so a vessel's tw
 readouts can never drift). The Marion Dufresne's rows derive motion and add met;
 the Agulhas's use the reported speed/course plus status/area.
 
-- **Rendering.** The track is a cased polyline — a white halo under a coloured
-  core — so it stays legible over any basemap, with a small dot at every fix
-  painted on top of it. Each dot shows, on hover, the same tooltip as the current
-  position, filled with that fix's own data. The current position is a coloured disc with a
-  white ring and a boat glyph, set apart from the small blue drifter circles. The
-  two vessels are told apart by colour: the Marion Dufresne is near-black
-  (`#1a1a1a`), the Agulhas deep crimson (`#9b1c31`) — both distinct from the
-  drifters' blue/teal and the gliders' amber/sky. A top-of-sidebar panel per
-  vessel shows the last-fix time, source, and that vessel's readout rows.
-- **Stacking.** The tracks and dots sit in a `shipTrack` pane *below* the drifter
-  markers, while the current-position markers sit in a `ship` pane on top. The
-  tracks run below the drifters because the cruise departs the drifters' staging
-  port, so the early track passes through the pre-deploy cluster; were the dots
-  above the markers they would intercept clicks meant for the drifters. The dots
-  are plain SVG circle markers (not a canvas, which spans the whole viewport and
-  would block clicks map-wide). Leaflet's `tooltipPane` is lifted above both the
-  `drifters` and `ship` panes (its default z-index would tie/sit below them), so a
-  fix's hover tooltip floats over every marker instead of being occluded. See
-  [trajectories.md](trajectories.md).
+- **Rendering.** The track is a **plain coloured line at the drifter-track
+  width** — one polyline per fix-to-fix segment, no per-fix dots and no cased
+  halo (plan 034, decision 8). Each segment carries, on hover, the same tooltip
+  as the current position filled with that fix's own data, so the along-track
+  times stay readable without dots; the segments are interactive for the hover
+  but swallow their click (a ship has no highlight axis). The two vessels are
+  told apart by colour: the Marion Dufresne is dark blue (`#1e40af`), the
+  Agulhas deep crimson (`#9b1c31`) — both distinct from the drifters' blue/teal
+  and the gliders' amber/sky (the MD blue is deeper than the drifters'
+  deployment-1 blue and the seaglider sky-blue, so it reads as a distinct line). The vessel marker is a coloured disc with a
+  white ring and a boat glyph, set apart from the small blue drifter circles —
+  and it **rides the app clock**: the track clips to the fixes at or before the
+  clock and the disc sits at the vessel's interpolated position at that instant
+  with the bracketing fix's tooltip, parking at the latest fix when the clock is
+  at or past it (the same clock-following every observed track gets — see
+  [trajectories.md](trajectories.md)). A top-of-sidebar panel per vessel shows
+  the last-fix time, source, and that vessel's readout rows (always the latest
+  fix, whatever the clock shows).
+- **Stacking.** The track segments sit in a `shipTrack` pane *below every marker
+  pane* (z-index 410) and the vessel marker in a `ship` pane on top (660). Every
+  line/track pane sits below every marker pane, so no marker is ever occluded by a
+  track — this is what keeps the early ship track (the cruise departs the drifters'
+  staging port, so it runs through the pre-deploy cluster) from painting over, or
+  intercepting a click meant for, any drifter or glider marker. Leaflet's
+  `tooltipPane` is lifted above both the `drifters` and `ship` panes (its default
+  z-index would tie/sit below them), so a segment's hover tooltip floats over
+  every marker instead of being occluded. See [trajectories.md](trajectories.md).
 - **Map fit is unchanged.** The opening view still fits the drifter cluster; the
   ships are not folded into the fit because they can be far offshore, which would
   zoom the map out past the drifters the map exists to show. Toggle a layer off,
