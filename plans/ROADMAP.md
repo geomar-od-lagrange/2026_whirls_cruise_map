@@ -163,7 +163,7 @@ move to `done/` and gain a `docs/` counterpart.
     browser (transport + VSAT caching); the field stays in server memory, each
     response is a small FeatureCollection. Validated against **OceanParcels v4**
     (agree to metres; RK4 ~100× faster per particle, so RK4 is the engine and
-    parcels the oracle). **Done** ([docs/interactive_forecast.md](../docs/interactive_forecast.md));
+    parcels the oracle). **Done** ([docs/deployment.md](../docs/deployment.md));
     a **dev PoC, not in the deployed Pages build**. The single-click +12 h tool this
     started as is **superseded by the one polyline Deploy tool + batch API in 23**.
     **Field-cache productionization landed** ([plans/018](done/018-forecast-window-pvc-cache.md)):
@@ -188,7 +188,7 @@ move to `done/` and gain a `docs/` counterpart.
     [Lagrangian-Drifter-Array](https://github.com/guillaumenovelli/Lagrangian-Drifter-Array)
     MATLAB package (Novelli, G. (2026), Zenodo
     [10.5281/zenodo.20650545](https://doi.org/10.5281/zenodo.20650545)). **Done**
-    ([docs/interactive_forecast.md](../docs/interactive_forecast.md)); dev PoC, not
+    ([docs/deployment.md](../docs/deployment.md)); dev PoC, not
     in the deployed Pages build. **Open — the `t0` inversion:** the reference time
     for a deformation / flow-map estimate is when the array is *complete* in the
     water, but staggered deployment means the clean array exists in the deploy frame,
@@ -213,7 +213,7 @@ move to `done/` and gain a `docs/` counterpart.
     deployment waypoints (position + staggered water-entry ETA), so the export is a
     client-side dump of geometry already owned: no API round-trip, no build
     artifact, wiped by **Clear**. **Done**
-    ([docs/interactive_forecast.md](../docs/interactive_forecast.md)); dev PoC, like
+    ([docs/deployment.md](../docs/deployment.md)); dev PoC, like
     the rest of the Deploy tool.
 26. [Controls dock + tidy sidebar](done/026-controls-dock.md) — on a 13" laptop the
     four top-right controls (Instruments, Currents, Ships, Deploy) stacked ~800 px,
@@ -243,7 +243,7 @@ move to `done/` and gain a `docs/` counterpart.
     coalesces onto the still-running compute. Same POST, retried; no job IDs, no
     polling. The seed cap stays at **2000**: the retry/cache — not a lower cap — is
     what makes an over-timeout placement safe. **Done**
-    ([docs/interactive_forecast.md](../docs/interactive_forecast.md)); dev PoC, like
+    ([docs/deployment.md](../docs/deployment.md)); dev PoC, like
     the rest of the Deploy tool. **Superseded by 29:** vectorizing the advection
     removed the 60 s timeout this worked around, so the cache + single-flight +
     client retry were **removed**.
@@ -260,7 +260,7 @@ move to `done/` and gain a `docs/` counterpart.
     With the timeout gone by a >40× margin, the 60 s-survival machinery from 28 (the
     server result-cache + single-flight and the client retry) was **removed**; the
     scalar integrator stays for the build's per-instrument forecast/hindcast. **Done**
-    ([docs/interactive_forecast.md](../docs/interactive_forecast.md)); dev PoC, like
+    ([docs/deployment.md](../docs/deployment.md)); dev PoC, like
     the rest of the Deploy tool.
 30. [Wave gliders](done/033-wave-gliders.md) — the two **wave gliders** the WHIRLS
     operational map now shows, added as a new `waveglider` instrument type (pink,
@@ -274,3 +274,46 @@ move to `done/` and gain a `docs/` counterpart.
     downstream (track, tooltips, per-instrument forecast/hindcast, the one client
     `GLIDER_STYLES` entry) is type-generic. **Done**
     ([docs/gliders.md](../docs/gliders.md), [docs/data.md](../docs/data.md)).
+31. [Deployment-focused app](done/034-deployment-focused-app.md) — reframe the app
+    around placing and interrogating **virtual deployments** (vs. the IPSL/aeris
+    observations map): forward *and* backward runs described by release time +
+    direction + duration, full-cruise field coverage (hard tmin 2026-06-28 →
+    CMEMS forecast end) via an incremental per-day field store + streaming batch
+    advection, a long absolute-time scrubber that is the app's one clock (release
+    time is always the displayed field time), and always-on position-at-time
+    markers replacing the synced-t0 coloured dots. This **inverts the earlier
+    dev-PoC framing** (22/23/25/28/29): the Deploy tool is now the app's primary
+    tab and its own API v2 (`{start, cadence_s, direction}` per track, run-level
+    budgets incl. a seeds×hours bound, `/limits`), not an observation viewer with
+    a tool bolted on. Four workstreams (store, engine/API, frames/scrubber,
+    frontend) landed sequentially, developed entirely in the local pixi flows.
+    **Done** ([docs/deployment.md](../docs/deployment.md),
+    [docs/field_store.md](../docs/field_store.md),
+    [docs/currents.md](../docs/currents.md),
+    [docs/controls.md](../docs/controls.md)). **Open remainder:** the
+    `oc_gateway` adaptation — mount the field-store PVC subPath (build rw, api
+    ro, never the fe pod), drop the api pod's CMEMS creds/egress, never serve the
+    subPath — deferred by the plan itself (checklist in it), tied to
+    [017](017-whirlsview-openshift.md).
+32. [The clock moves the map](done/035-clock-following-tracks.md) — scrubbing
+    clips every time-aware track to what has happened by the clock and the head
+    markers (drifter circles, glider diamonds, ship discs) ride the clipped ends,
+    replacing the per-track at-time dots; virtual drift lines keep a faint
+    not-yet-traversed remainder and a Deploy-tab legend names the solid/dashed
+    (field provenance) and strong/faint (clock) encodings; a **Timing** switch
+    distinguishes along-track (ship-speed-staggered) from instantaneous releases;
+    the slider's "now" becomes a blue dot on the scrub line and day ticks label
+    as `Jul 14`. **Done** ([docs/trajectories.md](../docs/trajectories.md),
+    [docs/deployment.md](../docs/deployment.md),
+    [docs/controls.md](../docs/controls.md)).
+33. [Tracks master + deploy cleanup](done/036-tracks-master-and-deploy-cleanup.md) —
+    one **"Show tracks"** master in the scrubber governs every observed track line
+    (drifter, glider, ship) together; single-fix heads (e.g. D-509) now follow the
+    clock too (drifter tracks load eagerly, so every head is clock-driven). The
+    drifter **forecast/hindcast** layer is removed (controls, drawing, and build).
+    The Deploy tab loses its "Settings" caption, its Compute-drift checkbox (always
+    on), and its drift-line legend; direction/timing are two-state toggles and CSV
+    import/export hides behind a `⌄` menu. Virtual drift lines are one green stroke
+    (no dash split, nothing ahead of the clock, no vessel route) and always shown;
+    the MD track crops at 28 Jun and the scrubber drops its type-in jump box.
+    **Done** ([docs/controls.md](../docs/controls.md)).

@@ -12,7 +12,19 @@ Unscheduled ideas, not yet promoted to a plan.
   per-fix dots were removed in [031](done/031-track-zorder-and-data-link.md)
   (each track is now one polyline per fix-to-fix segment), so the visual clutter
   is gone, but a dense track is still ~one polyline per fix — the performance
-  decimation this wanted is still open.
+  decimation this wanted is still open. **Now also a transfer-size problem**:
+  `tracks.geojson` is 14.6 MB for 146 drifters × ~2 weeks, and the target
+  scenario (drifters stay in the water past cruise end) is ~200 drifters ×
+  ~100 days under a ~10 MB transfer budget. The bytes are dominated by the
+  per-vertex `fixes` records (ISO strings + mostly-null fields), not
+  coordinates. Levers, in payoff order: (1) compact parallel arrays instead of
+  per-vertex objects (epoch-delta ints for time, drop null fields); (2)
+  Douglas–Peucker thinning at ~100–200 m tolerance (retained vertices keep
+  their real times, so position-at-time interpolation still works; inertial
+  loops survive at display scale); (3) precompressed artifacts inflated
+  client-side, since GitLab Pages serves uncompressed (the gateway nginx can
+  gzip; Pages can't). Together plausibly 2–5 MB for the target scenario.
+  Deliberately kept out of [034](034-deployment-focused-app.md).
 - **GPS despike at ingestion** — several Deployment-1 drifters show single-fix
   out-and-back GPS spikes (one stray fix implying 15–140 m/s to both
   neighbours; seen in D-577, D-602, D-606, D-610, D-630, worst in D-611 and

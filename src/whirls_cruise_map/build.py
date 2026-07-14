@@ -9,10 +9,10 @@ Dufresne, R/V S.A. Agulhas II), cleans and unifies them, and writes the download
 
 - *fast* (no secrets, no egress): ``latest.geojson``, ``tracks.geojson``,
   ``awaiting.json``, ``gliders.geojson``, ``agulhas.json``, ``build.json``.
-- *slow* (CMEMS, needs a Copernicus login): the time-slider ``speed_±NNh.webp`` and
-  ``currents_±NNh.json`` (flow-trail) frames (+``currents_meta.json``) and
-  ``vorticity_±NNh.webp`` frames (+meta), ``forecast.geojson``, ``hindcast.geojson``,
-  ``inertial_field.json``.
+- *slow* (CMEMS, needs a Copernicus login): the absolute-time ``speed_<t>Z.webp`` and
+  ``flowvis_<t>Z.webp`` (static flow streamlines) frames (+``currents_meta.json``) and
+  ``vorticity_<t>Z.webp`` frames (+meta), incrementally (re)rendered over the frame span
+  (see ``_currents.plan_render``), and ``inertial_field.json``.
 
 The two stages write disjoint trees, every write is atomic (``*.tmp`` +
 ``os.replace``), and each layer is best-effort, so a dead upstream drops one
@@ -35,7 +35,7 @@ import argparse
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -47,7 +47,7 @@ from . import (
     _data,
     _deploy,
     _fetch,
-    _forecast,
+    _field_store,
     _geojson,
     _gliders,
     _inertial,
@@ -67,23 +67,6 @@ def _stamp() -> str:
 
 def _write_json(path: Path, obj) -> None:
     _data.atomic_write_text(path, json.dumps(obj))
-
-
-def _write_window_cache(window, path: Path) -> None:
-    """Persist the hourly current ``window`` atomically for the forecast API to
-    read (``*.tmp`` + :func:`os.replace`, the same convention as the served
-    artifacts), so a concurrent API reader never opens a half-written netCDF. The
-    API loads this instead of doing its own CMEMS fetch (see ``_api._get_sampler``);
-    the file lives under an **unserved** ``_cache/`` subtree, not among the map's
-    layers."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        window.to_netcdf(tmp)
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
 
 
 # --------------------------------------------------------------------------- #
@@ -315,99 +298,110 @@ def _derive_fast(data_dir: Path, map_dir: Path) -> None:
         print(f"WARNING: agulhas.json failed: {exc}")
 
 
-def _derive_slow(data_dir: Path, map_dir: Path) -> None:
+def _derive_slow(data_dir: Path, map_dir: Path, refetch_all: bool = False) -> None:
     """CMEMS-derived overlays (needs a Copernicus login). Each render is
-    independent; forecast/hindcast advect the fresh drifter & glider positions
-    read from /data (read only where needed, so a bad CSV can't skip currents)."""
-    # One 6-hourly forecast window (now-12h … now+72h) feeds the coarse vector grid
-    # (trails, from the now slice), the speed raster and the ζ/f raster — the latter
-    # two as one lossless WebP per slider frame (-12 … +72 h). Each layer is
-    # independent, and none needs the tracks.
-    shading = None
+    independent, so one failing leaves the others (and the last-good file)."""
+    # Top up the incremental per-day field store first (fetch every missing or
+    # non-final day; see _field_store) so the window read just below is served
+    # entirely from disk — no CMEMS fetch on the request path below this step.
+    # A killed run resumes here next time; --refetch-all forces a full re-pull.
     try:
-        shading = _currents.fetch_shading_window()
+        manifest = _field_store.update_store(refetch_all=refetch_all)
+        n_final = sum(1 for d in manifest["days"].values() if d["final"])
+        print(f"field store: {len(manifest['days'])} day(s) on disk, {n_final} final")
+    except Exception as exc:
+        print(f"WARNING: field store update failed: {exc}")
+
+    # Absolute-time shading frames, rendered incrementally. The frame grid spans every
+    # 12 h step from FIELD_TMIN (floored to 00Z) through the 6-hourly product's forecast
+    # edge; only frames that aren't yet final (missing, recent, or forecast) are
+    # (re)rendered, and the 6-hourly fetch covers just that span. One fetch feeds the
+    # coarse vector grid (trails), the speed raster and the ζ/f raster; none needs the
+    # tracks. See _currents.plan_render / docs/currents.md.
+    shading, grid, to_render = None, None, None
+    try:
+        now = datetime.now(timezone.utc)
+        t_lo = _currents.frame_tmin()
+        # --refetch-all forces the whole span to re-render (CMEMS reprocessing behind the
+        # analysis edge): treat the on-disk frame set as empty so plan_render re-plans
+        # every frame; pruning still drops anything no longer in the span.
+        existing = set() if refetch_all else _currents.existing_frame_times(map_dir)
+        fetch_lo = _currents.first_pending_frame(t_lo, existing, now)
+        shading = _currents.fetch_shading_window(
+            t_lo=fetch_lo, t_hi=now + timedelta(hours=_currents.FORECAST_REACH_H)
+        )
+        t_hi = _currents.window_frame_edge(shading, t_lo)
+        grid = _currents.frame_span(t_lo, t_hi)
+        to_render = _currents.plan_render(grid, existing, now)
     except Exception as exc:
         print(f"WARNING: CMEMS field fetch failed, skipping currents overlays: {exc}")
 
-    if shading is not None:
+    if shading is not None and grid:
         try:
-            frames, meta = _currents.to_speed_frames(shading)
+            frames, meta = _currents.to_speed_frames(shading, to_render)
             for fr in frames:
                 _data.atomic_write_bytes(map_dir / fr["file"], fr["image"])
-            flow_frames, flow_manifest = _currents.to_velocity_frames(shading)
+            flow_frames = _currents.to_flowvis_frames(shading, to_render)
             for fr in flow_frames:
-                _write_json(map_dir / fr["file"], fr["data"])
-            meta["flow_frames"] = flow_manifest
+                _data.atomic_write_bytes(map_dir / fr["file"], fr["image"])
+            meta["valid_time"] = _currents.nearest_valid_time(grid, now)
+            meta["frames"] = _currents.frame_manifest("speed", grid)
+            meta["flow_frames"] = _currents.frame_manifest("flowvis", grid, ext="webp")
             _write_json(map_dir / "currents_meta.json", meta)
             print(
-                f"wrote {len(frames)} speed + {len(flow_frames)} flow frames "
+                f"rendered {len(frames)}/{len(grid)} speed + flow frames "
                 f"(now {meta['valid_time']}, vmax {meta['vmax']:.2f} {meta['units']})"
             )
         except Exception as exc:
             print(f"WARNING: currents render failed: {exc}")
 
         try:
-            vframes, vmeta = _vorticity.to_vorticity_frames(shading)
+            vframes, vmeta = _vorticity.to_vorticity_frames(shading, to_render)
             for fr in vframes:
                 _data.atomic_write_bytes(map_dir / fr["file"], fr["image"])
+            vmeta["valid_time"] = _currents.nearest_valid_time(grid, now)
+            vmeta["frames"] = _currents.frame_manifest("vorticity", grid)
             _write_json(map_dir / "vorticity_meta.json", vmeta)
             print(
-                f"wrote {len(vframes)} vorticity frames "
+                f"rendered {len(vframes)}/{len(grid)} vorticity frames "
                 f"(now {vmeta['valid_time']}, |ζ/f| clip {vmeta['vmax']:.2f})"
             )
         except Exception as exc:
             print(f"WARNING: vorticity render failed: {exc}")
 
-    # A separate hourly window advects the forecast/hindcast particle through the
-    # current at its own clock time (so the path traces the inertial loop), feeds
-    # the near-inertial animation decomposition, and is persisted for the forecast
-    # API to serve. Fetch it once at the API's forward reach (fwd >= horizon +
-    # slow-cadence) and reuse it for all three — the wider forward span is inert for
-    # the +/-6 h forecast/hindcast advection, and the width-sensitive inertial
-    # decomposition gets the narrow slice below.
+        # Prune retired offset-named frames and any absolute frame no longer in the span
+        # so stale artifacts never linger (meta/non-frame files are left untouched).
+        try:
+            removed = _currents.prune_stale_frames(map_dir, grid)
+            if removed:
+                print(f"pruned {len(removed)} stale frame file(s)")
+        except Exception as exc:
+            print(f"WARNING: frame pruning failed: {exc}")
+
+    # A separate hourly window feeds the near-inertial animation decomposition,
+    # sampling the current at its own clock time. The deployment forecast API
+    # reads the field store directly instead (whirls_cruise_map._api), so this
+    # window only needs to cover that one consumer here — see _currents.py.
     window = None
     try:
-        window = _currents.fetch_field_window(
-            back_h=_currents.FORECAST_WINDOW_BACK_H, fwd_h=_currents.FORECAST_WINDOW_FWD_H
+        now = datetime.now(timezone.utc)
+        window = _field_store.load_window(
+            t0=now - timedelta(hours=_currents.WINDOW_BACK_H),
+            t1=now + timedelta(hours=_currents.WINDOW_FWD_H),
         )
     except Exception as exc:
-        print(f"WARNING: CMEMS window fetch failed, skipping forecast/hindcast: {exc}")
+        print(f"WARNING: field store window load failed, skipping inertial field: {exc}")
 
     if window is not None:
-        # Persist the raw window for the forecast API (it reloads on mtime change,
-        # so this is picked up without a pod restart). Best-effort: a cache-write
-        # failure must not sink the served forecast/hindcast/inertial layers below.
-        try:
-            _write_window_cache(window, map_dir / "_cache" / "forecast_window.nc")
-            print("cached forecast_window.nc for the API")
-        except Exception as exc:
-            print(f"WARNING: forecast-window cache write failed: {exc}")
-
-        tracks = _data.read_drifters(data_dir)
-        gliders = _data.read_gliders(data_dir)
-        try:
-            forecast = _forecast.forecast_geojson(window, tracks, gliders)
-            _write_json(map_dir / "forecast.geojson", forecast)
-            print(f"wrote forecast.geojson ({len(forecast['features'])} forecasts)")
-        except Exception as exc:
-            print(f"WARNING: forecast step failed: {exc}")
-
-        try:
-            hindcast = _forecast.hindcast_geojson(window, tracks, gliders)
-            _write_json(map_dir / "hindcast.geojson", hindcast)
-            print(f"wrote hindcast.geojson ({len(hindcast['features'])} hindcasts)")
-        except Exception as exc:
-            print(f"WARNING: hindcast step failed: {exc}")
-
         try:
             # The decomposition relies on the window spanning under an inertial
             # period (so the joint least-squares keeps mean vs NI separated — see
-            # _inertial.decompose); the API's wide forward reach would blur that.
-            # Slice back to the narrow inertial span the standalone fetch produced.
-            # Its low edge is the wide window's (same back_h + "outside" bracket), so
-            # t_ref-nearest-now is unchanged; the +1 h keeps the top "outside" bracket
-            # step (fetch_field_window rounds the high edge *up* to the next grid
-            # hour), reproducing the old back_h=12/fwd_h=12 window off the hour.
+            # _inertial.decompose). ``window`` is already sized to WINDOW_BACK_H/
+            # WINDOW_FWD_H (24 h) plus one bracket hour each end
+            # (_field_store.load_window brackets outside [t0, t1]); slice off the
+            # extra top-bracket hour so the decomposition gets exactly the 24 h +
+            # low-bracket span it was tuned against. Low edge unchanged, so
+            # t_ref-nearest-now is unchanged too.
             span_h = _currents.WINDOW_BACK_H + _currents.WINDOW_FWD_H
             hi = window["time"].values[0] + np.timedelta64(span_h + 1, "h")
             narrow = window.sel(time=slice(None, hi))
@@ -418,12 +412,12 @@ def _derive_slow(data_dir: Path, map_dir: Path) -> None:
             print(f"WARNING: inertial field step failed: {exc}")
 
 
-def derive(data_dir: Path, map_dir: Path, tier: str = "all") -> None:
+def derive(data_dir: Path, map_dir: Path, tier: str = "all", refetch_all: bool = False) -> None:
     map_dir.mkdir(parents=True, exist_ok=True)
     if tier in ("fast", "all"):
         _derive_fast(data_dir, map_dir)
     if tier in ("slow", "all"):
-        _derive_slow(data_dir, map_dir)
+        _derive_slow(data_dir, map_dir, refetch_all=refetch_all)
 
 
 # --------------------------------------------------------------------------- #
@@ -438,6 +432,16 @@ def main(argv=None) -> None:
         default="all",
         help="which derive layers to build (ignored for --stage ingest)",
     )
+    ap.add_argument(
+        "--refetch-all",
+        action="store_true",
+        help=(
+            "force a full re-pull of every day in the incremental field store "
+            "(see _field_store), instead of just missing/non-final days; the "
+            "escape hatch if the rollover assumption (CMEMS revises nothing "
+            "behind the analysis edge) is ever found to not hold"
+        ),
+    )
     ap.add_argument("--data", default=os.environ.get("WHIRLS_DATA", str(DATA)))
     ap.add_argument("--map", default=os.environ.get("WHIRLS_SITE_DATA", str(SITE_DATA)))
     args = ap.parse_args(argv)
@@ -446,7 +450,7 @@ def main(argv=None) -> None:
     if args.stage in ("ingest", "all"):
         ingest(data_dir)
     if args.stage in ("derive", "all"):
-        derive(data_dir, map_dir, args.tier)
+        derive(data_dir, map_dir, args.tier, refetch_all=args.refetch_all)
 
 
 if __name__ == "__main__":

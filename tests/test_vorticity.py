@@ -6,15 +6,16 @@ render emits a symmetric-range PNG with land carried through as transparency.
 from __future__ import annotations
 
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import xarray as xr
 from PIL import Image
 
-from whirls_cruise_map._currents import N_BINS
+from whirls_cruise_map._currents import N_BINS, frame_span, frame_valid_time
 from whirls_cruise_map._vorticity import (
     OMEGA,
+    VORT_CLIP,
     _EARTH_RADIUS_M,
     to_vorticity_frames,
     zeta_over_f,
@@ -91,9 +92,12 @@ def test_sh_cyclone_is_positive():
     assert zof[5, 5] > 0.0  # centre cell, cyclonic
 
 
+_T0 = datetime(2026, 6, 28, 0, 0, tzinfo=timezone.utc)
+
+
 def _window(with_land: bool):
-    """A time-dimensioned window spanning the slider offsets around now, so
-    to_vorticity_frames can select its -12…+72 h frames."""
+    """A time-dimensioned 6-hourly window from _T0, so to_vorticity_frames can slice
+    its absolute-time frames."""
     lats = np.linspace(-42.0, -38.0, 12)
     lons = np.linspace(9.0, 13.0, 12)
     rng = np.arange(lons.size, dtype=float)
@@ -102,8 +106,8 @@ def _window(with_land: bool):
     if with_land:
         u2 = u2.copy()
         u2[0, 0] = np.nan  # a "land" cell (persists across every frame)
-    now = np.datetime64(datetime.now(timezone.utc).replace(tzinfo=None), "ns")
-    times = now + np.arange(-12, 78, 6).astype("timedelta64[h]")  # 6-hourly bracket
+    t0 = np.datetime64(_T0.replace(tzinfo=None), "ns")
+    times = t0 + (np.arange(9) * 6).astype("timedelta64[h]")  # 6-hourly, 0…48 h
     u = np.repeat(u2[None], times.size, axis=0)
     v = np.repeat(v2[None], times.size, axis=0)
     ds = xr.Dataset(
@@ -111,7 +115,7 @@ def _window(with_land: bool):
          "vo": (("time", "latitude", "longitude"), v)},
         coords={"time": times, "latitude": lats, "longitude": lons},
     )
-    return to_vorticity_frames(ds)
+    return to_vorticity_frames(ds, frame_span(_T0, _T0 + timedelta(hours=48)))
 
 
 def _alpha(image: bytes) -> np.ndarray:
@@ -119,21 +123,24 @@ def _alpha(image: bytes) -> np.ndarray:
     return np.array(Image.open(io.BytesIO(image)).convert("RGBA"))[..., 3]
 
 
-def test_render_meta_is_symmetric():
+def test_render_meta_is_frozen_and_symmetric():
     frames, meta = _window(with_land=False)
-    assert meta["vmin"] == -meta["vmax"]  # symmetric range, shared across frames
-    assert meta["vmax"] > 0
+    assert meta["vmax"] == VORT_CLIP == 0.3  # frozen constant, not a pooled percentile
+    assert meta["vmin"] == -meta["vmax"]     # symmetric range, shared across frames
     assert meta["units"] == "ζ/f"
-    # The colorbar is the discrete bin-class palette the raster snaps to (lever 5),
-    # not a 16-stop continuous sample.
+    # The colorbar is the discrete bin-class palette the raster snaps to, not a
+    # continuous sample; derived from the frozen clip.
     assert len(meta["colorbar"]) == N_BINS
-    assert [f["offset_h"] for f in meta["frames"]] == [-12, 0, 12, 24, 36, 48, 60, 72]
-    assert meta["now_offset_h"] == 0
-    # top-level valid_time is the now (offset 0) frame's, ISO-8601 Z.
-    now_frame = next(f for f in meta["frames"] if f["offset_h"] == 0)
-    assert meta["valid_time"] == now_frame["valid_time"]
-    assert meta["valid_time"].endswith("Z")
-    assert now_frame["file"] == "vorticity_+00h.webp"
+    # The renderer returns only the shared scale; the build assembles the manifest.
+    assert "frames" not in meta and "valid_time" not in meta
+    # Frames carry absolute valid times / colon-free names, no offset.
+    assert [f["file"] for f in frames][:2] == [
+        "vorticity_2026-06-28T00Z.webp",
+        "vorticity_2026-06-28T12Z.webp",
+    ]
+    assert frames[0]["valid_time"] == frame_valid_time(_T0)
+    assert frames[0]["valid_time"].endswith("Z")
+    assert set(frames[0]) == {"valid_time", "file", "image"}  # no offset_h
 
 
 def test_land_becomes_transparent():
@@ -150,10 +157,10 @@ def test_land_becomes_transparent():
 
 
 def test_shading_is_binned_to_n_bins():
-    """Lever 5: the raster snaps ζ/f to at most N_BINS flat colour classes so
-    lossless WebP compresses the constant-value regions — count the distinct opaque
-    RGB triples in a frame (a continuous ramp would show far more). Also pins that
-    the client `colorbar` carries exactly those N_BINS class colours."""
+    """The raster snaps ζ/f to at most N_BINS flat colour classes so lossless WebP
+    compresses the constant-value regions — count the distinct opaque RGB triples in a
+    frame (a continuous ramp would show far more). Also pins that the client `colorbar`
+    carries exactly those N_BINS class colours."""
     frames, meta = _window(with_land=False)
     im = np.array(Image.open(io.BytesIO(frames[1]["image"])).convert("RGBA"))
     opaque = im[im[..., 3] == 255][:, :3]

@@ -1,4 +1,4 @@
-> **Implemented** — see [docs/interactive_forecast.md](../../docs/interactive_forecast.md)
+> **Implemented** — see [docs/deployment.md](../../docs/deployment.md)
 > ("Surviving the 60 s gateway timeout: result cache + client retry"). The seed cap stays
 > at **2000**: lowering it was considered, but the retry/cache *recovers* an over-timeout
 > placement, so the cap need not be sized to one 60 s window.
@@ -91,11 +91,11 @@ Two levers were on the table; only the second ships:
 1. `_api.py`: add the cache + single-flight; route the endpoint through it.
    `_MAX_SEEDS` stays 2000 (see Why — lever 1 not taken).
 2. `app.js`: retry the identical body on timeout signals, with status feedback.
-3. `docs/interactive_forecast.md`: document the cache/retry contract and the 60 s
+3. `docs/deployment.md`: document the cache/retry contract and the 60 s
    rationale; note the cap is not sized to the timeout.
 4. `tests/test_forecast_api.py`: cache hit computes once; field-version and
    distinct-request both recompute; failures aren't cached; single-flight
    coalesces concurrent identical requests; the cache is bounded.
 
-When done: fold the contract into `docs/interactive_forecast.md`, move this plan
+When done: fold the contract into `docs/deployment.md`, move this plan
 to `plans/done/` with a one-line pointer, and update `ROADMAP.md`.

@@ -53,9 +53,8 @@
         <p class="hint" id="currents-time"></p>
         <p class="hint">Scrub the shading (speed or &zeta;/f) through the CMEMS
           forecast with the time slider at the bottom of the map — 12&nbsp;h steps
-          from &minus;12&nbsp;h to +72&nbsp;h. The flow trails stay the
-          &ldquo;now&rdquo; snapshot. The colour scale is in the Currents tab,
-          top-right.</p>
+          from &minus;12&nbsp;h to +72&nbsp;h. The flow overlay scrubs with it. The
+          colour scale is in the Currents tab, top-right.</p>
       </details>
 
       <details class="panel" id="vorticity-panel">
@@ -65,14 +64,6 @@
           <strong>anticyclonic&nbsp;(&minus;)</strong> eddies read as
           opposite-signed lobes. Off by default; toggle it in the Currents tab,
           where its colour scale also shows.</p>
-      </details>
-
-      <details class="panel" id="drift-panel">
-        <summary>Drift forecast &amp; hindcast (1/3/6 h)</summary>
-        <p class="hint" id="drift-time"></p>
-        <p class="hint">Each line advects a surface point particle by the
-          currents only — no wind, waves, or the instrument's own motion. The
-          hindcast is a current back-track, not the observed track.</p>
       </details>
 
       <details class="panel" id="awaiting-panel">
@@ -85,11 +76,8 @@
         <summary>Credits &amp; licences</summary>
         <p class="hint">Map rendering by
           <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a>
-          1.9.4 (<a href="./vendor/leaflet-1.9.4/LICENSE" target="_blank" rel="noopener noreferrer">BSD&#8209;2&#8209;Clause</a>);
-          animated surface&#8209;current overlay by
-          <a href="https://github.com/onaci/leaflet-velocity" target="_blank" rel="noopener noreferrer">leaflet&#8209;velocity</a>
-          1.7.0 (<a href="./vendor/leaflet-velocity-1.7.0/LICENSE" target="_blank" rel="noopener noreferrer">MIT</a>).
-          Both are vendored and served same&#8209;origin.</p>
+          1.9.4 (<a href="./vendor/leaflet-1.9.4/LICENSE" target="_blank" rel="noopener noreferrer">BSD&#8209;2&#8209;Clause</a>),
+          vendored and served same&#8209;origin.</p>
         <p class="hint">Currents &amp; vorticity from the
           <a href="https://data.marine.copernicus.eu/" target="_blank" rel="noopener noreferrer">Copernicus Marine Service</a>
           (CMEMS).</p>
@@ -99,10 +87,6 @@
 
   <!-- Leaflet 1.9.4 (vendored) -->
   <script src="./vendor/leaflet-1.9.4/leaflet.js"></script>
-
-  <!-- leaflet-velocity 1.7.0 — animated current overlay (vendored) -->
-  <link rel="stylesheet" href="./vendor/leaflet-velocity-1.7.0/leaflet-velocity.min.css" />
-  <script src="./vendor/leaflet-velocity-1.7.0/leaflet-velocity.min.js"></script>
 
   <script src="./app.js"></script>
 </body>

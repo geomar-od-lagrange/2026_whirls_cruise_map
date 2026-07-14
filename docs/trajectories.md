@@ -1,13 +1,14 @@
 # trajectories
 
-Each drifter's **free-drift path** over time — its "true track" — drawn as a line,
-so a viewer can read where a drifter has drifted, not just where it is now.
-Hovering anywhere along the line shows that leg's fix. The layer is labelled
-**True track** in the control.
+Each drifter's **free-drift path** over time — drawn as a line, so a viewer can
+read where a drifter has drifted, not just where it is now. Hovering anywhere along
+the line shows that leg's fix. Every observed track line — drifter, glider, and ship
+— is shown or hidden together by the single **Show tracks** master in the time-slider
+box (see *Control* below).
 
 ## What is drawn
 
-For every drifter with at least two free-drift fixes, the True track layer draws
+For every drifter with at least two free-drift fixes, the tracks layer draws
 **a line** over its time-sorted positions, in the track colour (orange, distinct
 from the blue latest-position markers). The line is built as one polyline **per
 fix-to-fix segment** (see *Tooltips* below) rather than a single stroke, so the
@@ -20,6 +21,32 @@ A **pre-deployment** drifter keeps its **full track** (it has no free drift to
 isolate, and its whole path — port, on deck — is what a viewer wants). A drifter
 with fewer than two drawn fixes (single-fix, or a deployed one still on the
 vessel) has no line; it still shows its latest-position marker.
+
+## The app clock clips the track — and moves the head
+
+Tracks follow the map's single clock (the bottom-centre scrubber; see
+[currents.md](currents.md)): at clock *t* a track draws only the fixes at or
+before *t* — whole segments toggled in or out of their group, the crossing
+segment trimmed to the interpolated at-clock position — and the instrument's
+**latest-position head marker rides the clipped end**, carrying the bracketing
+fix's tooltip. Past the track's last fix the full track shows and the head parks
+at the latest position, so an untouched clock at load reads as a plain
+latest-positions map; before its first fix the instrument hides entirely — it
+wasn't in the water yet, so scrubbing across the cruise makes drifters appear as
+they are deployed. A **single-fix** instrument (one fix, no LineString — e.g. D-509)
+follows the same rule with no line: it hides before its fix and parks at its latest
+position after, so it too rides the clock rather than sitting on the map at every
+clock position. A clock-hidden head wins over the selection restyle
+(`_clockHidden`), so a selection change can't resurface an instrument that
+doesn't exist at the displayed instant.
+
+Every head follows the clock from the start, because every track's time series is on
+the client at load: the glider tracks ride the eagerly-fetched `gliders.geojson`, the
+ship tracks load with their layers, and the drifter tracks come from `tracks.geojson`,
+fetched **once at startup** (off the critical path — see *Control* below). The
+per-track at-time dots of plan 034 are gone: the moving heads replace them (two
+markers on the same moving spot would z-fight), and only the virtual deployment
+tracks keep an at-time marker — it is their only head ([deployment.md](deployment.md)).
 
 ## Tooltips: every fix shows the marker's info on hover
 
@@ -72,7 +99,7 @@ gracefully (segments fall back to the line-level identity with blank time/veloci
 `tracks_geojson` keeps only a **deployed** drifter's **free drift**: it takes a
 per-drifter deployment start (`{D_number: first-free-drift time}` from `_deploy`)
 and drops every earlier fix. Pre-deployment drifters are exempt — they keep their
-full track. `latest_geojson` and the forecast/hindcast are untouched — all key
+full track. `latest_geojson` is untouched — it keys
 off the latest fix, which is post-deployment.
 
 `_deploy.deployment_starts` detects deployment as **detachment from the vessel**,
@@ -109,27 +136,26 @@ keep the full track regardless. So the roster (see [batches.md](batches.md))
 decides *who* is truncated and the detection decides *where* — the roster drives
 batch colour/filtering, the detection supplies the cut point.
 
-## Control: coupled to the instrument filter
+## Control: one master in the scrubber, composed with the instrument filter
 
-True tracks are governed by the **Instruments** control (top-right), not the
-Leaflet layer control — the same control that filters drifter batches and glider
-platforms (see [batches.md](batches.md)). A master **True track** checkbox turns
-the lines on or off for every instrument at once; each instrument's own
-checkbox turns that instrument's markers on or off. The two compose: **an
-instrument's track shows only when both its own row and the master True track row
-are checked**, so unchecking an instrument hides its markers *and* its track
-together. Markers start visible; tracks start hidden.
+There is a single **Show tracks** master for every *observed* track line — drifter,
+glider, and ship together — and it lives in the **time-slider (scrubber) box** at the
+bottom of the map, not in the Instruments control (see [controls.md](controls.md)).
+It sits there because these tracks clip to the app clock the scrubber drives. When
+there is no currents field (hence no scrubber), the master falls back to a standalone
+chip in the same spot.
 
-Because the True-track overlay defaults off and `tracks.geojson` is the heaviest
-data artifact, its drifter lines are **not fetched at load**: the first tick of the
-master **True track** checkbox fetches `tracks.geojson` once, builds the lines, and
-merges them into the overlay — so a viewer who never opens the tracks pays none of
-those bytes. The glider tracks ride `gliders.geojson` (already fetched for the
-markers), so they appear the instant the master row is checked, even before the
-drifter fetch resolves. If `tracks.geojson` is missing, the toggle is a no-op for
-drifters and still governs the glider tracks.
+The **Instruments** control (see [batches.md](batches.md)) carries only per-instrument
+marker rows. The two compose: **an instrument's track shows only when both its own
+marker row and the "Show tracks" master are on**, so unchecking an instrument hides its
+markers *and* its track together. Markers start visible.
 
-The gliders' tracks share this **True track** layer, drawn in the same orange
+The drifter lines are **fetched eagerly**: `tracks.geojson` is fetched once at startup,
+off the critical path, so every drifter head follows the app clock from the start
+(the glider tracks ride `gliders.geojson`, already fetched for the markers). If
+`tracks.geojson` is missing, the master still governs the glider and ship tracks.
+
+The gliders' tracks share this observed-track layer, drawn in the same orange
 `TRACK_COLOR` so every past track reads as one layer — the instrument identity
 stays on the coloured diamond marker, not the track (see [gliders.md](gliders.md)).
 
@@ -148,8 +174,7 @@ selected instrument again, or clicking the empty map, clears the selection.
 
 Selection spans **every instrument that carries a track** — the drifters *and* the
 gliders (seagliders, the XSPAR) — since all their tracks share the one orange
-`TRACK_COLOR`. Only the ship tracks are excluded (they are not registered). The
-current-advection forecast/hindcast lines are not part of it either.
+`TRACK_COLOR`. Only the ship tracks are excluded (they are not registered).
 
 The mechanism is a small registry keyed by instrument (a drifter `D_number` or a
 glider `id`). Each element *registers a restyle callback* as it is built — in
@@ -200,12 +225,51 @@ that re-runs `applySelection`); the single `lineStyle` reads it, so drifter and
 glider tracks scale identically. The latest-position heads and the ship track do
 not scale — only the track lines.
 
-The ship track and its per-fix dots sit **below the drifter markers** too, for a
-specific reason: the cruise departs the drifters' staging port, so the early ship
-track runs straight through the pre-deploy cluster. Were the ship dots painted
-above the drifters (or on a map-wide canvas), they would intercept the clicks
-meant for the drifter markers underneath. The ship's *current-position* marker
-still sits on top. See [ship.md](ship.md).
+**Every line/track pane sits below every marker pane** — the governing rule of the
+stack. Bottom to top: the raster/animation underlays (`shading` 350, `inertial`
+360); then the line panes — observed drifter/glider tracks in Leaflet's default
+`overlayPane` (400), the `shipTrack` (410), the violet real-drifter forecast lines
+(`driftForecast` 420, see below), and the PoC deploy tool's drift lines and drop
+discs (`deployTracks` 430, `deployDrops` 440); then the marker panes — the glider
+diamonds in Leaflet's default `markerPane` (600), the drifter heads (`drifters`
+650), the vessel markers (`ship` 660), the moving at-time heads (`atTime` 670), and
+finally `tooltipPane` (680) / `popupPane` (700). Because no line pane reaches 600,
+no marker is ever occluded by a track: the MD ship track can't paint over a
+seaglider diamond, and no line intercepts a click meant for a marker. This also
+keeps the earlier rationale intact — the cruise departs the drifters' staging port,
+so the early ship track runs through the pre-deploy cluster, and keeping it below
+every marker means its dots never intercept a click meant for a drifter or glider.
+See [ship.md](ship.md).
+
+### Violet forecast lines for the real deployed drifters
+
+Every in-water drifter (its `latest.geojson` head whose batch is a `deployment_*`,
+so gliders/floats/XSPAR/waveglider are excluded) gets a **violet forecast track**
+(`#7c3aed`, `driftForecast` pane): its last observed fix advected forward through
+the CMEMS field to the end of the data period. These are computed by the **same
+`/api/forecast` endpoint the deploy tool uses** — one asynchronous POST fired after
+the map is up, seeded from each drifter's last fix (`lon, lat, start`), advected
+server-side. Each returned track is keyed back to its drifter by seed `index`.
+
+Rather than drawn full and always-on, each forecast is **clock-clipped and
+future-only** — it is the continuation of the drifter's observed track past *now*:
+
+- it shows **only when the scrubber is past now**, drawn from now up to the clock
+  position (a single non-interactive violet polyline, clipped by `setLatLngs`);
+- the **drifter's own head marker walks the forecast** as the clock advances into the
+  future (its observed head parks at the last real fix; past now the forecast takes over
+  — see `clipForecast`, run last in `updateClock` so it wins the head). The marker walks
+  the forecast **regardless of the "Show tracks" master**, like the observed heads;
+- the **line** is what the **"Show tracks" master** governs: with tracks off the violet
+  line is hidden, but the marker still moves along the (hidden) forecast into the future;
+- the line also follows the drifter's **Instruments** batch checkbox — unchecking a
+  batch drops its forecast lines along with that batch's markers and observed tracks
+  (`forecastBatchVisible`); the marker is the batch's own head, so it hides with the batch.
+
+The call is best-effort: it is never awaited, so it never blocks map init, and it is
+gated on the dynamic API being reachable — a static-only deploy with no `/api/forecast`
+server simply shows no violet forecasts (no error). A drifter whose last fix predates
+the loaded field window is skipped server-side and gets no forecast.
 
 ## Performance
 

@@ -3,7 +3,9 @@
 The WHIRLS glider-group platforms — the **XSPAR** drifting spar buoy, the
 **seagliders**, the **wave gliders**, and the profiling **floats** — shown on the
 map alongside the drifters and the ship, each as a latest-position marker with a
-track and (like every other instrument) a current-advection forecast/hindcast.
+track. Marker and track follow the app clock like every observed layer — the track clips
+to the fixes at or before the clock and the diamond rides its clipped end (see
+[trajectories.md](trajectories.md)).
 They are **instruments** in the same top-right control as the drifter batches
 (see [batches.md](batches.md)).
 
@@ -69,7 +71,7 @@ THREDDS OPeNDAP as the operational map does — the same portal-over-THREDDS cho
 made for every other source here (the portal serves the `.nc` directly). The
 NetCDF carries a CF `time` coordinate that the operational map omits (it reads
 only lat/lon), so our `wg1169` track is time-stamped like every other platform's
-and rides the whole downstream — track, tooltips, forecast/hindcast — unchanged.
+and rides the whole downstream — track, tooltips — unchanged.
 
 ### Floats: per-float files, two schemas, identity off the column or the name
 
@@ -211,25 +213,18 @@ The gliders join the same top-right control as the drifter batches — renamed
   row per platform class, each a **diamond `divIcon`** so gliders read apart from
   the drifters' circles, coloured per type (XSPAR amber `#f59e0b`, seaglider blue
   `#38bdf8`, waveglider pink `#ec4899`, float purple `#a855f7` — the operational
-  map's own colours; the two floats share the one purple **Floats** row, and the
-  two wave gliders the one pink **Wave gliders** row, like the two seagliders share theirs);
-  and
+  map's own colours; the two floats share the one purple **Float** row, and the
+  two wave gliders the one pink **Waveglider** row, like the two seagliders share their
+  one blue **Glider** row). The **row label** reads "Glider" (`GLIDER_STYLES.seaglider.label`);
+  the underlying `type` **key** stays `seaglider`, baked into `gliders.geojson` and the
+  build pipeline — only the visible label was renamed (plan 037 / #24), so the key is
+  not touched here; and
 - **track groups** (`buildGliderTrackGroups`, keyed by `type`) — a line plus a
   tooltip-bearing dot per fix, drawn in the **shared orange `TRACK_COLOR`** so every
-  past track (drifter or glider) reads as the one **True track** layer. Instrument
+  past track (drifter or glider) reads as one observed-track layer. Instrument
   identity stays on the coloured marker, not the track.
 
-The marker groups merge into the control's instrument rows; the track groups merge
-into its **True track** overlay. So a glider's track shows only when both its
-instrument row and the True-track master are checked — exactly the composition the
-drifter batches use.
-
-## Forecast / hindcast
-
-The current-advection forecast and hindcast are computed **per instrument**, not
-per drifter, so the gliders, the XSPAR, the wave gliders, and the floats get
-advection lines too (keyed by `type` so they ride their own instrument row and the
-Forecast/Hindcast masters). These platforms don't drift purely with the surface
-current — gliders and wave gliders maneuver, floats park and profile at depth — so
-this is a passive-drift what-if (surface current only), meaningful for their drift
-phases rather than a track prediction. See [forecast.md](forecast.md).
+The marker groups merge into the control's instrument rows; the track groups ride the
+single **Show tracks** master in the scrubber box (see [trajectories.md](trajectories.md)).
+So a glider's track shows only when both its instrument row and the "Show tracks"
+master are on — exactly the composition the drifter batches use.

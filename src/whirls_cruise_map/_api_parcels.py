@@ -12,11 +12,13 @@ cite it as an independent reference when reasoning about the RK4 engine's time-s
 and correctness. ``tmp_parcels_compare/compare.py`` runs both over the same field and
 reports their agreement and cost.
 
-It reads the same window the RK4 service does (:func:`._api._load_window`, the
-slow cron's ``site/map/data/_cache/forecast_window.nc``) so both engines integrate
-the exact same field, and it anchors ``t0`` with the same helper
+It reads its own +/-12 h window from the incremental per-day field store
+(:func:`._field_store.load_window`, the same store the RK4 service's
+:mod:`._api` reads from) so both engines integrate the same field over the
+same span, and it anchors ``t0`` with the same helper
 (:func:`._forecast._anchor_t0`) so a click resolves to the same start instant on
-either backend. Build it once with a ``derive --tier slow`` run before comparing.
+either backend. Build the store once with a ``derive --tier slow`` run before
+comparing.
 
 Parcels v4 mapping (this is the reference we cite for time-stepping):
 
@@ -56,6 +58,7 @@ from __future__ import annotations
 
 import threading
 import warnings
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import xarray as xr
@@ -64,14 +67,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import parcels
 
-from . import _api, _forecast
+from . import _api, _field_store, _forecast
 
 # --- config (mirrors ._api; only the engine and port differ) -----------------
 
 _PORT = 8002  # static=:8000, RK4 API=:8001, this parcels API=:8002
 
-_HORIZON_H = _api._HORIZON_H          # +12 h, same as the RK4 service
-_MARK_HOURS = _api._MARK_HOURS        # (3, 6, 9, 12)
+# Kept here (not in ._api, which no longer needs a fixed horizon/marks — the v2
+# batch API takes both from the request) so the two engines still compare on the
+# same cadence.
+_HORIZON_H = 12.0
+_MARK_HOURS = (3, 6, 9, 12)
+_WINDOW_BACK_H = 12.0                 # the oracle's own +/-12 h field window
+_WINDOW_FWD_H = 12.0
 _DT_S = 300                           # AdvectionRK4 step == _forecast.STEP_MIN * 60
 _VERTEX_MIN = int(_forecast.VERTEX_MIN)  # emit a vertex every 15 min
 _COORD_NDIGITS = _forecast._COORD_NDIGITS
@@ -115,13 +123,20 @@ def _build_fieldset(window: xr.Dataset) -> tuple[parcels.FieldSet, np.ndarray]:
 
 
 def _get_fieldset() -> tuple[parcels.FieldSet, np.ndarray]:
-    """The in-memory parcels FieldSet, built once (thread-safe) from the shared
-    window cache — the same cache the RK4 service uses."""
+    """The in-memory parcels FieldSet, built once (thread-safe) from the oracle's
+    own +/-12 h window read off the incremental field store (the same store the
+    RK4 service reads from, but its own fetch — this module never held a shared
+    window with ``._api``)."""
     global _fieldset, _times_epoch
     with _fieldset_lock:
         if _fieldset is None:
-            print("building parcels FieldSet from the CMEMS window (first request)…")
-            _fieldset, _times_epoch = _build_fieldset(_api._load_window())
+            print("building parcels FieldSet from the CMEMS field store (first request)…")
+            now = datetime.now(timezone.utc)
+            window = _field_store.load_window(
+                t0=now - timedelta(hours=_WINDOW_BACK_H),
+                t1=now + timedelta(hours=_WINDOW_FWD_H),
+            )
+            _fieldset, _times_epoch = _build_fieldset(window)
             print("parcels FieldSet ready")
         return _fieldset, _times_epoch
 
@@ -176,8 +191,8 @@ def _parcels_feature(
 ) -> dict | None:
     """One advection ``LineString`` Feature (parcels engine) from ``(lon, lat)`` at
     ``t0``, or ``None`` if the head is on land / off-grid (a ``<2``-vertex line).
-    Mirrors :func:`._forecast._advection_feature` so both engines emit the same
-    shape."""
+    Mirrors the RK4 engine's single-point advection (:func:`._forecast._integrate`)
+    so both engines emit the same shape."""
     coords, marks = _advect(fieldset, lon, lat, t0)
     if len(coords) < 2:
         return None
@@ -191,9 +206,9 @@ def _parcels_feature(
 def _point_forecast(lat: float, lon: float, start: str | None = None) -> dict | None:
     """The +12 h parcels forecast Feature for a clicked ``(lat, lon)``, integrated
     from ``start`` (ISO-8601; default the window time nearest now). Mirrors the RK4
-    engine's single-point advection (:func:`._forecast._advection_feature`), only
-    swapping the integrator; ``None`` on land/off-grid, ``ValueError`` if ``start`` is
-    unparseable or outside the window."""
+    engine's single-point advection (:func:`._forecast._integrate`), only swapping the
+    integrator; ``None`` on land/off-grid, ``ValueError`` if ``start`` is unparseable
+    or outside the window."""
     fieldset, times_epoch = _get_fieldset()
     t0_epoch = None
     if start:

@@ -9,11 +9,13 @@ stretch lands them right is the fix.
 from __future__ import annotations
 
 import io
+import warnings
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.image as mpimg  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from PIL import Image  # noqa: E402
 
@@ -104,6 +106,87 @@ def mercator_rgba_webp(values, lats, lons, to_rgba):
     """
     north_up, bounds = _warp_north_up(values, lats, lons)
     rgba = (np.clip(to_rgba(north_up), 0.0, 1.0) * 255).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(rgba, mode="RGBA").save(
+        buf, format="WEBP", lossless=True, quality=100, method=6
+    )
+    return buf.getvalue(), bounds
+
+
+def mercator_streamlines_webp(
+    uo,
+    vo,
+    lats,
+    lons,
+    *,
+    color: str = "#12233a",
+    density: float = 3.4,
+    base_alpha: float = 0.6,
+    max_linewidth: float = 1.4,
+):
+    """Render a **static streamline snapshot** of a current field ``(uo, vo)`` as a
+    lossless WebP, Mercator-warped and edge-bounded to co-register with the speed
+    shading (:func:`mercator_rgba_webp`) — so the client swaps it as a plain
+    ``L.imageOverlay`` per frame, giving fluent time-scrubbing with no client-side
+    particle animation (it replaces the leaflet-velocity flow trails).
+
+    ``uo``/``vo`` are the eastward/northward components on ``(nlat, nlon)``;
+    ``lats``/``lons`` ascending cell centres. Both components are warped to even
+    Mercator-y (the shading warp), then ``streamplot`` integrates on that regular grid,
+    so the streamlines are already Mercator-registered — no line re-projection. Land /
+    no-data (NaN) becomes zero velocity, so no line is drawn there and it stays
+    transparent. The whole alpha plane is scaled by ``base_alpha`` so the shading beneath
+    reads through. Returns ``(webp_bytes, bounds)`` with ``bounds`` the outer cell edges,
+    identical to the speed raster's."""
+    u_nu, bounds = _warp_north_up(np.nan_to_num(np.asarray(uo, dtype=float), nan=0.0), lats, lons)
+    v_nu, _ = _warp_north_up(np.nan_to_num(np.asarray(vo, dtype=float), nan=0.0), lats, lons)
+    ny, nx = u_nu.shape
+    # north_up rows run north->south; streamplot needs an ascending y, so integrate on
+    # the south->north flip with y increasing northward. Matplotlib's y-up axes then put
+    # north at the top of the saved image — north-up, matching `bounds`.
+    u = u_nu[::-1]
+    v = v_nu[::-1]
+    speed = np.hypot(u, v)
+    peak = float(np.nanpercentile(speed, 99)) if speed.size else 0.0
+
+    dpi = 100
+    fig = plt.figure(figsize=(nx / dpi, ny / dpi), dpi=dpi)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, nx - 1)
+    ax.set_ylim(0, ny - 1)
+    ax.axis("off")
+    fig.patch.set_alpha(0.0)
+    ax.patch.set_alpha(0.0)
+    # An entirely still field (all land / zero) has no lines to draw — skip streamplot
+    # (which rejects a zero field) and emit a fully transparent frame.
+    # arrowsize=0 (no arrowheads) makes matplotlib lay out zero-length, invisible arrows,
+    # dividing by a zero arrowhead length — a harmless "invalid value in scalar divide"
+    # RuntimeWarning (numpy scalar, so np.errstate doesn't reach it once it surfaces
+    # through the warnings machinery). Filter it around streamplot + draw so it doesn't
+    # spam the build log once per frame.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="invalid value encountered in scalar divide",
+            category=RuntimeWarning,
+        )
+        if peak > 1e-6:
+            lw = max_linewidth * np.clip(speed / peak, 0.15, 1.0)
+            ax.streamplot(
+                np.arange(nx),
+                np.arange(ny),
+                u,
+                v,
+                density=density,
+                color=color,
+                linewidth=lw,
+                arrowsize=0.0,
+                minlength=0.05,
+            )
+        fig.canvas.draw()
+    rgba = np.asarray(fig.canvas.buffer_rgba()).copy()
+    plt.close(fig)
+    rgba[..., 3] = (rgba[..., 3].astype(float) * base_alpha).astype(np.uint8)
     buf = io.BytesIO()
     Image.fromarray(rgba, mode="RGBA").save(
         buf, format="WEBP", lossless=True, quality=100, method=6

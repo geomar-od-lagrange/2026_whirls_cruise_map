@@ -12,6 +12,9 @@ __pycache__/
 site/map/data/
 site/data/
 
+# incremental per-day field store (build-time cache; never served, see _field_store)
+cache/
+
 # intermediate downloads
 *.nc
 *.zip

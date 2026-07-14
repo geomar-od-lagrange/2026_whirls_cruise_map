@@ -1,36 +1,25 @@
-"""Current-advection forecast and hindcast: advect a passive particle through the
-**time-dependent** CMEMS surface-current field from each instrument's latest fix —
-the drifters and the glider-group platforms (XSPAR buoy, seagliders, wave gliders,
-floats) alike — forward for the forecast, backward for the hindcast. These
-non-drifter platforms don't move purely with the surface current (gliders and wave
-gliders maneuver, floats park and profile at depth), so their advection is a passive-drift what-if
-(surface current only), meaningful for their drift phases rather than a track
-prediction.
+"""Time-dependent-field RK4 advection engine + clock anchoring, shared by the
+interactive deployment API (:mod:`whirls_cruise_map._api`) and the field store.
 
-Starting at the instrument head we integrate ``dx/dt = u(x, y, t)``,
-``dy/dt = v(x, y, t)`` with RK4 to ±6 h, advancing a clock alongside the position
-so the particle is pushed by the current *at each moment* — an hourly field window
-(:func:`whirls_cruise_map._currents.fetch_field_window`), bilinear in space and
-linear in time. Because the model already carries the near-inertial oscillation at
-these latitudes, the path curls into the inertial loop the drifters show rather
-than the straight streamline a single frozen snapshot would give. The hindcast
-integrates the same window backward (negative step); it is a current-only
-back-trajectory, **not** the drifter's observed past track (that is the trajectory
-line from :func:`whirls_cruise_map._geojson.tracks_geojson`).
+Advect a passive particle through the **time-dependent** CMEMS surface-current
+field: integrate ``dx/dt = u(x, y, t)``, ``dy/dt = v(x, y, t)`` with RK4, advancing
+a clock alongside the position so the particle is pushed by the current *at each
+moment* — the field sampled bilinearly in space and linearly in time over an hourly
+window (:class:`_Field`, or its store-backed drop-in
+:class:`whirls_cruise_map._field_store.StoreField`). Because the model already
+carries the near-inertial oscillation at these latitudes, the path curls into the
+inertial loop the drifters show rather than the straight streamline a single frozen
+snapshot would give. A negative step integrates the same field backward.
 
-It is **not** a calibrated drifter prediction:
+:func:`_integrate` is the scalar per-seed path; :func:`_batch_advect` runs the same
+RK4 over the same field for a whole batch at once in vectorized numpy, bit-identical
+to the scalar path (the deployment API advects up to a couple thousand seeds per
+request). :func:`_anchor_t0` resolves the advection clock's t = 0, and
+:func:`_vertex_cadence_min` caps the emitted polyline vertex count on long horizons.
 
-- **Surface current only.** ``uo``/``vo`` are the modelled surface current; no
-  windage / Stokes drift (undrogued) or deeper-layer sampling (drogued). So this
-  is an indicative passive-tracer track, not the drifter's predicted path.
-- **Model near-inertial amplitude.** The inertial loop is only as strong as the
-  model's; free-running global models can under-represent wind-driven near-inertial
-  energy (see ``plans/012-near-inertial-forecast.md``, Phase 0).
-
-We integrate over the raw field — land kept as ``NaN``, not the trails' land-filled,
-magnitude-compressed ``currents_+NNh.json`` frames — so the line carries correct speeds and the
-integrator *stops* at the coast (or the window edge) instead of being dragged
-across it. See ``docs/forecast.md``.
+We integrate over the raw field — land kept as ``NaN`` — so the line carries correct
+speeds and the integrator *stops* at the coast (or the window edge) instead of being
+dragged across it.
 """
 from __future__ import annotations
 
@@ -38,7 +27,6 @@ import math
 from datetime import datetime, timezone
 
 import numpy as np
-import pandas as pd
 import xarray as xr
 
 _EARTH_RADIUS_M = 6_371_000.0
@@ -222,8 +210,14 @@ def _integrate(
 # (n=2000 in ~1.2 s) and, by construction, **bit-identical** to the scalar path —
 # the arithmetic order (corner-sum, time-lerp, RK4 combine, cos(radians(lat))) and
 # the land/edge/window rules mirror ``_Field.velocity`` + ``_deriv`` exactly, so a
-# batch and a per-seed run agree to the last ULP (guarded by a test). Forward-only:
-# the build's backward hindcast keeps the scalar path.
+# batch and a per-seed run agree to the last ULP (guarded by a test).
+#
+# ``direction`` (+1 forward, -1 backward) mirrors the scalar ``_integrate``'s ``dt``
+# negation exactly (same sign, same place in the arithmetic — ``dt = direction *
+# step_min * 60``): the interactive deployment API's backward runs walk the store
+# in reverse and hand the same signed ``dt`` through, no other change. The build's
+# per-instrument hindcast still uses the scalar path (unchanged, out of this
+# stage's scope).
 
 
 def _vec_deriv(
@@ -319,22 +313,43 @@ def _batch_advect(
     t0: np.ndarray,
     n_steps: np.ndarray,
     *,
+    direction: int = 1,
     step_min: float = STEP_MIN,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Forward vectorized RK4 for a whole batch of seeds, advanced in step-index
-    lockstep. ``lon0``/``lat0``/``t0`` (epoch seconds) and ``n_steps`` are per-seed
-    arrays; ``n_steps[i] == 0`` marks a seed not to advect (out of window / no track).
+    """Vectorized RK4 for a whole batch of seeds, advanced in step-index lockstep,
+    ``direction`` +1 forward or -1 backward (mirroring the scalar ``_integrate``'s
+    ``dt`` negation, ``_forecast.py`` ~line 191). ``lon0``/``lat0``/``t0`` (epoch
+    seconds) and ``n_steps`` are per-seed arrays; ``n_steps[i] == 0`` marks a seed
+    not to advect (out of window / no track). ``t0``'s clock runs forward for a
+    forward batch and backward for a backward one — the caller (a store-backed
+    field walking its day files in reverse, or a fixed in-RAM window) supplies
+    ``field`` already covering whichever direction the seeds travel.
 
     Returns ``(P, completed)``: ``P`` is ``(N, Kmax+1, 2)`` full-precision positions
-    with ``P[:, 0]`` the heads and each later row a sub-step (``step_min`` apart);
-    ``completed[i]`` is seed ``i``'s last good step index. A seed freezes — its
-    position held, its ``completed`` frozen — at its own ``n_steps`` or the first step
-    any RK4 stage samples land/edge/window (``NaN``), i.e. exactly where the scalar
-    :func:`_integrate` truncates with ``break``. The caller reads coords/marks off
-    ``P`` up to ``completed`` (rounding, vertex cadence, mark steps) to build features.
+    with ``P[:, 0]`` the heads and each later row a sub-step (``step_min`` apart,
+    signed by ``direction``); ``completed[i]`` is seed ``i``'s last good step index.
+    A seed freezes — its position held, its ``completed`` frozen — at its own
+    ``n_steps`` or the first step any RK4 stage samples land/edge/window (``NaN``),
+    i.e. exactly where the scalar :func:`_integrate` truncates with ``break``. The
+    caller reads coords/marks off ``P`` up to ``completed`` (rounding, vertex
+    cadence, mark steps) to build features.
+
+    Each step samples the field for only the seeds still ``stepping`` (a boolean
+    gather/scatter on the arrays, not a full-array recompute masked afterward) — a
+    frozen seed's already-decided position never asks the field for its old time
+    again. For an in-RAM field this is just an avoided flop; for a store-backed
+    field (:class:`whirls_cruise_map._field_store.StoreField`) it matters more:
+    that field's day cache assumes the batch's live working set spans only the
+    couple of calendar days the still-advecting seeds are currently walking (see
+    ``_field_store._DayArrayCache``), an assumption a full-array recompute would
+    break the moment any seed freezes on a calendar day the rest have since moved
+    past — permanently pinning that stale day into every later step's gather and
+    thrashing a small cap. Batches over a store-backed field commonly run seeds to
+    truncation at scattered times (a coastline near a seed's start, or a seed
+    simply reaching its own horizon early), so this isn't a corner case.
     """
     n = lon0.size
-    dt = step_min * 60.0  # forward only
+    dt = direction * step_min * 60.0
     alive0 = n_steps > 0
     k_max = int(n_steps.max()) if alive0.any() else 0
 
@@ -352,56 +367,60 @@ def _batch_advect(
         stepping = active & (step <= n_steps)
         if not stepping.any():
             break  # every remaining seed has reached its horizon
-        lon_n, lat_n = _vec_rk4_step(field, lon, lat, t, dt)
-        ok = stepping & np.isfinite(lon_n) & np.isfinite(lat_n)
-        lon = np.where(ok, lon_n, lon)
-        lat = np.where(ok, lat_n, lat)
-        t = np.where(ok, t + dt, t)
-        completed = np.where(ok, step, completed)
+        idx = np.flatnonzero(stepping)
+        lon_n, lat_n = _vec_rk4_step(field, lon[idx], lat[idx], t[idx], dt)
+        ok = np.isfinite(lon_n) & np.isfinite(lat_n)
+        ok_idx = idx[ok]
+        lon[ok_idx] = lon_n[ok]
+        lat[ok_idx] = lat_n[ok]
+        t[ok_idx] += dt
+        completed[ok_idx] = step
         # Freeze a seed that failed this step (hit coast/edge/window) or just reached
         # its own horizon — mirroring the scalar path's break-and-stop.
-        active = active & ~(stepping & ~ok) & ~(ok & (step == n_steps))
+        active[idx[~ok]] = False
+        active[ok_idx[n_steps[ok_idx] == step]] = False
         positions[:, step, 0] = lon
         positions[:, step, 1] = lat
 
     return positions, completed
 
 
-def _drifter_heads(tracks: pd.DataFrame) -> list[tuple[dict, float, float]]:
-    """``(properties, lon, lat)`` for each drifter's latest fix. ``properties``
-    carries ``D_number`` and ``batch`` (the *latest* fix's batch — the same key
-    the marker and trajectory use, so the advection line toggles with them)."""
-    heads = []
-    for d_number, group in tracks.sort_values("date_UTC").groupby("D_number"):
-        last = list(group.itertuples(index=False))[-1]
-        heads.append(
-            ({"D_number": d_number, "batch": last.batch},
-             float(last.Longitude), float(last.Latitude))
-        )
-    return heads
+# --- adaptive vertex cadence ---------------------------------------------------
+#
+# The build's ±6 h instrument forecast always emits a vertex every ``VERTEX_MIN``
+# (15 min) — short enough that the polyline never grows past a few dozen points.
+# The interactive deployment API's long runs (up to the 240 h request cap, or a
+# multi-day virtual deployment once workstream B lands) would not: 15 min vertices
+# over 25 days is 2400 points, most of it wasted resolution the map can't render
+# any differently. :func:`_vertex_cadence_min` widens the cadence just enough to
+# cap the vertex count, staying at the fine 15 min cadence for anything short
+# enough to afford it (48 h -> 193 vertices, comfortably under the cap already).
 
 
-def _glider_heads(gliders: list) -> list[tuple[dict, float, float]]:
-    """``(properties, lon, lat)`` for each glider-group platform's latest fix (see
-    :mod:`._gliders`, includes wave gliders and floats). ``batch`` is the platform
-    ``type`` (``xspar`` / ``seaglider`` / ``waveglider`` / ``float``) — the same key
-    its marker and track use, so the advection line rides the same instrument row.
-    These platforms
-    don't drift purely with the surface current, so this is a passive-drift
-    what-if (the surface current only), useful for their drift phases."""
-    heads = []
-    for p in gliders:
-        _, lat, lon = p.fixes[-1]
-        heads.append(({"id": p.id, "batch": p.type}, float(lon), float(lat)))
-    return heads
+def _vertex_cadence_min(
+    horizon_h: float, *, base_min: float = VERTEX_MIN, max_vertices: int = 400
+) -> float:
+    """The smallest multiple of ``base_min`` minutes such that a ``horizon_h``-long
+    track sampled at that cadence carries at most ``max_vertices`` vertices (the
+    head plus one per cadence step). Monotone in ``horizon_h``: short horizons stay
+    at ``base_min`` (48 h -> 15 min, ``floor(48*60/15) + 1 = 193`` vertices); longer
+    ones widen one ``base_min`` multiple at a time until the count fits. The result
+    is always a multiple of ``base_min``, so a caller that also emits marks at
+    multiples of this cadence keeps every mark landing exactly on an emitted vertex
+    (the same divisibility invariant :func:`_integrate` relies on for its fixed
+    ``vertex_min``)."""
+    cadence = base_min
+    while math.floor(horizon_h * 60.0 / cadence) + 1 > max_vertices:
+        cadence += base_min
+    return cadence
 
 
 def _anchor_t0(sampler: _Field, t0: float | None = None) -> tuple[float, str]:
     """The advection clock's t = 0 (epoch seconds) and its ISO-8601 ``valid_time``.
 
     Default (``t0=None``): the window time nearest wall-clock now — the forecast's
-    "present"; the ~sub-hour gap to now is immaterial. The build's per-instrument
-    advection uses this. The interactive API passes an explicit ``t0`` instead —
+    "present"; the ~sub-hour gap to now is immaterial. The interactive API passes an
+    explicit ``t0`` instead —
     e.g. the displayed CMEMS snapshot's time, so a clicked forecast starts at the
     same instant as the field shown on the map. The field interpolates linearly in
     time, so ``t0`` need not fall on a window grid time; a caller that accepts a
@@ -414,75 +433,3 @@ def _anchor_t0(sampler: _Field, t0: float | None = None) -> tuple[float, str]:
         t0 = float(sampler.times[int(np.argmin(np.abs(sampler.times - now)))])
     valid = np.datetime_as_string(np.datetime64(int(round(t0)), "s"), unit="s") + "Z"
     return t0, valid
-
-
-def _advection_feature(
-    sampler: _Field,
-    props: dict,
-    lon: float,
-    lat: float,
-    t0: float,
-    valid: str,
-    direction: int = 1,
-    *,
-    horizon_h: float = HORIZON_H,
-    mark_hours: tuple = MARK_HOURS,
-) -> dict | None:
-    """One advection ``LineString`` Feature from ``(lon, lat)`` at ``t0`` through
-    ``sampler``, or ``None`` if the head is on land/off-grid (a ``<2``-vertex line).
-    ``props`` is merged into the properties beside ``valid_time`` and the signed
-    ``marks``. Shared by :func:`_advection_geojson` (instrument heads, module
-    defaults) and the interactive point-forecast API (a clicked position, its own
-    horizon/marks)."""
-    coords, marks = _integrate(
-        sampler, lon, lat, t0, direction, horizon_h=horizon_h, mark_hours=mark_hours
-    )
-    if len(coords) < 2:
-        return None
-    return {
-        "type": "Feature",
-        "geometry": {"type": "LineString", "coordinates": coords},
-        "properties": {**props, "valid_time": valid, "marks": marks},
-    }
-
-
-def _advection_geojson(
-    field: xr.Dataset, tracks: pd.DataFrame, gliders: list, direction: int
-) -> dict:
-    """FeatureCollection of one advection ``LineString`` per instrument (drifters
-    and gliders), from its latest fix through ``field`` — ``direction`` +1 forward
-    (forecast) or -1 backward (hindcast).
-
-    Every instrument with a valid latest fix gets one (advection needs only a
-    position). One whose head is already on land/off-grid yields no usable line
-    (``<2`` vertices) and is skipped. Coordinates are ``[lon, lat]``. Properties:
-    the head identity (``D_number`` for drifters, ``id`` for gliders), ``batch``
-    (the instrument key its marker/track toggle under), ``valid_time``, and
-    ``marks`` — the ``{hours, lon, lat}`` the integration reached (``hours`` signed
-    by ``direction``).
-    """
-    sampler = _Field(field)
-    t0, valid = _anchor_t0(sampler)
-    features = []
-    for props, lon, lat in _drifter_heads(tracks) + _glider_heads(gliders):
-        feature = _advection_feature(sampler, props, lon, lat, t0, valid, direction)
-        if feature is not None:
-            features.append(feature)
-    return {"type": "FeatureCollection", "features": features}
-
-
-def forecast_geojson(
-    field: xr.Dataset, tracks: pd.DataFrame, gliders: list | None = None
-) -> dict:
-    """Forward current-advection forecast to +6 h. See :func:`_advection_geojson`."""
-    return _advection_geojson(field, tracks, gliders or [], direction=1)
-
-
-def hindcast_geojson(
-    field: xr.Dataset, tracks: pd.DataFrame, gliders: list | None = None
-) -> dict:
-    """Backward current-advection hindcast to -6 h: where the time-dependent field
-    would have carried a particle into each instrument head over the past 6 h. A
-    current-only back-trajectory, not the observed track. See
-    :func:`_advection_geojson`."""
-    return _advection_geojson(field, tracks, gliders or [], direction=-1)

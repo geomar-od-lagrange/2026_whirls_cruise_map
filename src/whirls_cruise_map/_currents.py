@@ -4,25 +4,30 @@ Canonical cruise study region (2026_whirls_cruise_prep
 ``archetypes/notebooks/001_study_region.py``): 0..25 E, -45..-25 N, widened by
 10 deg on every side and expressed in -180..180 for the web map.
 
-The CMEMS field is fetched over a **forecast window** (6-hourly ``PT6H-i``, the
-times nearest ``[now-12h, now+72h]``) so the map can scrub it on a time slider at
-12 h steps (``-12 … now … +72 h``). From that window we derive:
+Shading frames are named by their **absolute valid time** (``speed_2026-07-01T00Z.webp``,
+``vorticity_...``, ``flowvis_...webp``) and span every ``FRAME_STEP_H`` (12 h) step
+from :data:`FIELD_TMIN` (floored to 00Z) through the 6-hourly product's forecast edge
+— a growing set (~50 frames today, ~2/day). Each slow run fetches only the span of
+frames that still need (re)rendering (see :func:`plan_render`): old frames already on
+disk and safely behind now are immutable and skipped forever, so the fetch and render
+stay incremental as the history grows. From the fetched window we derive:
 
-- ``to_velocity_frames`` — one coarsened leaflet-velocity ``[u, v]`` grid per slider
-  frame for the animated flow trails, so the trails scrub with the shadings instead
-  of staying pinned to the now slice. Each grid's magnitude is compressed sub-linearly
-  (see ``VELOCITY_GAMMA``) so the slow eddies animate visibly while the Agulhas jet
-  does not run away; direction is preserved. (``to_velocity_json`` renders one such
-  grid from a single 2-D slice.)
-- ``to_speed_frames`` — one near-native speed raster per slider frame (cmocean
-  ``speed``, Web-Mercator warped, land transparent), as compact **lossless WebP**
-  frames sharing one colour scale, plus a small ``frames`` manifest for the client.
+- ``to_flowvis_frames`` — one **static streamline** raster per frame for the flow
+  overlay, so the flow scrubs with the shadings as a plain ``L.imageOverlay`` (fluent,
+  no client-side particle animation). Rendered on the same Mercator warp / edge bounds
+  as the speed raster (see :func:`_raster.mercator_streamlines_webp`), as lossless WebP.
+- ``to_speed_frames`` — one near-native speed raster per frame (cmocean ``speed``,
+  Web-Mercator warped, land transparent), as compact **lossless WebP** frames on a
+  frozen colour scale (:data:`SPEED_VMAX`).
 
 Land is kept as NaN throughout; the near-inertial *advection* field is a separate,
-finer hourly window (:func:`fetch_field_window`), unrelated to these overlays.
+finer hourly window (:func:`whirls_cruise_map._field_store.load_window`),
+unrelated to these overlays.
 """
 from __future__ import annotations
 
+import os
+import re
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,6 +46,11 @@ from ._retry import with_retry  # noqa: E402
 
 BBOX = {"lon_min": -10.0, "lon_max": 35.0, "lat_min": -55.0, "lat_max": -15.0}
 
+# Cruise start (2026-06-28T00Z): the earliest day the incremental field store
+# (_field_store) backfills. Env override lets the app point at another cruise
+# or region later — alongside BBOX, this is that seam.
+FIELD_TMIN = os.environ.get("WHIRLS_FIELD_TMIN", "2026-06-28T00:00:00Z")
+
 # CMEMS fetches run only on the slow (6-hourly) tier, so a transient blip that
 # isn't retried leaves currents/vorticity/forecast/hindcast/inertial stale for
 # up to 6h. copernicusmarine exposes no timeout/retry knob, so wrap the subset
@@ -51,54 +61,56 @@ _BACKOFF = 5  # base seconds: 5s, 10s between attempts
 
 DATASET_ID = "cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i"
 
-# Time-slider shading. The speed/vorticity rasters ship one frame every
-# SHADING_STEP_H over [-SHADING_BACK_H, +SHADING_FWD_H]: -12, now, +12 … +72 h.
-# All frames come from one 6-hourly ``DATASET_ID`` fetch over that range (12 h is a
-# multiple of the 6 h grid, so every target time is a real step), so the whole
-# shading set shares one clock and the *now* frame is identical to the previous
-# single-time speed raster. The frames render as lossless WebP on one shared colour
-# scale (see to_speed_frames / _vorticity.to_vorticity_frames, docs/currents.md).
-SHADING_STEP_H = 12
-SHADING_BACK_H = 12
-SHADING_FWD_H = 72
-SHADING_OFFSETS_H = list(range(-SHADING_BACK_H, SHADING_FWD_H + 1, SHADING_STEP_H))
+# Time-slider shading. Frames are named by absolute valid time and step every
+# FRAME_STEP_H from FIELD_TMIN (floored to 00Z) through the 6-hourly product's
+# forecast edge. 12 h is a multiple of the product's 6 h grid, so every frame time
+# is a real step. Frames render as lossless WebP on the frozen SPEED_VMAX / ζ·f
+# VORT_CLIP scale (see to_speed_frames / _vorticity.to_vorticity_frames,
+# docs/currents.md).
+FRAME_STEP_H = 12
 
-# Hourly surface product for the *time-dependent* forecast/hindcast advection
-# field. 6-hourly (``DATASET_ID``) resolves the inertial band here (T_f ~15-24 h
+# A frame already on disk is *final* — immutable, never re-rendered — once its valid
+# time is this far behind wall-clock now (the CMEMS-revises-nothing-behind-the-edge
+# working assumption of plans/034 with a safety margin). Recent + forecast frames
+# (valid_time + margin > now) are re-rendered every slow run; a growing frame history
+# can never force the whole set back into a build. Matches _field_store.FINAL_MARGIN_H.
+FRAME_FINAL_MARGIN_H = 12
+
+# Generous upper bound for the shading fetch's end time (now + this). CMEMS clamps the
+# subset to the product's actual forecast edge, so the returned window's max time *is*
+# that edge; ~10 d matches the anfc forecast reach (and _field_store's fallback).
+FORECAST_REACH_H = 240
+
+# Hourly surface product for the *time-dependent* advection field (the deploy API's
+# drift integration and the near-inertial decomposition).
+# 6-hourly (``DATASET_ID``) resolves the inertial band here (T_f ~15-24 h
 # > 12 h Nyquist), but only ~3 samples per inertial cycle, so linear-in-time
 # interpolation chords the loop; hourly (~20/cycle) traces it smoothly for a
 # negligible fetch cost (measured +0.8 s over 6-hourly for a +/-12 h window). The
-# shading/flow overlays (the flow-trail grids, the speed/ζ/f slider frames) use the 6-hourly
+# shading/flow overlays (the flow streamline frames, the speed/ζ/f slider frames) use the 6-hourly
 # ``DATASET_ID`` window; only the advection field is this hourly one. See
-# docs/forecast.md, docs/currents.md.
+# docs/currents.md.
 WINDOW_DATASET_ID = "cmems_mod_glo_phy_anfc_0.083deg_PT1H-m"
 WINDOW_BACK_H = 12  # hours of hourly field to fetch behind now (hindcast + bracket)
 WINDOW_FWD_H = 12   # ... and ahead of now (forecast + bracket); +/-6 h advection
 
-# Forecast-API window reach. The slow cron persists one window to the PVC that the
-# forecast API (whirls_cruise_map._api) serves from; a served window may be up to
-# one slow-cron cadence stale, so its forward reach must cover a full run started
-# at "now" even at that age: fwd >= FORECAST_HORIZON_H + SLOW_CADENCE_H. Deriving
-# the reach from those two drivers (not a bare 60) keeps a horizon bump from
-# silently outrunning the window. Back-reach covers the displayed-field lag, same
-# as the inertial/advection window above. FORECAST_HORIZON_H is the single source
-# for the API's default run length (_api._DEFAULT_HORIZON_H reads it).
-FORECAST_HORIZON_H = 48  # forecast-API default run length (hours)
-SLOW_CADENCE_H = 12      # slow-cron period; a served window may be this stale
-FORECAST_WINDOW_BACK_H = WINDOW_BACK_H                       # 12 h back
-FORECAST_WINDOW_FWD_H = FORECAST_HORIZON_H + SLOW_CADENCE_H  # 60 h forward
+# The deployment forecast API (whirls_cruise_map._api) no longer reads a
+# build-persisted window at all — it reads the incremental per-day field store
+# directly (whirls_cruise_map._field_store), scoping each request's own field to
+# just the span that request needs, reloaded from the store's live manifest
+# rather than sized ahead of time for cron-cadence staleness. So the build's own
+# hourly-window fetch below only has to cover its own consumers: the +/-6 h
+# forecast/hindcast advection and the inertial decomposition's narrow slice
+# (WINDOW_BACK_H + WINDOW_FWD_H = 24 h, well under an inertial period).
 
-# Coarsen the native 1/12-deg grid for the animated trails only. The speed raster
-# stays near-native (it is a small image either way and looks markedly sharper).
-COARSEN_STRIDE = 3
-
-# Sub-linear compression of the trail-animation velocity magnitude (gamma < 1).
-# gamma=0.5 (sqrt) lifts the slow eddies relative to the fast jet (~10x -> ~3x).
-VELOCITY_GAMMA = 0.5
-
-# Speed shading.
+# Speed shading, on a **frozen** colour scale. vmax is a constant, not a per-build
+# pooled percentile: re-pooling over a growing frame history would drift the scale and
+# force every immutable old frame back into build memory to stay colour-consistent.
+# Frozen 2026-07-13 from the pooled 99th-percentile scale of the then-current 8-frame
+# window (which rendered vmax 1.18 m/s); rounded to a stable 1.2 so the legend never
+# breathes across builds.
 SPEED_CMAP = cmocean.cm.speed
-SPEED_CLIP_PERCENTILE = 99
+SPEED_VMAX = 1.2  # m/s
 
 # Discrete shading classes. Both the sequential speed raster and the diverging ζ/f
 # raster (_vorticity, which imports these) snap the normalized [0, 1] colormap input
@@ -128,19 +140,19 @@ def _quantize_unit(t: np.ndarray) -> np.ndarray:
 # --- fetch -----------------------------------------------------------------
 
 def fetch_shading_window(
-    bbox: dict = BBOX, back_h: int = SHADING_BACK_H, fwd_h: int = SHADING_FWD_H
+    *, t_lo: datetime, t_hi: datetime, bbox: dict = BBOX
 ) -> xr.Dataset:
     """Download surface ``uo``/``vo`` over ``bbox`` for the 6-hourly window
-    ``[now-back_h, now+fwd_h]`` and return the 3-D ``(time, latitude, longitude)``
-    field with the **time dimension preserved**, land kept as NaN.
+    ``[t_lo, t_hi]`` and return the 3-D ``(time, latitude, longitude)`` field with the
+    **time dimension preserved**, land kept as NaN.
 
-    This is the source for both the animated flow trails (from the *now* slice) and
-    the time-slider speed/vorticity rasters (one frame every ``SHADING_STEP_H``).
-    ``coordinates_selection_method="outside"`` brackets the range so the ``-back_h``
-    and ``+fwd_h`` targets are inside the returned steps. Relies on the local
+    This covers exactly the span of shading frames that need (re)rendering this run
+    (``t_lo`` = the earliest such frame from :func:`plan_render`, ``t_hi`` = a generous
+    forecast reach that CMEMS clamps to the product's actual edge), which the build
+    then slices per frame. ``coordinates_selection_method="outside"`` brackets the
+    range so both endpoints land inside the returned steps. Relies on the local
     copernicusmarine login.
     """
-    now = datetime.now(timezone.utc)
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "currents.nc"
         with_retry(
@@ -153,8 +165,8 @@ def fetch_shading_window(
                 maximum_latitude=bbox["lat_max"],
                 minimum_depth=0.49,
                 maximum_depth=0.5,
-                start_datetime=now - timedelta(hours=back_h),
-                end_datetime=now + timedelta(hours=fwd_h),
+                start_datetime=t_lo,
+                end_datetime=t_hi,
                 coordinates_selection_method="outside",
                 output_filename=str(out),
                 overwrite=True,
@@ -171,194 +183,211 @@ def fetch_shading_window(
     return ds
 
 
-def _nearest_now_time(window: xr.Dataset) -> np.datetime64:
-    """The window step nearest wall-clock now — the slider's ``0 h`` anchor."""
-    now = np.datetime64(datetime.now(timezone.utc).replace(tzinfo=None), "ns")
-    return window["time"].sel(time=now, method="nearest").values
-
-
-def _now_valid_time(frames: list[dict]) -> str:
-    """The now (offset 0) frame's ``valid_time`` for the meta's top-level key,
-    falling back to the first frame if a custom offset list omits 0."""
-    return next((f["valid_time"] for f in frames if f["offset_h"] == 0), frames[0]["valid_time"])
-
-
-def frame_filename(kind: str, offset_h: int, ext: str = "webp") -> str:
-    """Slider-frame artifact name, e.g. ``speed_+12h.webp`` / ``vorticity_-12h.webp``
-    (lossless WebP shadings — half the bytes of PNG at the same pixels) or
-    ``currents_+00h.json`` (the flow-trail grid, ``ext="json"``). Single source of
-    truth shared by the renderers' metas and the build."""
-    return f"{kind}_{offset_h:+03d}h.{ext}"
-
-
-def select_frames(
-    window: xr.Dataset, offsets: list[int] = SHADING_OFFSETS_H
-) -> list[tuple[int, xr.Dataset]]:
-    """``(offset_h, 2-D slice)`` for each slider offset, the slice nearest
-    ``now + offset_h`` (12 h steps land on the 6-hourly grid exactly). A target past
-    the fetched window's edge clamps to the last step rather than erroring."""
-    t0 = _nearest_now_time(window)
-    frames = []
-    for off in offsets:
-        target = t0 + np.timedelta64(off, "h")
-        frames.append((off, window.sel(time=target, method="nearest")))
-    return frames
-
-
-def fetch_field_window(
-    bbox: dict = BBOX, back_h: int = WINDOW_BACK_H, fwd_h: int = WINDOW_FWD_H
-) -> xr.Dataset:
-    """Download hourly surface ``uo``/``vo`` over ``bbox`` for the window
-    ``[now-back_h, now+fwd_h]`` and return the 3-D ``(time, latitude, longitude)``
-    field with the **time dimension preserved**, land kept as NaN.
-
-    This feeds the *time-dependent* forecast/hindcast advection: the particle is
-    pushed by the current at its own clock time, so it traces the inertial loop the
-    model already carries instead of the straight streamline of a single frozen
-    snapshot. ``coordinates_selection_method="outside"`` makes the returned steps
-    *bracket* the window so the stepper always interpolates between two real times
-    at the edges. Relies on the local copernicusmarine login.
-    """
-    now = datetime.now(timezone.utc)
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "currents_window.nc"
-        with_retry(
-            lambda: copernicusmarine.subset(
-                dataset_id=WINDOW_DATASET_ID,
-                variables=["uo", "vo"],
-                minimum_longitude=bbox["lon_min"],
-                maximum_longitude=bbox["lon_max"],
-                minimum_latitude=bbox["lat_min"],
-                maximum_latitude=bbox["lat_max"],
-                minimum_depth=0.49,
-                maximum_depth=0.5,
-                start_datetime=now - timedelta(hours=back_h),
-                end_datetime=now + timedelta(hours=fwd_h),
-                coordinates_selection_method="outside",
-                output_filename=str(out),
-                overwrite=True,
-            ),
-            attempts=_ATTEMPTS,
-            backoff=_BACKOFF,
-            label=f"CMEMS subset of {WINDOW_DATASET_ID}",
-        )
-        with xr.open_dataset(out) as ds:
-            ds = ds.load()
-
-    if "depth" in ds.dims:
-        ds = ds.isel(depth=0, drop=True)
-    return ds
-
-
 def valid_time(field: xr.Dataset) -> str:
     """ISO-8601 valid time of the field (UTC, ``Z`` suffix). For a single-time
     field; the windowed field carries a ``time`` dimension instead."""
     return np.datetime_as_string(field["time"].values, unit="s") + "Z"
 
 
-# --- flow trails (leaflet-velocity grid) -----------------------------------
+# --- absolute-time frames: naming, span, planner ----------------------------
 
-def _component_header(field: xr.DataArray, number: int, name: str) -> dict:
-    """leaflet-velocity header for one component; ``field`` must be ordered
-    latitude-descending, longitude-ascending."""
-    lats = field["latitude"].values
-    lons = field["longitude"].values
-    return {
-        "parameterUnit": "m.s-1",
-        "parameterCategory": 2,
-        "parameterNumber": number,
-        "parameterNumberName": name,
-        "nx": int(lons.size),
-        "ny": int(lats.size),
-        "lo1": float(lons.min()),
-        "lo2": float(lons.max()),
-        "la1": float(lats.max()),
-        "la2": float(lats.min()),
-        "dx": float(abs(lons[1] - lons[0])),
-        "dy": float(abs(lats[1] - lats[0])),
-        "refTime": valid_time(field),
-        "forecastTime": 0,
-    }
+# A frame filename is ``kind_<token>.ext`` with an absolute, colon-free (so it's a
+# safe filename) hour-precision UTC token, e.g. ``speed_2026-07-01T00Z.webp``. The
+# retired offset form ``kind_±NNh.ext`` (from the moving-anchor design) is matched by
+# _STALE_FRAME_RE only, so :func:`prune_stale_frames` sweeps those leftovers.
+_TOKEN_FMT = "%Y-%m-%dT%HZ"
+_FRAME_FILE_RE = re.compile(
+    r"^(speed|vorticity|flowvis)_(\d{4}-\d{2}-\d{2}T\d{2})Z\.(webp|json)$"
+)
+# `currents` stays here (never in _FRAME_FILE_RE) so retired `currents_*.json` flow grids
+# — replaced by the pre-rendered `flowvis_*.webp` streamlines — are pruned on next build.
+_STALE_FRAME_RE = re.compile(
+    r"^(speed|vorticity|flowvis|currents)_"
+    r"(\d{4}-\d{2}-\d{2}T\d{2}Z|[+-]\d{2,3}h)\.(webp|json)$"
+)
 
 
-def _component(field: xr.DataArray, number: int, name: str) -> dict:
-    """Turn a 2-D field into a leaflet-velocity object: data is row-major from the
-    north-west corner (latitude descending, longitude ascending); land NaN -> 0.
-
-    leaflet-velocity needs a hole-free regular grid and has no land mask, so land
-    is filled with zero velocity rather than left absent. The client then
-    bilinearly interpolates across the ocean->0 boundary, so coastal ocean
-    velocities bleed onto the adjacent land and animated particles drift ashore.
-    The coarsening in :func:`to_velocity_json` widens the bleed (the decimated
-    coastline is offset by up to a coarse cell). Unlike the speed shading, which
-    masks land with a transparent palette index (:func:`to_speed_frames`), the
-    trails have no such mask. Accepted as a known cosmetic limitation; see
-    plans/BACKLOG.md.
-    """
-    field = field.sortby("latitude", ascending=False).sortby(
-        "longitude", ascending=True
-    )
-    # Round to 4 dp: the raw solve yields 17-significant-digit floats, ~3x the bytes
-    # for sub-mm/s precision the decorative, gamma-scaled trails never resolve. At 4 dp
-    # a frame is ~0.45 MB (vs ~1 MB), so the 8-frame slider stays affordable.
-    data = np.round(np.nan_to_num(field.values, nan=0.0).astype(float), 4)
-    return {
-        "header": _component_header(field, number, name),
-        "data": data.ravel(order="C").tolist(),
-    }
+def frame_token(when: datetime) -> str:
+    """The colon-free hour-precision UTC token in a frame filename, e.g.
+    ``2026-07-01T00Z`` — a frame time always lands on the hour, so the token is
+    lossless for it."""
+    return when.astimezone(timezone.utc).strftime(_TOKEN_FMT)
 
 
-def _scale_for_animation(coarse: xr.Dataset) -> xr.Dataset:
-    """Compress the velocity magnitude sub-linearly, keeping direction, so the
-    slow eddies animate. ``m' = vref * (m/vref)**gamma`` => factor ``(m/vref)**
-    (gamma-1)``; ``vref`` is the field's 99th-percentile speed (its fixed point)."""
-    spd = np.hypot(coarse["uo"], coarse["vo"])
-    ocean = np.where(spd.values > 0, spd.values, np.nan)
-    vref = float(np.nanpercentile(ocean, 99))
-    factor = xr.where(spd > 0, (spd / vref) ** (VELOCITY_GAMMA - 1.0), 0.0)
-    return coarse.assign(uo=coarse["uo"] * factor, vo=coarse["vo"] * factor)
+def frame_valid_time(when: datetime) -> str:
+    """The full ISO-8601 ``valid_time`` (``...T00:00:00Z``) a manifest carries for the
+    frame at ``when`` — the same shape :func:`valid_time` emits for a single slice, so
+    clients parse frame and slice times identically."""
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def to_velocity_json(field: xr.Dataset, stride: int = COARSEN_STRIDE) -> list[dict]:
-    """Coarsened, magnitude-compressed leaflet-velocity ``[u, v]`` for the trails,
-    from a single 2-D ``(latitude, longitude)`` slice."""
-    coarse = field.isel(
-        latitude=slice(None, None, stride),
-        longitude=slice(None, None, stride),
-    )
-    coarse = _scale_for_animation(coarse)
+def frame_filename(kind: str, when: datetime, ext: str = "webp") -> str:
+    """Absolute-time frame artifact name, e.g. ``speed_2026-07-01T00Z.webp`` /
+    ``vorticity_...`` / ``flowvis_...`` (all lossless WebP: the two shadings and the
+    static flow streamlines). Single source of truth shared by the renderers and the
+    build's manifests / pruning."""
+    return f"{kind}_{frame_token(when)}.{ext}"
+
+
+def parse_frame_filename(name: str) -> tuple[str, datetime] | None:
+    """``(kind, valid_time)`` for an absolute-time frame filename, else ``None`` (a
+    retired offset name, a meta file, or anything else) — the inverse of
+    :func:`frame_filename`, so ``file -> valid_time`` round-trips exactly."""
+    m = _FRAME_FILE_RE.match(name)
+    if m is None:
+        return None
+    when = datetime.strptime(m.group(2), "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
+    return m.group(1), when
+
+
+def frame_tmin() -> datetime:
+    """The first frame's valid time: :data:`FIELD_TMIN` floored to 00Z. The whole
+    frame grid is anchored here, so every frame time is this plus a multiple of
+    ``FRAME_STEP_H``."""
+    t = datetime.fromisoformat(FIELD_TMIN.replace("Z", "+00:00")).astimezone(timezone.utc)
+    return t.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def frame_span(t_lo: datetime, t_hi: datetime, step_h: int = FRAME_STEP_H) -> list[datetime]:
+    """Every ``step_h`` step from ``t_lo`` through ``t_hi`` inclusive (``t_lo`` is
+    assumed on the grid; empty if ``t_hi < t_lo``)."""
+    out, t, step = [], t_lo, timedelta(hours=step_h)
+    while t <= t_hi:
+        out.append(t)
+        t += step
+    return out
+
+
+def plan_render(
+    frames: list[datetime],
+    existing: set[datetime],
+    now: datetime,
+    margin_h: int = FRAME_FINAL_MARGIN_H,
+) -> list[datetime]:
+    """Which of ``frames`` still need (re)rendering: every frame *except* those already
+    on disk (``existing``) **and** safely behind now (``valid_time + margin <= now``,
+    hence final and immutable). Missing frames, recent frames, and forecast frames all
+    render; a deleted old frame re-plans (it's no longer in ``existing``). Pure and
+    network-free — the incremental-rendering decision the build's shading block runs."""
+    margin = timedelta(hours=margin_h)
+    return [t for t in frames if not (t in existing and t + margin <= now)]
+
+
+def nearest_valid_time(frames: list[datetime], now: datetime) -> str:
+    """The ``frame_valid_time`` of the frame nearest ``now`` — the manifest's top-level
+    ``valid_time`` for now-only readers / the client's initial view."""
+    return frame_valid_time(min(frames, key=lambda t: abs(t - now)))
+
+
+def frame_manifest(kind: str, frames: list[datetime], ext: str = "webp") -> list[dict]:
+    """The client manifest ``[{valid_time, file}]`` for ``frames`` — one entry per frame
+    in span order, no offset."""
     return [
-        _component(coarse["uo"], number=2, name="Eastward current"),
-        _component(coarse["vo"], number=3, name="Northward current"),
+        {"valid_time": frame_valid_time(t), "file": frame_filename(kind, t, ext)}
+        for t in frames
     ]
 
 
-def to_velocity_frames(
-    window: xr.Dataset, offsets: list[int] = SHADING_OFFSETS_H
-) -> tuple[list[dict], list[dict]]:
-    """One leaflet-velocity flow grid per slider offset, so the animated trails scrub
-    with the speed/ζ·f shadings instead of staying pinned to the now slice.
-
-    Slices the same window and offsets as :func:`to_speed_frames` (no extra fetch;
-    12 h steps land on the 6-hourly grid exactly), rendering each with
-    :func:`to_velocity_json`. Returns ``(frames, manifest)``: each frame is
-    ``{offset_h, valid_time, file, data}`` with ``data`` the velocity ``[u, v]`` list
-    and ``file`` e.g. ``currents_+00h.json``; ``manifest`` is the compact
-    ``[{offset_h, valid_time, file}]`` the build merges into ``currents_meta.json`` as
-    ``flow_frames`` for the client's slider. Same valid-times as the speed frames; the
-    *now* frame (offset 0) is the slice the map opens on.
-    """
-    frames = [
-        {
-            "offset_h": offset,
-            "valid_time": valid_time(ds),
-            "file": frame_filename("currents", offset, ext="json"),
-            "data": to_velocity_json(ds),
+def existing_frame_times(map_dir: Path) -> set[datetime]:
+    """Frame valid times already fully rendered under ``map_dir`` — a time counts only
+    if **all three** WebP artifacts (speed + vorticity + flowvis streamlines) are
+    present, so a frame half-written by a prior partial run re-plans rather than being
+    treated as final."""
+    times: set[datetime] | None = None
+    for kind, ext in (("speed", "webp"), ("vorticity", "webp"), ("flowvis", "webp")):
+        found = {
+            parsed[1]
+            for p in map_dir.glob(f"{kind}_*.{ext}")
+            if (parsed := parse_frame_filename(p.name)) is not None
         }
-        for offset, ds in select_frames(window, offsets)
-    ]
-    manifest = [{k: f[k] for k in ("offset_h", "valid_time", "file")} for f in frames]
-    return frames, manifest
+        times = found if times is None else (times & found)
+    return times or set()
+
+
+def first_pending_frame(
+    t_lo: datetime,
+    existing: set[datetime],
+    now: datetime,
+    step_h: int = FRAME_STEP_H,
+    margin_h: int = FRAME_FINAL_MARGIN_H,
+) -> datetime:
+    """The earliest frame that still needs rendering — the shading fetch's lower bound,
+    computable *before* the fetch (it doesn't depend on the forecast edge): the min of
+    :func:`plan_render` is either an old hole or the first recent frame, both at or
+    before now. Probing the grid up to ``now`` is enough to find it (forecast frames all
+    render, so they never lower the min)."""
+    probe = frame_span(t_lo, now + timedelta(hours=step_h), step_h)
+    pending = plan_render(probe, existing, now, margin_h)
+    return pending[0] if pending else t_lo
+
+
+def window_frame_edge(window: xr.Dataset, t_lo: datetime, step_h: int = FRAME_STEP_H) -> datetime:
+    """The last frame time on the grid at or before the fetched window's max time — the
+    frame span's upper bound (the 6-hourly product's forecast edge, snapped to the
+    ``step_h`` frame grid)."""
+    wmax = window["time"].values.max()
+    wmax_dt = datetime.fromtimestamp(
+        wmax.astype("datetime64[s]").astype("int64"), tz=timezone.utc
+    )
+    steps = int((wmax_dt - t_lo).total_seconds() // (step_h * 3600))
+    return t_lo + timedelta(hours=step_h * steps)
+
+
+def prune_stale_frames(map_dir: Path, frames: list[datetime]) -> list[str]:
+    """Delete every frame-named file under ``map_dir`` not referenced by the current
+    span ``frames`` — retired offset-named artifacts (``speed_+12h.webp`` &c.) and
+    absolute frames no longer in the span — so stale files never linger. Meta files and
+    non-frame files don't match :data:`_STALE_FRAME_RE`, so they're untouched. Returns
+    the removed names."""
+    keep = set()
+    for t in frames:
+        keep.add(frame_filename("speed", t, "webp"))
+        keep.add(frame_filename("vorticity", t, "webp"))
+        keep.add(frame_filename("flowvis", t, "webp"))
+    removed = []
+    for p in sorted(map_dir.iterdir()):
+        if _STALE_FRAME_RE.match(p.name) and p.name not in keep:
+            p.unlink()
+            removed.append(p.name)
+    return removed
+
+
+def _slice_at(window: xr.Dataset, when: datetime) -> xr.Dataset:
+    """The window's 2-D slice nearest ``when`` (a frame time lands on the 6-hourly grid
+    exactly, so ``nearest`` picks the true step)."""
+    target = np.datetime64(when.astimezone(timezone.utc).replace(tzinfo=None), "ns")
+    return window.sel(time=target, method="nearest")
+
+
+# --- flow streamlines (pre-rendered static WebP) ---------------------------
+
+def to_flowvis_frames(window: xr.Dataset, frame_times: list[datetime]) -> list[dict]:
+    """One **static streamline** WebP per requested frame time, so the flow overlay
+    scrubs with the speed / ζ·f shadings as a plain ``L.imageOverlay`` — fluent, with no
+    client-side particle animation (this replaces the leaflet-velocity flow trails).
+
+    Slices the same fetched window as :func:`to_speed_frames` for each of
+    ``frame_times`` (no extra fetch; a frame time lands on the 6-hourly grid exactly),
+    rendering each with :func:`_raster.mercator_streamlines_webp` on the same Mercator
+    warp and edge bounds as the speed raster, so the client places it with the shared
+    ``meta.bounds``. Returns ``[{valid_time, file, image}]`` with ``image`` the WebP bytes
+    and ``file`` e.g. ``flowvis_2026-07-01T00Z.webp``; the build writes each ``image`` and
+    assembles the ``flow_frames`` manifest for ``currents_meta.json`` from the full span
+    via :func:`frame_manifest`."""
+    frames = []
+    for t in frame_times:
+        f = _slice_at(window, t).sortby("latitude").sortby("longitude")
+        image, _ = _raster.mercator_streamlines_webp(
+            f["uo"].values, f["vo"].values, f["latitude"].values, f["longitude"].values
+        )
+        frames.append(
+            {
+                "valid_time": frame_valid_time(t),
+                "file": frame_filename("flowvis", t),
+                "image": image,
+            }
+        )
+    return frames
 
 
 # --- speed shading (Mercator-warped PNG) -----------------------------------
@@ -371,58 +400,41 @@ def _colorbar_stops(n: int = N_BINS) -> list[str]:
     return [mcolors.to_hex(SPEED_CMAP((i + 0.5) / n)) for i in range(n)]
 
 
-def _speed_of(frame: xr.Dataset) -> np.ndarray:
-    """|velocity| on the ascending lat/lon grid, land NaN preserved."""
-    f = frame.sortby("latitude").sortby("longitude")
-    return np.hypot(f["uo"].values, f["vo"].values)
-
-
-def to_speed_frames(
-    window: xr.Dataset, offsets: list[int] = SHADING_OFFSETS_H
-) -> tuple[list[dict], dict]:
-    """Render |velocity| for each slider offset as a compact **lossless WebP**
+def to_speed_frames(window: xr.Dataset, frame_times: list[datetime]) -> tuple[list[dict], dict]:
+    """Render |velocity| for each requested frame time as a compact **lossless WebP**
     (cmocean ``speed``, land transparent) and return ``(frames, meta)``.
 
-    All frames share **one** colour scale — ``vmax`` is the ``SPEED_CLIP_PERCENTILE``
-    of speed pooled over *every* frame — so a colour means the same speed at every
-    time and the single legend stays honest across the slider. Each frame is a dict
-    ``{offset_h, valid_time, file, image}``; ``meta`` (``currents_meta.json``)
-    carries the shared ``bounds/vmax/units/colorbar`` plus a ``frames`` manifest
-    ``[{offset_h, valid_time, file}]``, ``now_offset_h``, and a top-level
-    ``valid_time`` (= the now frame) for now-only readers (the deploy tool's start).
-    """
-    slices = select_frames(window, offsets)
-    speeds = [_speed_of(ds) for _, ds in slices]
-    vmax = float(np.nanpercentile(np.stack(speeds), SPEED_CLIP_PERCENTILE))
-
+    All frames share the **frozen** :data:`SPEED_VMAX` colour scale, so a colour means
+    the same speed at every time and every immutable old frame stays colour-consistent
+    without re-pooling a growing history. Each frame is ``{valid_time, file, image}``;
+    ``meta`` carries the shared ``bounds/vmax/units/colorbar`` for the build to write
+    into ``currents_meta.json`` alongside the full-span ``frames``/``flow_frames``
+    manifests and top-level ``valid_time`` it assembles itself."""
     def to_rgba(warped):
         # Quantize to N_BINS flat classes before the lookup (see N_BINS): far fewer
         # unique colours, so lossless WebP squeezes the constant-value regions.
-        rgba = SPEED_CMAP(_quantize_unit(np.clip(warped / vmax, 0.0, 1.0)))
+        rgba = SPEED_CMAP(_quantize_unit(np.clip(warped / SPEED_VMAX, 0.0, 1.0)))
         rgba[np.isnan(warped), 3] = 0.0  # land transparent
         return rgba
 
     frames, bounds = [], None
-    for (offset, ds), speed in zip(slices, speeds):
-        f = ds.sortby("latitude").sortby("longitude")
+    for t in frame_times:
+        f = _slice_at(window, t).sortby("latitude").sortby("longitude")
+        speed = np.hypot(f["uo"].values, f["vo"].values)
         image, bounds = _raster.mercator_rgba_webp(
             speed, f["latitude"].values, f["longitude"].values, to_rgba
         )
         frames.append(
             {
-                "offset_h": offset,
-                "valid_time": valid_time(ds),
-                "file": frame_filename("speed", offset),
+                "valid_time": frame_valid_time(t),
+                "file": frame_filename("speed", t),
                 "image": image,
             }
         )
     meta = {
-        "valid_time": _now_valid_time(frames),
         "bounds": bounds,
-        "vmax": vmax,
+        "vmax": SPEED_VMAX,
         "units": "m/s",
         "colorbar": _colorbar_stops(),
-        "now_offset_h": 0,
-        "frames": [{k: f[k] for k in ("offset_h", "valid_time", "file")} for f in frames],
     }
     return frames, meta

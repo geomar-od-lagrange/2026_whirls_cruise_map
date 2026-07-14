@@ -5,10 +5,9 @@
 - a sidebar "data freshness" panel: the UTC build time and a live UTC clock
 - showing all drifter locations
 - showing the glider instruments — the XSPAR spar buoy and the seagliders — each with its latest position and track
-- toggle for showing the true (free-drift) track of selected instruments, drifters truncated at deployment
+- a single **Show tracks** master (in the time-slider box) that shows or hides every observed track line at once — drifter, glider, and ship — drifters truncated at deployment
+- **violet forecast tracks** for the real deployed drifters — each in-water drifter's last fix advected forward through the CMEMS field (via the same `/api/forecast` engine as the deploy tool). Shown as the clock-driven continuation of the drifter's observed track: only when the scrubber is past *now*, with the drifter's own marker walking the forecast into the future. The violet **track line** is governed by the **Show tracks** master (hidden when tracks are off — but the marker still walks the forecast); it is clipped to the scrubber position. Shown only when that dynamic API is reachable.
 - click any instrument's track, one of its fix dots, or its latest-position marker (drifters and gliders alike) to highlight it — brightening it and desaturating the rest (click the empty map to clear)
-- toggle for a per-instrument current-advection forecast (solid line to +6 h, dots at 1/3/6 h)
-- toggle for a per-instrument current-advection hindcast (solid line back to −6 h, dots at 1/3/6 h)
-- three stacked top-right controls: **Instruments** (show/hide each drifter batch and glider platform independently, plus the track/forecast/hindcast overlays), **Currents** (a shading radio — speed / ζ/f vorticity / none — plus flow-trail and near-inertial checkboxes), and **Ships** (the two vessels)
+- a top-right control dock: **Instruments** (show/hide each drifter batch, glider platform, and the two vessels independently in one merged panel, with a select-all / deselect-all shortcut), **Currents** (a shading radio — speed / ζ/f vorticity / none — plus flow and near-inertial overlay checkboxes and an **Animate overlays** toggle that freezes the near-inertial animation to a static snapshot while scrubbing; the flow overlay is a pre-rendered static streamline raster, always fluent), and **Deploy** (placing virtual deployments)
 - overlay of today's cmems surface currents (analysis / forecast t=0)
 - toggle for a normalized relative-vorticity (ζ/f) overlay from the same field — cyclonic (+) / anticyclonic (−) eddies as opposite-signed lobes (off by default)

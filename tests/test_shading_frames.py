@@ -1,42 +1,56 @@
-"""Time-slider speed and flow frames (_currents.to_speed_frames /
-to_velocity_frames).
+"""Absolute-time speed & flow shading frames plus the incremental-render planner
+(_currents).
 
-The slider ships one lossless WebP per 12 h offset (-12 … +72 h), all sharing one
-colour scale so a colour means the same speed at every time, plus one
-leaflet-velocity flow grid per offset so the trails scrub in lockstep. These pin the
-frame set, the shared vmax, the compact WebP encoding, the land mask, and the flow
-frame manifest.
+Frames are named by absolute valid time (speed_2026-06-28T00Z.webp), span every 12 h
+step from FIELD_TMIN through the forecast edge, and render on a *frozen* colour scale
+(SPEED_VMAX). Only frames that aren't yet final are (re)rendered each run. These pin
+the absolute naming + round-trip, the frozen scale, the compact WebP encoding / land
+mask, the flow manifest, and the pure planner / manifest / pruning helpers the build
+drives — all network-free.
 """
 from __future__ import annotations
 
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+import matplotlib.colors as mcolors
 import numpy as np
 import xarray as xr
 from PIL import Image
 
 from whirls_cruise_map import _currents
 from whirls_cruise_map._currents import (
+    FRAME_FINAL_MARGIN_H,
+    FRAME_STEP_H,
     N_BINS,
-    SHADING_OFFSETS_H,
+    SPEED_VMAX,
+    existing_frame_times,
+    first_pending_frame,
+    frame_filename,
+    frame_manifest,
+    frame_span,
+    frame_valid_time,
+    nearest_valid_time,
+    parse_frame_filename,
+    plan_render,
+    prune_stale_frames,
+    to_flowvis_frames,
     to_speed_frames,
-    to_velocity_frames,
 )
 
+T0 = datetime(2026, 6, 28, 0, 0, tzinfo=timezone.utc)  # a 00Z frame anchor
 
-def _window(with_land: bool = False):
-    """A 6-hourly window around now whose speed *grows with time*, so a per-frame
-    scale would drift — the shared scale must be pinned to the fastest frame."""
+
+def _window(t_lo: datetime = T0, n_steps: int = 9, with_land: bool = False):
+    """A 6-hourly window from ``t_lo`` whose speed *grows with time*, so a per-frame
+    scale would drift — the frozen SPEED_VMAX must not."""
     lats = np.linspace(-55.0, -15.0, 60)
     lons = np.linspace(-10.0, 35.0, 66)
-    now = np.datetime64(datetime.now(timezone.utc).replace(tzinfo=None), "ns")
-    offsets = np.arange(-12, 78, 6)  # 6-hourly, brackets the -12…+72 range
-    times = now + offsets.astype("timedelta64[h]")
+    t0 = np.datetime64(t_lo.replace(tzinfo=None), "ns")
+    times = t0 + (np.arange(n_steps) * 6).astype("timedelta64[h]")
     base_u = np.tile(np.linspace(0.1, 0.6, lons.size), (lats.size, 1))
     base_v = np.tile(np.linspace(-0.3, 0.3, lats.size)[:, None], (1, lons.size))
-    # scale each frame up with the offset -> later frames are strictly faster
-    scale = 1.0 + (offsets - offsets.min()) / 100.0
+    scale = 1.0 + np.arange(n_steps) / 10.0  # later frames strictly faster
     u = base_u[None] * scale[:, None, None]
     v = base_v[None] * scale[:, None, None]
     if with_land:
@@ -49,48 +63,65 @@ def _window(with_land: bool = False):
     )
 
 
-def test_frame_set_and_names():
-    frames, meta = to_speed_frames(_window())
-    assert [f["offset_h"] for f in frames] == SHADING_OFFSETS_H == [-12, 0, 12, 24, 36, 48, 60, 72]
-    assert [f["file"] for f in meta["frames"]][:3] == [
-        "speed_-12h.webp", "speed_+00h.webp", "speed_+12h.webp",
+def _frame_times():
+    return frame_span(T0, T0 + timedelta(hours=48))  # 0, 12, 24, 36, 48 h
+
+
+# --- absolute naming + round-trip ---------------------------------------------
+
+def test_absolute_names_and_round_trip():
+    fts = _frame_times()
+    frames, meta = to_speed_frames(_window(), fts)
+    assert [f["file"] for f in frames][:3] == [
+        "speed_2026-06-28T00Z.webp",
+        "speed_2026-06-28T12Z.webp",
+        "speed_2026-06-29T00Z.webp",
     ]
+    assert ":" not in frames[0]["file"]  # colon-free token -> a safe filename
+    for f, t in zip(frames, fts):
+        kind, parsed = parse_frame_filename(f["file"])  # file -> valid_time round-trip
+        assert kind == "speed"
+        assert parsed == t
+        assert f["valid_time"] == frame_valid_time(t)
     assert meta["units"] == "m/s"
-    assert meta["valid_time"] == next(f["valid_time"] for f in frames if f["offset_h"] == 0)
+    # The renderer returns only the shared scale; the build assembles the manifest.
+    assert "valid_time" not in meta and "frames" not in meta
 
 
-def test_one_shared_scale():
-    """A single vmax — the SPEED_CLIP_PERCENTILE pooled over *every* frame — backs
-    the whole slider, so a colour is the same speed at every time. Pin that
-    definition, and that it genuinely spans the frames (between the slowest and
-    fastest frame's own percentile), unlike a per-frame scale that would drift."""
-    ds = _window()
-    _, meta = to_speed_frames(ds)
-    slices = _currents.select_frames(ds)
-    pooled = np.stack([_currents._speed_of(s) for _, s in slices])
-    expected = float(np.nanpercentile(pooled, _currents.SPEED_CLIP_PERCENTILE))
-    assert meta["vmax"] == expected
-    per_frame = [
-        np.nanpercentile(_currents._speed_of(s), _currents.SPEED_CLIP_PERCENTILE)
-        for _, s in slices
+def test_parse_ignores_retired_and_meta_names():
+    assert parse_frame_filename("speed_+12h.webp") is None  # retired offset form
+    assert parse_frame_filename("currents_meta.json") is None
+    assert parse_frame_filename("build.json") is None
+
+
+# --- frozen colour scale ------------------------------------------------------
+
+def test_frozen_speed_scale_drives_colorbar():
+    """vmax is the constant SPEED_VMAX regardless of the field's magnitude, and the
+    colorbar is the N_BINS discrete class colours derived from it."""
+    _, meta = to_speed_frames(_window(), _frame_times())
+    assert meta["vmax"] == SPEED_VMAX == 1.2
+    assert len(meta["colorbar"]) == N_BINS
+    assert meta["colorbar"] == [
+        mcolors.to_hex(_currents.SPEED_CMAP((i + 0.5) / N_BINS)) for i in range(N_BINS)
     ]
-    assert min(per_frame) < meta["vmax"] < max(per_frame)  # a genuine pool, not one frame
+    # A much faster field yields the *same* frozen vmax (no re-pooling / drift).
+    _, meta2 = to_speed_frames(_window() * 3.0, _frame_times())
+    assert meta2["vmax"] == SPEED_VMAX
 
+
+# --- encoding / land mask / binning -------------------------------------------
 
 def test_frames_are_webp_and_masked():
-    frames, _ = to_speed_frames(_window(with_land=True))
+    frames, _ = to_speed_frames(_window(with_land=True), _frame_times())
     im = Image.open(io.BytesIO(frames[1]["image"]))
-    assert im.format == "WEBP"  # the compact encoding
+    assert im.format == "WEBP"
     alpha = np.array(im.convert("RGBA"))[..., 3]
     assert (alpha == 0).any() and (alpha == 255).any()  # land masked, ocean opaque
 
 
 def test_frames_binned_to_n_bins():
-    """Lever 5: the speed raster snaps |velocity| to at most N_BINS flat colour
-    classes (bin midpoints) so lossless WebP compresses the large constant-value
-    regions — count the distinct opaque RGB triples in a frame (a continuous ramp
-    would show far more). The meta's `colorbar` carries exactly those classes."""
-    frames, meta = to_speed_frames(_window())
+    frames, meta = to_speed_frames(_window(), _frame_times())
     im = np.array(Image.open(io.BytesIO(frames[1]["image"])).convert("RGBA"))
     opaque = im[im[..., 3] == 255][:, :3]
     n_colours = len({tuple(px) for px in opaque})
@@ -98,29 +129,123 @@ def test_frames_binned_to_n_bins():
     assert len(meta["colorbar"]) == N_BINS
 
 
-# --- flow frames --------------------------------------------------------------
+# --- flow (static streamline) frames -----------------------------------------
 
-def test_flow_frame_set_and_manifest():
-    """One flow grid per slider offset, JSON-named, valid-times matching the speed
-    frames so the two scrub in lockstep. The manifest carries no bulky `data`."""
-    frames, manifest = to_velocity_frames(_window())
-    assert [f["offset_h"] for f in frames] == SHADING_OFFSETS_H
-    assert [f["file"] for f in manifest][:3] == [
-        "currents_-12h.json", "currents_+00h.json", "currents_+12h.json",
+def test_flowvis_frames_absolute_and_webp():
+    fts = _frame_times()
+    frames = to_flowvis_frames(_window(), fts)
+    assert [f["file"] for f in frames][:2] == [
+        "flowvis_2026-06-28T00Z.webp",
+        "flowvis_2026-06-28T12Z.webp",
     ]
-    speed_frames, _ = to_speed_frames(_window())
+    speed_frames, meta = to_speed_frames(_window(), fts)
+    # Flow frames are parallel to the speed frames (same grid, same order), so the client
+    # scrubs them by the same frame index.
     assert [f["valid_time"] for f in frames] == [f["valid_time"] for f in speed_frames]
-    # Manifest is the compact client seam: offsets/times/files only, no velocity data.
-    assert all(set(m) == {"offset_h", "valid_time", "file"} for m in manifest)
+    # Each frame is real lossless-WebP bytes and co-registers with the speed raster: the
+    # renderer shares the shading's Mercator warp / edge bounds, so the client places the
+    # flow overlay with the same `meta.bounds`.
+    for f in frames:
+        assert f["image"][:4] == b"RIFF" and f["image"][8:12] == b"WEBP"
+    sl = _window().isel(time=0).sortby("latitude").sortby("longitude")
+    _, bounds = _currents._raster.mercator_streamlines_webp(
+        sl["uo"].values, sl["vo"].values, sl["latitude"].values, sl["longitude"].values
+    )
+    assert bounds == meta["bounds"]
 
 
-def test_flow_frame_data_is_leaflet_velocity_and_rounded():
-    """Each frame's `data` is the two-component leaflet-velocity list, with values
-    rounded to 4 dp to keep the 8-frame slider affordable on the VSAT link."""
-    frames, _ = to_velocity_frames(_window())
-    data = frames[0]["data"]
-    assert [c["header"]["parameterNumberName"] for c in data] == [
-        "Eastward current", "Northward current",
-    ]
-    for c in data:
-        assert all(v == round(v, 4) for v in c["data"])
+# --- the incremental-render planner (pure) ------------------------------------
+
+def test_plan_render_backfill_then_incremental():
+    now = T0 + timedelta(days=3)
+    grid = frame_span(T0, now + timedelta(hours=24))
+
+    # First run: nothing on disk -> render the whole span (backfill).
+    assert plan_render(grid, set(), now) == grid
+
+    # Second run: every frame on disk -> only recent + forecast (valid_time + margin
+    # still ahead of now); the older frames are final and skipped.
+    on_disk = set(grid)
+    planned = plan_render(grid, on_disk, now)
+    margin = timedelta(hours=FRAME_FINAL_MARGIN_H)
+    assert planned == [t for t in grid if t + margin > now]
+    assert planned and planned != grid  # a genuine incremental subset
+
+    # A deleted old frame re-plans (it's no longer in `existing`).
+    old = grid[0]
+    assert old not in planned
+    assert old in plan_render(grid, on_disk - {old}, now)
+
+
+def test_plan_render_margin_boundary():
+    now = T0 + timedelta(days=2)  # a 00Z instant
+    final = now - timedelta(hours=FRAME_FINAL_MARGIN_H)  # valid_time + margin == now
+    recent = final + timedelta(hours=FRAME_STEP_H)       # valid_time + margin  > now
+    grid = [final, recent]
+    planned = plan_render(grid, set(grid), now)
+    assert final not in planned  # boundary counts as final (<= now)
+    assert recent in planned
+
+
+# --- manifest / nearest-now / disk scan / fetch bound -------------------------
+
+def test_frame_manifest_schema():
+    fts = frame_span(T0, T0 + timedelta(hours=24))
+    man = frame_manifest("speed", fts)
+    assert all(set(m) == {"valid_time", "file"} for m in man)  # no offset_h
+    assert man[0] == {
+        "valid_time": "2026-06-28T00:00:00Z",
+        "file": "speed_2026-06-28T00Z.webp",
+    }
+    flow = frame_manifest("flowvis", fts)
+    assert flow[0]["file"] == "flowvis_2026-06-28T00Z.webp"
+
+
+def test_nearest_valid_time_picks_now_frame():
+    grid = frame_span(T0, T0 + timedelta(hours=48))
+    now = T0 + timedelta(hours=25)  # nearest 12 h frame is +24 h
+    assert nearest_valid_time(grid, now) == frame_valid_time(T0 + timedelta(hours=24))
+
+
+def test_existing_requires_all_three_and_first_pending(tmp_path):
+    t = T0
+    (tmp_path / frame_filename("speed", t)).write_bytes(b"x")
+    assert existing_frame_times(tmp_path) == set()  # speed alone isn't a full frame
+    (tmp_path / frame_filename("vorticity", t)).write_bytes(b"x")
+    (tmp_path / frame_filename("flowvis", t)).write_bytes(b"x")
+    (tmp_path / "currents_meta.json").write_bytes(b"{}")  # must not be mistaken for a frame
+    assert existing_frame_times(tmp_path) == {t}
+
+    now = T0 + timedelta(days=5)
+    assert first_pending_frame(T0, set(), now) == T0          # cold start: backfill from tmin
+    assert first_pending_frame(T0, {T0}, now) > T0            # T0 final: fetch the recent tail
+
+
+# --- pruning ------------------------------------------------------------------
+
+def test_prune_removes_retired_and_out_of_span_only(tmp_path):
+    grid = frame_span(T0, T0 + timedelta(hours=12))
+    keep = []
+    for t in grid:
+        for kind, ext in (("speed", "webp"), ("vorticity", "webp"), ("flowvis", "webp")):
+            p = tmp_path / frame_filename(kind, t, ext)
+            p.write_bytes(b"x")
+            keep.append(p.name)
+    (tmp_path / "speed_+12h.webp").write_bytes(b"x")       # retired offset names
+    (tmp_path / "vorticity_-12h.webp").write_bytes(b"x")
+    (tmp_path / "currents_+00h.json").write_bytes(b"x")    # retired leaflet-velocity flow grid
+    (tmp_path / "speed_2020-01-01T00Z.webp").write_bytes(b"x")  # absolute, out of span
+    (tmp_path / "currents_meta.json").write_bytes(b"{}")   # meta + non-frame -> untouched
+    (tmp_path / "build.json").write_bytes(b"{}")
+
+    removed = prune_stale_frames(tmp_path, grid)
+    assert set(removed) == {
+        "speed_+12h.webp",
+        "vorticity_-12h.webp",
+        "currents_+00h.json",
+        "speed_2020-01-01T00Z.webp",
+    }
+    for name in keep:
+        assert (tmp_path / name).exists()
+    assert (tmp_path / "currents_meta.json").exists()
+    assert (tmp_path / "build.json").exists()

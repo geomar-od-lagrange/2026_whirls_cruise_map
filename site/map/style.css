@@ -244,8 +244,8 @@ body {
   image-rendering: pixelated; /* Chrome/Safari/Edge */
 }
 
-/* Time slider (bottom-centre): scrubs the speed / ζ/f shadings through the CMEMS
-   forecast at 12 h steps. A plain positioned element inside the map container (not
+/* The app clock (bottom-centre): a 1 h-granularity datetime scrubber over the CMEMS
+   shading frames' full span. A plain positioned element inside the map container (not
    an L.control) so it can centre and cap its width; shares the .map-control look.
    z-index sits above the map panes/popups (≤700) but below Leaflet's controls
    (1000), so an expanded control dock overlapping it on a short window draws on
@@ -265,33 +265,156 @@ body {
   font-size: 0.8rem;
 }
 
+/* Head row: the "Show tracks" master (left) and the live clock readout (right). */
+.time-slider-control .ts-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+/* The "Show tracks" master checkbox (left of the head row). */
+.time-slider-control .ts-tracks {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.74rem;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+}
+.time-slider-control .ts-tracks input {
+  margin: 0;
+  cursor: pointer;
+}
+
+/* The clock readout + the "now" chip, grouped at the right of the head row. */
+.time-slider-control .ts-head-right {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The live clock time. */
+.time-slider-control .ts-time {
+  font-size: 0.74rem;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* "now" chip (#19): snaps the scrubber back to the wall-clock present. A filled,
+   accented pill so the target reads as attractive; dims to a quiet outline once the
+   thumb already sits on now (.at-now), where it still clicks but signals "you're here". */
+.time-slider-control .ts-nowbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border: 1px solid #2563eb;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #fff;
+  font: inherit;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  cursor: pointer;
+  user-select: none;
+}
+.time-slider-control .ts-nowbtn:hover {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+}
+.time-slider-control .ts-nowbtn .ts-nowbtn-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+}
+.time-slider-control .ts-nowbtn.at-now {
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--muted);
+}
+.time-slider-control .ts-nowbtn.at-now .ts-nowbtn-dot {
+  background: var(--muted);
+}
+
+/* The range rides in a positioned wrapper so the wall-clock "now" dot can be
+   percent-placed on the scrub line itself. */
+.time-slider-control .ts-rangewrap {
+  position: relative;
+}
+
 .time-slider-control .ts-range {
   width: 100%;
   margin: 0;
+  display: block;
   accent-color: var(--accent); /* tint the track/handle in supporting browsers */
   cursor: pointer;
 }
 
+/* Wall-clock "now": a small blue dot sitting on the scrub line (replacing the old
+   tick-lane mark, whose caption collided with the date labels). Ignores the pointer
+   so it can never block grabbing a thumb parked at/near now. */
+.time-slider-control .ts-nowdot {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #2563eb;
+  border: 1px solid #fff;
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+/* A slow expanding ring so "now" reads at a glance on the line — paired with the
+   clickable chip in the head (the dot itself stays pointer-transparent). */
+.time-slider-control .ts-nowdot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1px solid #2563eb;
+  animation: ts-now-pulse 2.4s ease-out infinite;
+}
+@keyframes ts-now-pulse {
+  0% { transform: scale(1); opacity: 0.7; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .time-slider-control .ts-nowdot::after { animation: none; opacity: 0.5; }
+}
+
+/* Tick lane: day marks absolutely positioned by percent over the range width
+   (approximate at the thumb insets); the now marker lives up in .ts-rangewrap. */
 .time-slider-control .ts-ticks {
-  display: flex;
-  justify-content: space-between;
+  position: relative;
+  height: 16px;
   margin-top: 2px;
-  font-size: 0.66rem;
+  font-size: 0.62rem;
   color: var(--muted);
 }
 
-/* The selected frame's valid time, tucked into the box's lower-right corner. */
-.time-slider-control .ts-time {
-  margin-top: 3px;
-  text-align: right;
-  font-size: 0.7rem;
-  color: var(--muted);
+.time-slider-control .ts-tick {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 4px;
+  background: var(--muted);
+  transform: translateX(-0.5px);
+}
+
+.time-slider-control .ts-tick-label {
+  position: absolute;
+  top: 5px;
+  left: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
-}
-
-.time-slider-control .ts-tick.ts-now {
-  color: var(--accent);
-  font-weight: 600;
 }
 
 /* On a narrow phone the slider would crowd the sidebar-less single column; keep it
@@ -302,8 +425,35 @@ body {
     bottom: 10px;
   }
   .time-slider-control .ts-ticks {
-    font-size: 0.6rem;
+    font-size: 0.56rem;
   }
+}
+
+/* Standalone "Show tracks" chip — the tracks master's home when there is no scrubber
+   (no CMEMS field). Bottom-centre like the slider, but sized to its checkbox. */
+.tracks-chip-control {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 800;
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: 4px;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.4);
+  padding: 5px 12px;
+  font-size: 0.78rem;
+}
+.tracks-chip-control .ts-tracks {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.tracks-chip-control .ts-tracks input {
+  margin: 0;
+  cursor: pointer;
 }
 
 /* Cursor coordinate readout (lower-left): plain text on a translucent white
@@ -344,7 +494,7 @@ body {
 }
 
 /* The control dock: one top-right box with a header bar, a tab strip, and one
-   visible body at a time (Instruments / Currents / Ships / Deploy), so the
+   visible body at a time (Instruments / Currents / Deploy), so the
    footprint is the tallest single tab, not the sum of stacked boxes. Overrides the
    shared .map-control padding so the bar and tabs meet the box edges; each body
    carries its own padding. */
@@ -464,14 +614,6 @@ body {
   text-transform: uppercase;
   color: var(--muted);
 }
-/* Placeholder shown in the Ships tab before any vessel reports a fix. */
-.dock-empty {
-  margin: 0;
-  font-size: 0.75rem;
-  font-style: italic;
-  color: var(--muted);
-}
-
 /* The active shading's colour-class legend, in the Currents dock right below the
    shading radios (moved here from the sidebar so it sits with its control). Renders
    .legend-bar + .legend-scale; :empty collapses it — margin and all — when the
@@ -496,12 +638,29 @@ body {
   margin: 0;
 }
 
+/* A greyed-out, inert control row (a temporarily-disabled overlay — see issue #25). */
+.batch-row-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.batch-row-disabled input {
+  cursor: not-allowed;
+}
+
 .batch-swatch {
   width: 10px;
   height: 10px;
   border-radius: 50%;
   border: 1px solid rgba(0, 0, 0, 0.25);
   flex: 0 0 auto;
+}
+
+/* A quieter secondary row (e.g. the "Animate overlays" master under the overlay
+   checkboxes): smaller, muted, set off with a little top margin. */
+.batch-row.batch-subtle {
+  margin-top: 4px;
+  font-size: 0.72rem;
+  color: var(--muted);
 }
 
 /* Diamond variant for the glider-group rows (XSPAR / seagliders / wave gliders /
@@ -514,21 +673,65 @@ body {
   transform: rotate(45deg);
 }
 
-/* Line swatch for the overlay (True track / Forecast / Hindcast) rows — a
-   short bar keying the checkbox to the coloured layers it toggles, as the
-   round .batch-swatch keys a batch row to its circular markers. */
-.batch-line-swatch {
-  width: 14px;
-  height: 3px;
-  border-radius: 1px;
-  flex: 0 0 auto;
-}
-
-/* Divider between the overlay (line) rows and the per-batch (marker) rows. */
+/* Divider between the instrument families (drifter batches | gliders | ships). */
 .batch-divider {
   border: none;
   border-top: 1px solid #d8e0e8;
   margin: 6px 0;
+}
+
+/* Family header — only the drifters get one (their "batch 1..5" rows aren't
+   self-explaining; the glider/ship families name themselves and lean on dividers). */
+.batch-family-head {
+  display: block;
+  margin: 2px 0 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #55636f;
+}
+
+/* Two-column grid for each instrument family (drifter batches, gliders, ships) — the
+   merged instrument panel (#24). auto-fit against the actual dock width gives two
+   columns when it is wide enough and collapses to one when the dock is narrow, so a
+   long label never clips regardless of viewport. */
+.batch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  column-gap: 12px;
+}
+.batch-grid .batch-row {
+  min-width: 0; /* let a long row text ellipsis rather than overflow its column */
+}
+.batch-grid .batch-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "select all / deselect all": small text links at the bottom of the panel that drive
+   every row's handler (markers + tracks reconcile), not just the box visual. */
+.batch-selectall {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 7px;
+  font-size: 0.7rem;
+}
+.batch-selectall-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.batch-selectall-link:hover {
+  color: var(--ink);
+}
+.batch-selectall-sep {
+  color: var(--muted);
 }
 
 /* PoC deploy tool (interactive multi-click deployment planner). Renders into the
@@ -567,21 +770,13 @@ body {
   font-size: 0.7rem;
   color: #0f7a37;
 }
-/* Deploy tool compartments: the tab body is a top color bar + three captioned
-   sections (Settings · Click to place · Waypoints) + a manage/status footer. Each
-   section is set off by a top rule and a small uppercase caption, so the three
-   placement concerns read apart. */
-.deploy-tool .pt-section {
-  margin: 9px 0 0;
-  padding: 9px 0 0;
-  border-top: 1px solid #d7dde4;
-}
-/* Rule setting the manage footer (Download / Clear) off from the CSV compartment. */
+/* Rule setting the Deployments manager off from the settings block above it. */
 .deploy-tool hr.pt-hr {
   margin: 9px 0 7px;
   border: 0;
   border-top: 1px solid #d7dde4;
 }
+/* Small uppercase caption ("Deployments") heading the manager list. */
 .deploy-tool .pt-section-cap {
   display: block;
   margin-bottom: 6px;
@@ -619,6 +814,234 @@ body {
   margin: 0;
   cursor: pointer;
 }
+/* Read-only release-time readout (follows the app clock; no input — one clock). */
+.deploy-tool .pt-readonly {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+/* Direction / Timing sliding switches: the two option texts flank a knob that sits on
+   the active side, so the options name themselves (no separate caption). The active
+   label is inked and bold; the inactive one is muted. */
+.deploy-tool .pt-switchrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 0.72rem;
+}
+.deploy-tool .pt-switch-label {
+  flex: 1 1 0;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.deploy-tool .pt-switch-label:first-child {
+  text-align: right;
+}
+.deploy-tool .pt-switch-label:last-child {
+  text-align: left;
+}
+.deploy-tool .pt-switch-label.active {
+  color: var(--ink);
+  font-weight: 600;
+}
+.deploy-tool .pt-switch {
+  flex: 0 0 auto;
+  position: relative;
+  width: 34px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid #c3ccd6;
+  border-radius: 9px;
+  background: #e8edf2;
+  cursor: pointer;
+}
+.deploy-tool .pt-switch-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid #b3bcc7;
+  transition: transform 0.12s ease;
+}
+.deploy-tool .pt-switch.on .pt-switch-knob {
+  transform: translateX(16px);
+}
+/* Greyed out because the current settings make it moot (the ship-speed field under
+   instantaneous timing; the input is also disabled and swapped for an ∞ glyph). */
+.deploy-tool .pt-row.pt-disabled,
+.deploy-tool .pt-speed-wrap.pt-disabled {
+  opacity: 0.45;
+}
+
+/* Duration slider: a 4-stop segmented control (1d / 2d / 5d / ∞) — four equal buttons
+   in a pill, the active one filled. Writes state.horizonH; no caption. */
+.deploy-tool .pt-duration {
+  display: flex;
+  margin: 0 0 6px;
+  border: 1px solid #c3ccd6;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.deploy-tool .pt-duration-stop {
+  flex: 1 1 0;
+  padding: 3px 0;
+  border: 0;
+  border-left: 1px solid #c3ccd6;
+  background: #f4f6f8;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.deploy-tool .pt-duration-stop:first-child {
+  border-left: 0;
+}
+.deploy-tool .pt-duration-stop:hover {
+  background: #e8edf2;
+}
+.deploy-tool .pt-duration-stop.on {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* "Every [ ] km at [ ] kn" — one short row of literal text with two inline number
+   inputs, terse so it stays on one line at the narrow dock width; the plain text reads
+   at the row font size. */
+.deploy-tool .pt-dropline {
+  flex-wrap: wrap;
+  cursor: default;
+}
+.deploy-tool .pt-num-inline {
+  flex: 0 0 46px;
+  width: 46px;
+}
+/* Ship-speed slot: the input and its ∞ stand-in occupy the same place; paintTiming
+   shows one or the other by timing. */
+.deploy-tool .pt-speed-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+.deploy-tool .pt-speed-inf {
+  min-width: 46px;
+  text-align: center;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+/* Deploy arm toggle + Clear, side by side (#23): the toggle takes the width, Clear is
+   a compact button beside it. */
+.deploy-tool .pt-arm-row {
+  display: flex;
+  gap: 6px;
+  margin: 9px 0 0;
+}
+.deploy-tool .pt-arm-row .ft-btn {
+  margin: 0;
+}
+.deploy-tool .pt-arm-row .ft-toggle {
+  flex: 1 1 auto;
+}
+.deploy-tool .pt-arm-row .ft-btn:not(.ft-toggle) {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 4px 10px;
+}
+/* Deployment manager: one row per placed deployment (visibility checkbox + a compact
+   id · release · direction · duration · drops label) with per-row CSV + delete
+   buttons, then the Download-all / Clear-all actions. */
+.deploy-tool .pt-manager {
+  margin: 2px 0 0;
+}
+.deploy-tool .pt-manage-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 3px;
+  font-size: 0.68rem;
+}
+.deploy-tool .pt-manage-vis {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  cursor: pointer;
+}
+.deploy-tool .pt-manage-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.deploy-tool .pt-manage-btn {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid #c3ccd6;
+  border-radius: 3px;
+  background: #f4f6f8;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+.deploy-tool .pt-manage-btn:hover {
+  background: #e8edf2;
+}
+.deploy-tool .pt-manage-del {
+  color: #b91c1c;
+  font-weight: 600;
+}
+.deploy-tool .pt-manage-del:hover {
+  background: #fde8e8;
+}
+/* The run-knobs block (release / direction / timing / duration …) at the top of the
+   Deploy tab — no caption, so a touch of bottom space sets it off from the first
+   captioned section below it. */
+.deploy-tool .pt-settings {
+  margin: 0 0 2px;
+}
+
+/* CSV import / export: a collapsible <details> menu, so the common path stays
+   uncluttered. The summary is a compact chevron row; open, its children (upload,
+   paste box, place, download) sit under it with the same top-rule as a section. */
+.deploy-tool .pt-csv {
+  margin: 9px 0 0;
+  padding: 9px 0 0;
+  border-top: 1px solid #d7dde4;
+}
+.deploy-tool .pt-csv-summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.deploy-tool .pt-csv-summary::-webkit-details-marker {
+  display: none;
+}
+/* A rotating chevron marks the open/closed state (▸ closed, ▾ open). */
+.deploy-tool .pt-csv-summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 5px;
+  transition: transform 0.12s ease;
+}
+.deploy-tool .pt-csv[open] .pt-csv-summary::before {
+  transform: rotate(90deg);
+}
+.deploy-tool .pt-csv > *:not(summary) {
+  margin-top: 6px;
+}
+
 /* Import (paste-mask) textarea: full-width, monospace so lon,lat columns line up,
    sitting above the "Load file…" / "Place from CSV" buttons. */
 .deploy-tool .pt-import {
@@ -634,32 +1057,6 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.7rem;
   resize: vertical;
-}
-/* Synced-snapshot dot legend: a caption, the tab20c band bar (one hard-edged swatch
-   per mark), and its three ticks (run · mid · horizon, the ticks tracking the run's
-   horizon), so a dot's colour maps to its time since the run began (the array's shape
-   at that t0). */
-.deploy-tool .pt-legend {
-  margin: 6px 0 0;
-}
-.deploy-tool .pt-legend-cap {
-  display: block;
-  font-size: 0.68rem;
-  color: var(--muted);
-  margin-bottom: 3px;
-}
-.deploy-tool .pt-legend-bar {
-  height: 8px;
-  border-radius: 2px;
-  border: 1px solid rgba(0, 0, 0, 0.15);
-}
-.deploy-tool .pt-legend-ticks {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 1px;
-  font-size: 0.62rem;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
 }
 /* The placement preview's floating label (drop count · path length · transit
    time), pinned at the cursor while the path is drawn. Reuses the deploy green so
@@ -687,7 +1084,7 @@ body {
 
 /* Ship markers (Marion Dufresne, Agulhas II): a coloured disc with a white ring
    and a boat glyph, set apart from the small blue drifter circles. The inner
-   .ship-disc carries the per-vessel fill (set inline); the crimson vs near-black
+   .ship-disc carries the per-vessel fill (set inline); the crimson vs dark navy
    tells the two vessels apart. Overrides the default .leaflet-div-icon box. */
 .ship-marker {
   display: flex;
@@ -704,7 +1101,7 @@ body {
   width: 26px;
   height: 26px;
   box-sizing: border-box;
-  background: #1a1a1a;
+  background: #1e40af; /* fallback only — shipIcon() sets the per-vessel fill inline */
   border: 2px solid #fff;
   border-radius: 50%;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);

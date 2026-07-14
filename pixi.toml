@@ -50,6 +50,7 @@ uvicorn = "*"
 # Dev
 pytest = "*"
 ruff = ">=0.15.12,<0.16"
+pytest-timeout = ">=2.4.0,<3"
 
 # OceanParcels v4 (unreleased): built from the GitHub `main` branch as a pypi git
 # dependency. It is a mature Lagrangian integrator we advect the same CMEMS window

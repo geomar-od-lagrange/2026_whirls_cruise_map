@@ -1,4 +1,4 @@
-> Implemented. See [docs/interactive_forecast.md](../../docs/interactive_forecast.md)
+> Implemented. See [docs/deployment.md](../../docs/deployment.md)
 > (gzip + 4 dp), [docs/currents.md](../../docs/currents.md) and
 > [docs/vorticity.md](../../docs/vorticity.md) (discrete classes + lazy frames),
 > and [docs/trajectories.md](../../docs/trajectories.md) (lazy true tracks).
@@ -131,7 +131,7 @@ Changes (build-side, keep the cmocean palettes — no new colours):
 Update the passages describing eager loading / idle prefetch and the
 shading rendering (grep docs/ for prefetch, idle, tracks.geojson, lossless:
 `docs/currents.md`, `docs/controls.md`, `docs/trajectories.md`,
-`docs/vorticity.md`, `docs/interactive_forecast.md` are candidates) to
+`docs/vorticity.md`, `docs/deployment.md` are candidates) to
 describe the lazy/binned behaviour as what *is*. Note the gzip contract and
 the 4 dp coordinate bound in the API doc.
 

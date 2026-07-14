@@ -1,7 +1,7 @@
 """Per-cell near-inertial decomposition of the hourly current window.
 
 The hourly CMEMS window that drives the forecast/hindcast advection
-(:func:`whirls_cruise_map._currents.fetch_field_window`) already carries the
+(:func:`whirls_cruise_map._field_store.load_window`) already carries the
 near-inertial (NI) oscillation these latitudes ring with — phase and rotation
 sense correct, amplitude muted (``plans/012-near-inertial-forecast.md``,
 Phase 0). :func:`decompose` separates that window, per grid cell, into a mean
@@ -58,10 +58,9 @@ AMP_CMAP = cmocean.cm.amp
 AMP_CLIP_PERCENTILE = 99
 COLORBAR_STOPS = 16
 
-# Coarsen the native 1/12-deg grid for the animated NI field. Coarser than
-# _currents.COARSEN_STRIDE (3): the animation draws arrows, not particles, and
-# the NI field is spatially smooth, so a sparser grid reads just as well at a
-# fraction of the payload — ~68x60 -> ~4k cells over the cruise bbox.
+# Coarsen the native 1/12-deg grid for the animated NI field: the animation draws
+# arrows, not particles, and the NI field is spatially smooth, so a sparser grid reads
+# just as well at a fraction of the payload — ~68x60 -> ~4k cells over the cruise bbox.
 INERTIAL_STRIDE = 8
 
 
@@ -96,7 +95,7 @@ def decompose(window: xr.Dataset, t_ref: float | None = None) -> xr.Dataset:
 
     ``t_ref`` (epoch seconds) defaults to the window time nearest now — the
     same "t = 0 nearest now" anchoring the advection uses
-    (:func:`whirls_cruise_map._forecast._advection_geojson`), so the phase
+    (:func:`whirls_cruise_map._forecast._anchor_t0`), so the phase
     field and the forecast share one clock. Pass it explicitly for
     reproducible tests.
 
@@ -116,7 +115,7 @@ def decompose(window: xr.Dataset, t_ref: float | None = None) -> xr.Dataset:
     times = f["time"].values.astype("datetime64[s]").astype(np.float64)
     if t_ref is None:
         # Anchor to the window time nearest now — the advection's t=0 (see
-        # _forecast._advection_geojson); the sub-hour gap to wall-clock now is
+        # _forecast._anchor_t0); the sub-hour gap to wall-clock now is
         # immaterial.
         now = np.datetime64(
             datetime.now(timezone.utc).replace(tzinfo=None), "s"
@@ -209,18 +208,18 @@ def to_inertial_field_json(decomp: xr.Dataset, stride: int = INERTIAL_STRIDE) ->
     evaluate ``amp * exp(i (phase - f (t - t_ref)))`` at any client-side
     ``t``.
 
-    Geometry mirrors ``_currents.to_velocity_json``/``_component``: ``stride``
-    is applied here (via ``.isel``) rather than in :func:`decompose`, which
+    Geometry follows the leaflet-velocity grid convention: ``stride`` is
+    applied here (via ``.isel``) rather than in :func:`decompose`, which
     stays full-resolution for other consumers; the surviving cells are then
     sorted latitude-descending, longitude-ascending and raveled in C (row-
     major) order, so ``la1``/``la2`` are the north/south edges and flat index
     ``row * nx + col`` addresses the cell at ``lat = la1 - row * dy``,
-    ``lon = lo1 + col * dx`` — identical convention to the leaflet-velocity
-    header, so the same grid math applies.
+    ``lon = lo1 + col * dx`` — the standard leaflet-velocity header layout, so
+    the same grid math applies.
 
-    Unlike ``to_velocity_json``, this ships four *analytic* fields, not two
-    velocity components, and applies **no** ``_scale_for_animation`` gamma:
-    ``amp`` is true, un-gained m/s (:data:`GAIN` = 1.0) straight from
+    This ships four *analytic* fields, not two velocity components, and applies
+    **no** magnitude compression: ``amp`` is true, un-gained m/s
+    (:data:`GAIN` = 1.0) straight from
     :func:`decompose`, because the client reconstructs a physical rotation
     from it, not just a direction-preserving trail. Land is JSON ``null``
     (NaN converted to ``None`` before serialisation — ``json.dumps`` would
