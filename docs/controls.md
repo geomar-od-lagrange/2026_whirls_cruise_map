@@ -77,9 +77,11 @@ its knob with the two option labels (no separate caption). Drift is always compu
 The **Deploy** toggle arms click-to-place: while on, the map wears a crosshair and
 a click adds a path vertex, a double-click finishes, and right-click / Esc cancels.
 
-The placed deployment draws its **drift lines** (one green line per drop, always
-shown, growing up to the app clock as you scrub), the **drops** (water-entry discs),
-and a **moving at-time marker** per drift that walks the line to the clock's instant.
+The placed deployment draws its **drift lines** (one line per drop in the
+deployment's own colour, always shown, growing up to the app clock as you scrub),
+the **drops** (water-entry discs), and a **moving at-time marker** per drift that
+walks the line to the clock's instant. Successive deployments cycle through the
+palette's three virtual-deployment colours (see [palette.md](palette.md)).
 The lines carry no analysed-vs-forecast dash split and nothing ahead of the clock,
 and there is no vessel route drawn between the drops.
 

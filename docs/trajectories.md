@@ -9,10 +9,12 @@ box (see *Control* below).
 ## What is drawn
 
 For every drifter with at least two free-drift fixes, the tracks layer draws
-**a line** over its time-sorted positions, in the track colour (orange, distinct
-from the blue latest-position markers). The line is built as one polyline **per
-fix-to-fix segment** (see *Tooltips* below) rather than a single stroke, so the
-whole line is a hover target — but the segments abut into one continuous track.
+**a line** over its time-sorted positions, in that drifter's **identity colour** —
+the same colour as its batch marker and moving head, so its line, deployment dot,
+and head all read as one instrument (see [palette.md](palette.md)). The line is
+built as one polyline **per fix-to-fix segment** (see *Tooltips* below) rather than
+a single stroke, so the whole line is a hover target — but the segments abut into
+one continuous track.
 
 For a **deployed** drifter only the **free drift** is drawn: the path is
 truncated at its deployment (see *Truncation at deployment* below), so the
@@ -228,7 +230,7 @@ not scale — only the track lines.
 **Every line/track pane sits below every marker pane** — the governing rule of the
 stack. Bottom to top: the raster/animation underlays (`shading` 350, `inertial`
 360); then the line panes — observed drifter/glider tracks in Leaflet's default
-`overlayPane` (400), the `shipTrack` (410), the violet real-drifter forecast lines
+`overlayPane` (400), the `shipTrack` (410), the real-drifter forecast lines
 (`driftForecast` 420, see below), and the PoC deploy tool's drift lines and drop
 discs (`deployTracks` 430, `deployDrops` 440); then the marker panes — the glider
 diamonds in Leaflet's default `markerPane` (600), the drifter heads (`drifters`
@@ -241,12 +243,14 @@ so the early ship track runs through the pre-deploy cluster, and keeping it belo
 every marker means its dots never intercept a click meant for a drifter or glider.
 See [ship.md](ship.md).
 
-### Violet forecast lines for the real deployed drifters
+### Forecast lines for the real deployed drifters
 
 Every in-water drifter (its `latest.geojson` head whose batch is a `deployment_*`,
-so gliders/floats/XSPAR/waveglider are excluded) gets a **violet forecast track**
-(`#7c3aed`, `driftForecast` pane): its last observed fix advected forward through
-the CMEMS field to the end of the data period. These are computed by the **same
+so gliders/floats/XSPAR/waveglider are excluded) gets a **forecast track** in the
+`driftForecast` pane: its last observed fix advected forward through the CMEMS field
+to the end of the data period. The forecast is drawn in the drifter's **own identity
+colour** and styled exactly like its observed track, so the two read as one path
+(line = dot = head; see [palette.md](palette.md)). These are computed by the **same
 `/api/forecast` endpoint the deploy tool uses** — one asynchronous POST fired after
 the map is up, seeded from each drifter's last fix (`lon, lat, start`), advected
 server-side. Each returned track is keyed back to its drifter by seed `index`.
@@ -254,22 +258,28 @@ server-side. Each returned track is keyed back to its drifter by seed `index`.
 Rather than drawn full and always-on, each forecast is **clock-clipped and
 future-only** — it is the continuation of the drifter's observed track past *now*:
 
-- it shows **only when the scrubber is past now**, drawn from now up to the clock
-  position (a single non-interactive violet polyline, clipped by `setLatLngs`);
-- the **drifter's own head marker walks the forecast** as the clock advances into the
-  future (its observed head parks at the last real fix; past now the forecast takes over
-  — see `clipForecast`, run last in `updateClock` so it wins the head). The marker walks
-  the forecast **regardless of the "Show tracks" master**, like the observed heads;
-- the **line** is what the **"Show tracks" master** governs: with tracks off the violet
-  line is hidden, but the marker still moves along the (hidden) forecast into the future;
-- the line also follows the drifter's **Instruments** batch checkbox — unchecking a
-  batch drops its forecast lines along with that batch's markers and observed tracks
+- a **reporting-lag bridge** spans the gap between the drifter's last transmitted fix
+  and *now* (the advected vertices that predate now), drawn **dashed** in the same
+  identity colour — the dash, not a colour change, is what marks where the observed
+  track hands off to the forecast;
+- the solid **forecast** shows from *now* up to the clock position (clipped by
+  `setLatLngs`) as the scrubber moves into the future;
+- the **drifter's own head marker walks** the bridge then the forecast as the clock
+  advances; a small **now-ghost** dot is left at the drifter's now-position once the
+  clock passes now, so its present position stays marked while the bright head walks on
+  (see `clipForecast`, run last in `updateClock` so it wins the head). The head and
+  ghost follow the clock **regardless of the "Show tracks" master**, like the observed
+  heads;
+- the **lines** (bridge + forecast) are what the **"Show tracks" master** governs:
+  with tracks off they are hidden, but the head still walks the (hidden) path;
+- the lines also follow the drifter's **Instruments** batch checkbox — unchecking a
+  batch drops its forecast along with that batch's markers and observed tracks
   (`forecastBatchVisible`); the marker is the batch's own head, so it hides with the batch.
 
 The call is best-effort: it is never awaited, so it never blocks map init, and it is
 gated on the dynamic API being reachable — a static-only deploy with no `/api/forecast`
-server simply shows no violet forecasts (no error). A drifter whose last fix predates
-the loaded field window is skipped server-side and gets no forecast.
+server simply shows no forecasts (no error). A drifter whose last fix predates the
+loaded field window is skipped server-side and gets no forecast.
 
 ## Performance
 

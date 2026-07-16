@@ -30,6 +30,64 @@ const DATA = {
   agulhas: "./data/agulhas.json",
 };
 
+// --- instrument palette (#35) -----------------------------------------------
+// Every per-class identity colour funnels through one named palette, selectable
+// at load via ?palette=<name> for side-by-side review. A palette maps each
+// instrument CLASS to one identity colour; the drifter marker's darker stroke is
+// derived from its fill, so a palette carries only one colour per class. Classes:
+// drifter batches (deployment_N, ORDINAL) + the staged pre_deploy; the virtual
+// deployments (deploy_N, also ordinal — a run can grow to 2-3); the glider-group
+// types; and the two ships. The two ordinal ramps sit on opposite warm/cool ends
+// so each stays legible over BOTH surface shadings (speed=green, vorticity=blue↔
+// magenta) — the hard constraint (see tmp_palettes/ for the clash analysis).
+// Default is `ember` (warm drifters / cool virtual — the chosen scheme, #35);
+// `?palette=azure|vivid|current` still switches for review (`current` = pre-#35).
+const PALETTES = {
+  current: {
+    deployment_1: "#3a8ddb", deployment_2: "#17b3a3", deployment_3: "#e8791f",
+    deployment_4: "#9b6fd4", deployment_5: "#d6339c", deployment_6: "#eab308",
+    deployment_7: "#64748b", deployment_8: "#0ea5e9",
+    deploy_1: "#16a34a", deploy_2: "#16a34a", deploy_3: "#16a34a",
+    pre_deploy: "#a8a8a8", seaglider: "#38bdf8", waveglider: "#ec4899",
+    xspar: "#f59e0b", float: "#a855f7", ship_md: "#1e40af", ship_ag: "#9b1c31",
+  },
+  ember: {
+    deployment_1: "#fbb43e", deployment_2: "#f89f24", deployment_3: "#f68221",
+    deployment_4: "#f3661f", deployment_5: "#df4a23", deployment_6: "#cb2e27",
+    deployment_7: "#af2121", deployment_8: "#901919",
+    deploy_1: "#60abfa", deploy_2: "#2c76e6", deploy_3: "#1c46a9",
+    pre_deploy: "#8a94a3", seaglider: "#7c4dff", waveglider: "#e6299a",
+    xspar: "#111827", float: "#00d68f", ship_md: "#12408f", ship_ag: "#8a1030",
+  },
+  azure: {
+    deployment_1: "#64b3ec", deployment_2: "#449be5", deployment_3: "#3185dd",
+    deployment_4: "#1f6ed5", deployment_5: "#1b5cbd", deployment_6: "#184aa5",
+    deployment_7: "#133b8b", deployment_8: "#0e2d6f",
+    deploy_1: "#faa339", deploy_2: "#e87713", deploy_3: "#b94203",
+    pre_deploy: "#8a94a3", seaglider: "#7c4dff", waveglider: "#e6299a",
+    xspar: "#111827", float: "#00d68f", ship_md: "#12408f", ship_ag: "#8a1030",
+  },
+  vivid: {
+    deployment_1: "#e6194b", deployment_2: "#f58231", deployment_3: "#ffca3a",
+    deployment_4: "#12d6a0", deployment_5: "#3fc5f0", deployment_6: "#4363d8",
+    deployment_7: "#a034d0", deployment_8: "#ff5ec2",
+    deploy_1: "#ff9ad5", deploy_2: "#e83fae", deploy_3: "#8e1a6d",
+    pre_deploy: "#8a94a3", seaglider: "#7c4dff", waveglider: "#e6299a",
+    xspar: "#111827", float: "#00d68f", ship_md: "#12408f", ship_ag: "#8a1030",
+  },
+};
+const PALETTE =
+  PALETTES[new URLSearchParams(location.search).get("palette")] ?? PALETTES.ember;
+
+// Darken an identity fill to the drifter circle's thin outline stroke.
+function paletteStroke(hex, f = 0.72) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.round(((n >> 16) & 255) * f);
+  const g = Math.round(((n >> 8) & 255) * f);
+  const b = Math.round((n & 255) * f);
+  return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
+}
+
 // Fallback view if no valid positions are present (cruise staging, Table Bay).
 const FALLBACK_CENTER = [-33.9, 18.43];
 const FALLBACK_ZOOM = 12;
@@ -66,24 +124,22 @@ const VESSELS = {
   md: {
     name: "R/V Marion Dufresne",
     source: "Flotte Océanographique Française",
-    // Dark blue that still reads unmistakably *blue* (an earlier near-black navy
-    // #0b2350 looked black on the map). Deeper than the drifters' deployment_1 blue
-    // (#1f5fa8 / #3a8ddb) and distinct from the seaglider sky-blue (#38bdf8) and the
-    // Agulhas crimson; a white halo keeps the line crisp over the speed-shading overlay.
-    trackColor: "#1e40af",
+    // Ship identity colour from the active PALETTE (ship_md); a white halo keeps
+    // the line crisp over the shading overlays. Ships are large icons, so they
+    // read apart from the drifters/gliders by shape as well as colour.
+    trackColor: PALETTE.ship_md,
     haloColor: "#ffffff",
-    markerColor: "#1e40af",
+    markerColor: PALETTE.ship_md,
     panel: { time: "md-ship-time", readout: "md-ship-readout" },
     rows: (p, prev) => mdRows(p, motionBetween(prev, p)),
   },
   agulhas: {
     name: "R/V S.A. Agulhas II",
     source: "myshiptracking.com (via IPSL WHIRLS)",
-    // Deep crimson: reads apart from the MD's dark navy, the drifters'
-    // blue/teal, and the gliders' amber/sky.
-    trackColor: "#9b1c31",
+    // Ship identity colour from the active PALETTE (ship_ag).
+    trackColor: PALETTE.ship_ag,
     haloColor: "#ffffff",
-    markerColor: "#9b1c31",
+    markerColor: PALETTE.ship_ag,
     panel: { time: "agulhas-ship-time", readout: "agulhas-ship-readout" },
     rows: (p) => agulhasRows(p),
   },
@@ -93,23 +149,24 @@ const VESSELS = {
 // Markers carry a `batch` property. All per-batch appearance decisions funnel
 // through styleForBatch(); the batch filter control (below) reads the same
 // `batch` property to group markers. Staged (not-yet-deployed) drifters render
-// muted grey; each deployment batch gets its own vivid colour so in-water
-// drifters stand out and successive deployments read apart. A further deployment
-// with no entry falls back to DEPLOYED_STYLE (blue) until given its own colour.
-const BATCH_STYLES = {
-  pre_deploy: { color: "#7a7a7a", fillColor: "#a8a8a8" },
-  deployment_1: { color: "#1f5fa8", fillColor: "#3a8ddb" }, // blue
-  deployment_2: { color: "#0d7d72", fillColor: "#17b3a3" }, // teal
-  deployment_3: { color: "#b5540e", fillColor: "#e8791f" }, // orange
-  deployment_4: { color: "#6a3d9a", fillColor: "#9b6fd4" }, // purple
-  deployment_5: { color: "#a3197f", fillColor: "#d6339c" }, // magenta
+// muted grey; each deployment batch gets its own colour along the active
+// PALETTE's ordinal drifter ramp, so successive deployments read apart. A further
+// deployment past the ramp falls back to DEPLOYED_STYLE until given its own step.
+// Fill = the palette identity colour; the thin outline is a darker derived stroke.
+const BATCH_STYLES = Object.fromEntries(
+  ["pre_deploy", "deployment_1", "deployment_2", "deployment_3", "deployment_4",
+   "deployment_5", "deployment_6", "deployment_7", "deployment_8"].map((k) => [
+    k, { color: paletteStroke(PALETTE[k]), fillColor: PALETTE[k] },
+  ]),
+);
+const DEPLOYED_STYLE = {
+  color: paletteStroke(PALETTE.deployment_1), fillColor: PALETTE.deployment_1,
 };
-const DEPLOYED_STYLE = { color: "#1f5fa8", fillColor: "#3a8ddb" };
 function styleForBatch(batch) {
   return {
     radius: 6,
     weight: 1,
-    fillOpacity: 0.85,
+    fillOpacity: 1, // opaque fill — the identity colour reads undiluted over the shadings
     ...(BATCH_STYLES[batch] ?? DEPLOYED_STYLE),
   };
 }
@@ -255,8 +312,9 @@ function popupHtml(props, latlng) {
 // "normal" — rather than the raw layer, so each element kind (SVG circle/line vs.
 // glider divIcon) owns how it renders each state. restyle mutates layer options
 // (setStyle / setIcon), so the styling survives a batch toggle's remove/re-add.
-// TRACK_COLOR (defined below) is read at call time, never at load.
-const SELECTED_COLOR = "#ff8c42"; // brighter than TRACK_COLOR for the picked track
+// The picked track is highlighted in its OWN identity colour — a wider line, with
+// every OTHER instrument desaturated — rather than a separate accent colour (#35).
+// So a highlight never changes hue, only weight + the surrounding contrast.
 
 // Mix a hex colour toward its own grey (luminance) by `amount` in [0,1] — reduces
 // saturation without touching opacity, which is how un-selected tracks are dimmed.
@@ -681,8 +739,18 @@ function clipPathToWindow(times, lats, lngs, tA, tB) {
 // updateClock, so an active forecast wins the head over the observed clip.
 function clipForecast(entry, ms) {
   if (ms == null) return;
-  const { line, bridge, times, lats, lngs, headKey, group, nowMs } = entry;
+  const { line, bridge, nowGhost, times, lats, lngs, headKey, group, nowMs } = entry;
   const start = times[0]; // the drifter's last observed fix (the forecast seed time)
+  // The dimmed now-ghost is a POSITION (like a head), not a track line: revealed once
+  // the clock scrubs past now, batch-gated, and INDEPENDENT of "Show tracks". Toggle it
+  // up front so every early return below leaves it correct.
+  if (nowGhost) {
+    const on = ms > nowMs && forecastBatchVisible(entry.batch);
+    if (on !== entry.ghostShown) {
+      nowGhost.setStyle({ fillOpacity: on ? 1 : 0 });
+      entry.ghostShown = on;
+    }
+  }
   const show = (obj, coords, flag) => {
     if (coords && coords.length >= 2) {
       obj.setLatLngs(coords);
@@ -739,11 +807,11 @@ function removeAtTimeSet(key, exact = false) {
 // states: dimming is by desaturation, not transparency. Weight follows the live zoom
 // (see trackWeight).
 const trackColor = (state, base = TRACK_COLOR) =>
-  state === "selected" ? SELECTED_COLOR : state === "dim" ? desaturate(base) : base;
+  state === "dim" ? desaturate(base) : base; // selected/normal keep the identity colour
 const lineStyle = (state, base = TRACK_COLOR) => ({
   color: trackColor(state, base),
   weight: trackWeight(trackZoom, state === "selected"),
-  opacity: state === "selected" ? 1 : 0.85,
+  opacity: 1, // opaque line — the identity colour reads undiluted; dim is by desaturation
 });
 
 // Restyle a track line for the current selection state and zoom, and lift the
@@ -834,7 +902,7 @@ function addTrackSegments(group, coords, fixes, key, tip, skipSeg, color) {
       renderer: trackRenderer("overlayPane"), // canvas, not one SVG <path> per segment
       color: base,
       weight: 2,
-      opacity: 0.85,
+      opacity: 1,
       bubblingMouseEvents: false, // background clicks (not this) clear selection
     }).addTo(group);
     seg.bindTooltip(tip(fixes?.[i] ?? {}, L.latLng(pts[i])), { sticky: true });
@@ -870,7 +938,7 @@ function addDeploymentDot(markerGroup, lng, lat, color, depTimeMs) {
   const shown = atTimeClockMs != null && atTimeClockMs >= t;
   const marker = L.circleMarker([lat, lng], {
     pane: "deployDrops",
-    radius: 2.4,
+    radius: DEPLOY_DROP_RADIUS, // same size as the virtual-deployment drops — one "deployment mark" size
     weight: 0,
     fillColor: color,
     fillOpacity: shown ? 1 : 0, // hidden until the clock reaches the deployment time
@@ -925,11 +993,12 @@ function rebuildObservedTracks() {
   for (const src of observedTrackSources) buildObservedTrack(src);
   updateClock(atTimeClockMs);
 }
-// A drifter head is a per-batch circleMarker: hold its batch colour, enlarge it
-// when selected, and desaturate that batch colour when another instrument is.
-// `_clockHidden` (set by the head's clock controller while the app clock predates
-// the track's first fix) wins over every selection state, so a selection change
-// can't resurface a head that doesn't exist yet at the displayed instant.
+// A drifter head is a per-batch circleMarker: a white outline (matching the glider,
+// ship, and virtual-deployment heads — #35) over the batch's fill colour, enlarged
+// when selected and desaturated when another instrument is (the fill carries the dim;
+// the ring stays white). `_clockHidden` (set by the head's clock controller while the
+// app clock predates the track's first fix) wins over every selection state, so a
+// selection change can't resurface a head that doesn't exist yet at the displayed instant.
 function styleHead(marker, base, state) {
   if (marker._clockHidden) {
     marker.setStyle({ opacity: 0, fillOpacity: 0 });
@@ -938,7 +1007,7 @@ function styleHead(marker, base, state) {
   }
   const dim = state === "dim";
   marker.setStyle({
-    color: dim ? desaturate(base.color) : base.color,
+    color: "#fff",
     fillColor: dim ? desaturate(base.fillColor) : base.fillColor,
     opacity: 1,
     fillOpacity: base.fillOpacity,
@@ -1460,9 +1529,10 @@ function buildCursorReadout(map) {
   return el;
 }
 
-// Track colour for the trajectory lines and the intermediate-fix dots that ride
-// them — distinct from the blue latest-position markers, so the dots read as
-// part of the trajectory rather than as separate platforms.
+// Fallback track-line colour, used ONLY when a caller omits the per-instrument
+// identity colour. Every real track passes one — the batch / glider / ship colour —
+// so a track's line matches its dot and head under the active palette (line = dot =
+// head; #35, see docs/palette.md). Kept as a safe default for an identity-less track.
 const TRACK_COLOR = "#e07b39";
 
 // --- interactive deploy endpoint (PoC) --------------------------------------
@@ -1514,15 +1584,12 @@ function apiErrorText(data, status) {
   return d || data.error || `error ${status}`;
 }
 
-// Green — distinct from the orange track, violet forecast, magenta hindcast, and
-// cyan inertial — because these lines are ad-hoc, user-placed, and never persisted.
-const DEPLOY_COLOR = "#16a34a";
-
-// Violet — the forecast drift of the REAL deployed drifters (#22): each in-water
-// drifter's last fix advected forward to the end of the CMEMS field, via the same
-// /api/forecast machinery the deploy tool drives. Distinct from the deploy tool's
-// green (which is user-placed and transient) and from the orange observed track.
-const VIOLET_FORECAST_COLOR = "#7c3aed";
+// Virtual deployments cycle through the palette's three virtual-deployment colours
+// (deploy_1..3) by placement order, wrapping after three, so successive runs placed in
+// a session read apart from each other (and from the observed drifter/glider families —
+// the virtual ramp sits off them). `deployColor(id)` maps the 1-based placement id to
+// its colour; the preview uses the NEXT id's colour so it foretells the committed run.
+const deployColor = (id) => PALETTE[`deploy_${((Number(id) - 1) % 3) + 1}`];
 
 // Tangent-plane km per degree of latitude (R·π/180, R = 6371 km) and knots→km/h.
 // The client owns the deployment geometry now: it resamples the clicked path into
@@ -1633,10 +1700,11 @@ function seedTime(runStartISO, cumKm, shipKn) {
 // commits, so the preview foretells the committed drops.
 function drawDeployPreview(previewLayer, vertices, cursor, opts) {
   previewLayer.clearLayers();
+  const color = deployColor(deployCounter + 1); // the colour the next placement will take
   const path = cursor ? [...vertices, cursor] : vertices.slice();
   if (path.length >= 2) {
     L.polyline(path, {
-      pane: "deployTracks", color: DEPLOY_COLOR, weight: 2, opacity: 0.85,
+      pane: "deployTracks", color, weight: 2, opacity: 1,
       dashArray: "5 4", interactive: false,
     }).addTo(previewLayer);
   }
@@ -1644,12 +1712,12 @@ function drawDeployPreview(previewLayer, vertices, cursor, opts) {
   for (const d of drops) {
     L.circleMarker(d.latlng, {
       pane: "deployDrops", radius: 3, color: "#fff", weight: 1,
-      fillColor: DEPLOY_COLOR, fillOpacity: 0.9, interactive: false,
+      fillColor: color, fillOpacity: 1, interactive: false,
     }).addTo(previewLayer);
   }
   for (const v of vertices) {
     L.circleMarker(v, {
-      pane: "deployDrops", radius: 4, color: DEPLOY_COLOR, weight: 2,
+      pane: "deployDrops", radius: 4, color, weight: 2,
       fill: false, interactive: false,
     }).addTo(previewLayer);
   }
@@ -1676,12 +1744,13 @@ function drawDeployPreview(previewLayer, vertices, cursor, opts) {
 function drawDrops(drops, layer, deploymentId) {
   const set = (deployDropSets[deploymentId] ??= []);
   const selected = String(deploymentId) === selectedDropSet;
+  const color = deployColor(deploymentId);
   drops.forEach((d, i) => {
     const disc = L.circleMarker(d.latlng, {
-      // No outline (#33): a filled disc of the deploy colour, matching the real
+      // No outline (#33): a filled disc of this deployment's colour, matching the real
       // instruments' deployment dots. The selection restyle re-adds a ring.
       pane: "deployDrops", radius: DEPLOY_DROP_RADIUS, weight: 0,
-      fillColor: DEPLOY_COLOR, fillOpacity: 1,
+      fillColor: color, fillOpacity: 1,
       bubblingMouseEvents: false,
     });
     disc.bindTooltip(`#${i + 1} · ${d.start}`, { direction: "top" });
@@ -1982,6 +2051,10 @@ function buildDeployTool(deployLayer, getStartTime, getSpanHours) {
         vis.checked = d.visible;
         vis.title = "Show / hide this deployment";
         vis.addEventListener("change", () => setDeploymentVisible(id, vis.checked));
+        // Colour indicator: matches this deployment's drops / drift lines / at-time
+        // markers on the map (the cycling deploy_1..3 colour).
+        L.DomUtil.create("span", "batch-swatch", toggle).style.background =
+          d.color ?? deployColor(id);
         const arrow =
           d.directions?.length === 2 ? "⇄" : d.directions?.[0] === "backward" ? "←" : "→";
         const rel = d.release ? formatClock(Date.parse(d.release)) : "—";
@@ -2258,6 +2331,7 @@ async function commitDeployment(drops, totalKm, deployLayer, setStatus, startTim
     nDrops: drops.length,
     timing: instant ? "instant" : "alongtrack",
     visible: true,
+    color: deployColor(deploymentId), // the manager row's swatch (matches its map elements)
   };
   const done = (status) => {
     setStatus(status);
@@ -2383,7 +2457,10 @@ function clearAllDeployments(deployLayer) {
 // The axes (at-time marker set, drop set, track) are independent — a marker / disc /
 // line click is swallowed so it toggles its own axis without disturbing the others.
 // Cleared by re-clicking, a background click, or Clear (resetDeployHighlights).
-const DEPLOY_DROP_RADIUS = 4;
+// The one "deployment mark" radius, shared so real and virtual deployment points read
+// at the same size: virtual-deployment drops (drawDrops), real drifter deployment dots
+// (addDeploymentDot), and the forecast now-ghost. A selected drop set enlarges by +3.
+const DEPLOY_DROP_RADIUS = 3.0;
 const deployDropSets = {}; // deploymentId -> [disc markers]
 // `${deploymentId}#${index}` -> { line, hitLine, times, lats, lngs, forward }: one green
 // polyline per drift, CROPPED at the scrubber (clipDeployTrack — release→clock forward,
@@ -2417,11 +2494,11 @@ function selectDropSet(deploymentId) {
   applyDropSetSelection();
 }
 
-// Restyle one virtual track's line: magenta + thicker when its drifter is picked,
-// deploy-green otherwise.
+// Restyle one virtual track's line: magenta + thicker when its drifter is picked, its
+// deployment's own cycling colour otherwise.
 function restyleTrack(entry, selected) {
-  const color = selected ? "#d81b8c" : DEPLOY_COLOR; // magenta pops off the green track set
-  entry.line.setStyle({ color, weight: selected ? 4 : 2, opacity: selected ? 1 : 0.9 });
+  const color = selected ? "#d81b8c" : entry.color; // magenta pops off the blue deploy colours
+  entry.line.setStyle({ color, weight: selected ? 4 : 2, opacity: 1 });
   if (selected) entry.line.bringToFront();
 }
 
@@ -2559,6 +2636,7 @@ function downloadOneDeployment(id) {
 // group — so it hides/deletes with it.
 function drawDeployForecastLines(features, layer, runStart, deploymentId, direction) {
   const ll = ([lon, lat]) => [lat, lon];
+  const color = deployColor(deploymentId); // this deployment's cycling colour
   // The whole call is one run in one direction (#32), so the growth sign is per-call.
   const dir = direction === "backward" ? -1 : 1;
   for (const f of features) {
@@ -2586,7 +2664,7 @@ function drawDeployForecastLines(features, layer, runStart, deploymentId, direct
     // lowest deploy pane, so a click where a disc/marker overlaps hits that instead; the
     // hit-line covers the same clipped path so the thin stroke stays easy to click.
     const line = L.polyline([], {
-      pane: "deployTracks", color: DEPLOY_COLOR, weight: 2, opacity: 0.9,
+      pane: "deployTracks", color, weight: 2, opacity: 1,
       interactive: false,
     }).addTo(layer);
     const hitLine = L.polyline([], {
@@ -2596,18 +2674,18 @@ function drawDeployForecastLines(features, layer, runStart, deploymentId, direct
       .on("click", () => selectDeployTrack(trackKey))
       .addTo(layer);
     const entry = {
-      line, hitLine, forward: dir > 0,
+      line, hitLine, forward: dir > 0, color,
       times, lats: latlngs.map((p) => p[0]), lngs: latlngs.map((p) => p[1]),
     };
     deployTracks[trackKey] = entry;
     restyleTrack(entry, trackKey === selectedTrack);
     clipDeployTrack(entry, atTimeClockMs, trackKey === selectedTrack); // initial crop
 
-    // At-time marker: rides the deployment's group, coloured deploy-green, click
-    // highlights the whole deployment's array at the clock's instant (setKey
-    // `deploy:<id>`).
+    // At-time marker: rides the deployment's group, coloured with this deployment's
+    // cycling colour, click highlights the whole deployment's array at the clock's
+    // instant (setKey `deploy:<id>`).
     registerAtTimeMarker(layer, {
-      color: DEPLOY_COLOR,
+      color,
       label: `#${(props.index ?? 0) + 1}`,
       setKey: `deploy:${deploymentId}`,
       times,
@@ -2624,10 +2702,16 @@ function drawDeployForecastLines(features, layer, runStart, deploymentId, direct
 // last fix, so we keep the FULL advected path [last fix → field end] and let
 // clipForecast split it at `nowMs`: the [last fix → now] segment renders DASHED (the
 // un-transmitted reporting-lag gap, #34), the [now → end] segment SOLID (the forecast).
-// Registered in forecastClockEntries as a pair of non-interactive violet polylines in
-// the driftForecast pane (below every marker), clock-clipped and shown only while "Show
-// tracks" is on, with the drifter's own head walking the combined path (see
-// clipForecast). GeoJSON coords are [lon,lat].
+// Both carry the drifter's own IDENTITY colour — the same as its observed track and
+// head (#35) — so a track reads observed→dashed→solid in one colour; the dash (not a
+// hue change) is what marks where the forecast begins. They register for click-to-
+// highlight under the drifter's key, so a forecast follows the same select/dim rule as
+// its track. Non-interactive polylines in the driftForecast pane (below every marker),
+// clock-clipped and shown only while "Show tracks" is on. Each entry also carries a
+// small NOW-GHOST dot (see clipForecast): a deployment-dot-sized identity-colour dot
+// parked at the drifter's now-position, revealed once the clock scrubs past now — it
+// marks the observed→forecast hand-off so the drifter's present position stays fixed
+// while its bright head walks the forecast forward. GeoJSON coords are [lon,lat].
 function drawDrifterForecastLines(features, layer, seeds, nowMs) {
   for (const f of features) {
     const props = f.properties ?? {};
@@ -2649,17 +2733,42 @@ function drawDrifterForecastLines(features, layer, seeds, nowMs) {
       times.push(startMs + i * cadenceMs);
     });
     if (times.length < 2) continue;
+    const base = styleForBatch(seed.batch); // identity style (= the observed track/head)
     const mkLine = (dashed) =>
       L.polyline([], {
         pane: "driftForecast",
-        color: VIOLET_FORECAST_COLOR,
+        color: base.fillColor,
         weight: 2,
-        opacity: 0.85,
+        opacity: 1,
         interactive: false,
         ...(dashed ? { dashArray: "6 4" } : {}),
       });
+    const line = mkLine(false), bridge = mkLine(true);
+    // Same select/dim rule as the observed track: identity colour + wider when this
+    // drifter is picked, desaturated when another is. setStyle keeps the bridge's dash.
+    registerPart(headKey, (s) => {
+      const st = lineStyle(s, base.fillColor);
+      line.setStyle(st);
+      bridge.setStyle(st);
+      if (s === "selected") { line.bringToFront(); bridge.bringToFront(); }
+    });
+    // Now-ghost: a small deployment-dot-sized dot in the drifter's identity colour,
+    // parked at the fixed now-position and hidden until the clock scrubs past now
+    // (clipForecast). It marks where the track hands off from observed to forecast, so
+    // the bright head can walk on into the forecast without losing the present position.
+    // Rides `layer` so it clears with the forecast group.
+    const nowPos = interpAtTime(times, lats, lngs, nowMs) ?? [lats[0], lngs[0]];
+    const nowGhost = L.circleMarker([nowPos[0], nowPos[1]], {
+      pane: "deployDrops", // above the track canvas, below the heads (like the deploy dots)
+      radius: DEPLOY_DROP_RADIUS, // = the deployment-mark size
+      weight: 0,
+      fillColor: base.fillColor,
+      fillOpacity: 0,      // revealed once the clock passes now
+      interactive: false,
+    });
+    layer.addLayer(nowGhost);
     forecastClockEntries.push({
-      line: mkLine(false), bridge: mkLine(true),
+      line, bridge, nowGhost, ghostShown: false,
       times, lats, lngs, headKey, batch: seed.batch, group: layer, nowMs,
       tip: `${headKey} · forecast`, lineShown: false, bridgeShown: false,
     });
@@ -2793,8 +2902,9 @@ const INERTIAL_LINE_WIDTH = 1.3; // thin, so overlapping trails don't clump
 // Enough steps to read as a flow line, few enough to redraw cheaply on scrub/pan.
 const INERTIAL_STILL_STEPS = 24;
 
-// Cyan, distinct from the orange true track, the violet forecast / magenta
-// hindcast advection lines, and the dark streamlines of the flow overlay.
+// Cyan — a non-instrument accent kept clear of the warm-drifter / cool-virtual
+// identity palette (docs/palette.md) and the dark flow-overlay streamlines, so the
+// near-inertial animation reads as its own layer.
 const INERTIAL_COLOR = "#22d3ee";
 
 // Precomputed ONCE from the fetched artifact: the grid geometry (header) plus
@@ -3135,16 +3245,17 @@ function startInertialClock(map, grid, layer, displayedFieldTime) {
 // they ride the layer control, not the batch filter. Rows are keyed by `type`,
 // so the two floats collapse into one "Floats" instrument row (like the two
 // seagliders share theirs), each still selectable by id.
+// Colours from the active PALETTE; labels are fixed. Data key stays `seaglider`
+// (baked into gliders.geojson + the build pipeline); only the visible row label
+// reads "Glider" (#24). See docs/gliders.md.
 const GLIDER_STYLES = {
-  xspar: { color: "#f59e0b", label: "XSPAR" },
-  // Data key stays `seaglider` (baked into gliders.geojson + the build pipeline);
-  // only the visible row label reads "Glider" (#24). See docs/gliders.md.
-  seaglider: { color: "#38bdf8", label: "Glider" },
-  waveglider: { color: "#ec4899", label: "Waveglider" },
-  float: { color: "#a855f7", label: "Float" },
+  xspar: { color: PALETTE.xspar, label: "XSPAR" },
+  seaglider: { color: PALETTE.seaglider, label: "Glider" },
+  waveglider: { color: PALETTE.waveglider, label: "Waveglider" },
+  float: { color: PALETTE.float, label: "Float" },
 };
 const gliderStyle = (type) =>
-  GLIDER_STYLES[type] ?? { color: "#38bdf8", label: type ?? "Glider" };
+  GLIDER_STYLES[type] ?? { color: PALETTE.seaglider, label: type ?? "Glider" };
 
 // `state` ("normal" | "selected" | "dim") drives the click-to-highlight look: a
 // selected glider gets a `-selected` class (CSS scales its diamond up); a dimmed
@@ -3238,11 +3349,11 @@ function buildGliderMarkerGroups(geojson) {
 // platform (from its track LineString): a per-segment line whose segments each
 // carry that fix's hover tooltip — mirroring buildTrackGroups (see
 // addTrackSegments), and (like it) registered for click-to-highlight under the
-// platform `id`, so clicking a glider's line or its head selects it. Drawn in
-// TRACK_COLOR, the single true-track colour shared with the drifters (the
-// instrument identity stays on the coloured marker); this keeps every past track
-// reading as one layer. A platform with a single deployed fix has no LineString
-// and so no track group, only its marker. Returns { type: featureGroup }.
+// platform `id`, so clicking a glider's line or its head selects it. Drawn in the
+// platform's own identity colour (gliderStyle(type).color) — the same colour as its
+// marker and head, so line = dot = head like the drifters (#35, docs/palette.md).
+// A platform with a single deployed fix has no LineString and so no track group,
+// only its marker. Returns { type: featureGroup }.
 function buildGliderTrackGroups(geojson, markerGroups) {
   const groups = {};
   for (const feature of geojson.features ?? []) {
@@ -3567,7 +3678,7 @@ function makeShipLayer(vessel) {
       pane: "shipTrack",
       color: vessel.trackColor,
       weight: 2,
-      opacity: 0.95,
+      opacity: 1,
       bubblingMouseEvents: false,
     });
     seg.bindTooltip(shipPopupHtml(vessel, p, prev), { sticky: true });

@@ -332,9 +332,9 @@ move to `done/` and gain a `docs/` counterpart.
     (#33; ships excluded); and the reporting-lag gap between an observed track and
     its forecast is closed with a **dashed bridge** (the advected last-fix→now
     vertices, currently discarded, rendered dashed and clock-clipped, #34).
-    Sources the dot colour from a single identity-colour seam so the deferred
-    **#35 (per-class palette)** later converges line = dot = head. **Open**
-    (#35 deferred to its own session — needs rendered examples + human review).
+    Sources the dot colour from a single identity-colour seam so
+    **#35 (per-class palette)** converges line = dot = head. **Open**
+    (#35 has since landed — see item 41 / [docs/palette.md](../docs/palette.md)).
 36. [Zoom levels](042-zoom-levels.md) — half-level intermediate zoom
     (`zoomSnap`/`zoomDelta` 0.5) and a finer max zoom (raise `MAX_ZOOM`), bounded
     by the CMEMS 1/12° raster resolution — past it only the pixels enlarge (#27).
@@ -370,8 +370,18 @@ move to `done/` and gain a `docs/` counterpart.
     **Done** (server-only, no behaviour change). The higher-value precompute-as-static
     variant and the ragged-start compute speedup (numba / lean in-RAM field) are tracked
     in the forecast-perf issue (#39), a separate MR.
+41. [Instrument palette](done/047-instrument-palette.md) — one named palette
+    (`?palette=`, default `ember`) owns every per-class identity colour: drifter
+    batches and virtual deployments as two ordinal ramps on opposite warm/cool ends,
+    plus shape-coded gliders and ships, all chosen to clear both the speed (green)
+    and vorticity (blue↔magenta) shadings. Converges **line = dot = head** — an
+    observed track, its deployment dot, its moving head, and its identity-coloured
+    forecast all share one colour; only the reporting-lag bridge stays dashed.
+    Selection highlights in-colour (wider line + others desaturated); every head
+    gets a white outline; virtual deployments cycle `deploy_1..3` with a Deploy-tab
+    swatch; and all data layers render opaque so the colours read undiluted over the
+    shadings. **Done** ([docs/palette.md](../docs/palette.md)).
 
-Deferred / not in these batches: **#35** (instrument colormap — own session,
-human-in-the-loop); **#16** (CMEMS rollover validation), **#17** (static
+Deferred / not in these batches: **#16** (CMEMS rollover validation), **#17** (static
 streamlines), **#25** (re-enable flow/near-inertial overlays), **#31** (xspar/float
 forecasts — needs more CMEMS layers) — out of scope for this frontend pass.

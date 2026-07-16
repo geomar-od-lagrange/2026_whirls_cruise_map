@@ -316,7 +316,9 @@ limits are unknown (the
 probe failed), the check is skipped and the server's own bounded request model rejects
 the request via the error path.
 
-**The clock clips the trail.** Each drift is **one green line** that grows up to the
+**The clock clips the trail.** Each drift is **one line** — in the deployment's own
+colour (successive deployments cycle the palette's three virtual-deployment colours;
+see [palette.md](palette.md)) — that grows up to the
 app clock: at clock *t* it draws only the part **already traversed** by that instant
 and nothing ahead of it, so a scrub animates the deployment rather than repainting dots
 on a static line. Every line also carries **one at-time marker** at the position it
