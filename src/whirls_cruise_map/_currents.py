@@ -59,6 +59,12 @@ FIELD_TMIN = os.environ.get("WHIRLS_FIELD_TMIN", "2026-06-28T00:00:00Z")
 _ATTEMPTS = 3
 _BACKOFF = 5  # base seconds: 5s, 10s between attempts
 
+# Chunk the shading-window load over time so the float32 cast in fetch_shading_window
+# runs block-by-block (dask reads each K-step block as float64, casts to float32, and
+# releases the float64 block) — the full float64 window is never resident, which bounds
+# the cold-start derive peak that OOM-killed the slow tier (#37).
+_SHADING_TIME_CHUNK = 8
+
 DATASET_ID = "cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i"
 
 # Time-slider shading. Frames are named by absolute valid time and step every
@@ -175,8 +181,8 @@ def fetch_shading_window(
             backoff=_BACKOFF,
             label=f"CMEMS subset of {DATASET_ID}",
         )
-        with xr.open_dataset(out) as ds:
-            ds = ds.load()
+        with xr.open_dataset(out, chunks={"time": _SHADING_TIME_CHUNK}) as ds:
+            ds = ds.astype({"uo": np.float32, "vo": np.float32}).load()
 
     if "depth" in ds.dims:
         ds = ds.isel(depth=0, drop=True)
@@ -438,3 +444,37 @@ def to_speed_frames(window: xr.Dataset, frame_times: list[datetime]) -> tuple[li
         "colorbar": _colorbar_stops(),
     }
     return frames, meta
+
+
+# Static land/sea basemap colours (#29): opaque gray land, flat blue sea. The sea tone
+# matches the CSS #map fallback (#dfe7ee) so there is no flash before the WebP loads;
+# the land gray reads under both shadings and under "None".
+LANDMASK_LAND_RGB = (0.788, 0.788, 0.769)  # ~#c9c9c4
+LANDMASK_SEA_RGB = (0.875, 0.906, 0.933)   # ~#dfe7ee
+
+
+def to_landmask_webp(window: xr.Dataset) -> tuple[bytes, dict]:
+    """Bake a static gray-land / blue-sea mask (#29) from the field's own land pattern.
+
+    Land is ``NaN`` in the CMEMS field. The land geometry is time-invariant — every
+    slice comes off the same fixed grid, which has no tidal-flat / intertidal cells — so
+    the mask is baked from a **single** representative time slice rather than reducing
+    over the whole window. The mask goes through the same Mercator warp as the shadings,
+    so it co-registers with their ``bounds`` exactly. Returns ``(webp_bytes, bounds)``
+    (the frontend reuses the shading ``meta.bounds``)."""
+    f = window.isel(time=0, drop=True) if "time" in window.dims else window
+    f = f.sortby("latitude").sortby("longitude")
+    land = np.isnan(f["uo"].values)
+    # NaN on land, finite on sea — so the shared warp/mask path treats land as NaN
+    # exactly like the shadings do.
+    field = np.where(land, np.nan, 0.0)
+
+    def to_rgba(warped):
+        m = np.isnan(warped)
+        rgba = np.empty(warped.shape + (4,), dtype=float)
+        for c in range(3):
+            rgba[..., c] = np.where(m, LANDMASK_LAND_RGB[c], LANDMASK_SEA_RGB[c])
+        rgba[..., 3] = 1.0
+        return rgba
+
+    return _raster.mercator_rgba_webp(field, f["latitude"].values, f["longitude"].values, to_rgba)

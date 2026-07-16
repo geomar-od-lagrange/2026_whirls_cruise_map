@@ -80,14 +80,16 @@ def _build_store(store_dir, first: date, last: date, fetch_day=None) -> dict:
 
 @pytest.fixture(autouse=True)
 def _fresh_field_index():
-    """The API's field-index cache is a module global (mirrors the old
-    per-file sampler cache) — reset it around every test so one test's store
-    can never leak into the next's."""
+    """The API's field-index cache and forecast response cache are module globals —
+    reset both around every test so one test's store or cached run can never leak
+    into the next's."""
     _api._index = None
     _api._index_mtime = None
+    _api._cached_batch_run.cache_clear()
     yield
     _api._index = None
     _api._index_mtime = None
+    _api._cached_batch_run.cache_clear()
 
 
 @pytest.fixture
@@ -431,3 +433,69 @@ def test_forecast_endpoint_422s_on_an_unparseable_start(store):
         "/api/forecast", json={"seeds": [{"lon": 10.5, "lat": -34.0, "start": "not-a-time"}]}
     )
     assert resp.status_code == 422
+
+
+# --- response cache: the observed forecast every client fires ------------------
+#
+# The map kicks the same observed-drifter forecast at page load for every client; on the
+# single API pod it should compute once per data version, not once per client. These pin
+# the memoization: identical requests hit the cache, distinct ones don't, and a field-store
+# write invalidates.
+
+
+def _count_batch_run(monkeypatch):
+    """Wrap `_api._batch_run` with a call counter; returns the counter dict."""
+    calls = {"n": 0}
+    real = _api._batch_run
+
+    def counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(_api, "_batch_run", counting)
+    return calls
+
+
+def test_identical_forecast_is_computed_once_then_served_from_cache(store, monkeypatch):
+    calls = _count_batch_run(monkeypatch)
+    client = TestClient(_api.app)
+    body = {"seeds": _ONE_SEED, "horizon_h": 48.0}
+
+    r1 = client.post("/api/forecast", json=body)
+    r2 = client.post("/api/forecast", json=body)
+
+    assert r1.status_code == r2.status_code == 200
+    assert calls["n"] == 1  # second request served from cache, no recompute
+    assert r1.json()["features"] == r2.json()["features"]
+
+
+def test_distinct_requests_are_cached_separately(store, monkeypatch):
+    calls = _count_batch_run(monkeypatch)
+    client = TestClient(_api.app)
+
+    client.post("/api/forecast", json={"seeds": _ONE_SEED, "horizon_h": 48.0})
+    client.post("/api/forecast", json={"seeds": _ONE_SEED, "horizon_h": 24.0})   # diff horizon
+    client.post("/api/forecast",
+                json={"seeds": _ONE_SEED, "horizon_h": 48.0, "direction": "backward"})  # diff dir
+    client.post("/api/forecast",
+                json={"seeds": _ONE_SEED * 2, "horizon_h": 48.0})  # diff seed set
+
+    assert calls["n"] == 4  # each distinct request is its own cache key
+
+
+def test_cache_invalidates_when_the_field_store_updates(store, monkeypatch):
+    calls = _count_batch_run(monkeypatch)
+    client = TestClient(_api.app)
+    body = {"seeds": _ONE_SEED, "horizon_h": 48.0}
+
+    client.post("/api/forecast", json=body)
+    assert calls["n"] == 1
+
+    # A build write bumps the manifest mtime (the version key). Force a detectable bump
+    # (successive writes can land in the same filesystem second), as the reload test does.
+    manifest_path = store / "field_manifest.json"
+    bumped = manifest_path.stat().st_mtime + 10
+    os.utime(manifest_path, (bumped, bumped))
+
+    client.post("/api/forecast", json=body)
+    assert calls["n"] == 2  # new field version -> new key -> recompute

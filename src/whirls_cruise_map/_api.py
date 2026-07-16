@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
@@ -381,6 +382,43 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
     }
 
 
+# --- response cache ----------------------------------------------------------
+#
+# The map fires the observed-drifter forecast at page load for every client, and it is a
+# byte-identical request at a given data version (seeds off latest.geojson, fixed
+# horizon/direction). On the single API pod, recomputing it per client is wasted work, so
+# memoize the run. The field-manifest mtime `_get_field_index` already stats each request
+# (bumped on every slow build write) is the version key, so a store update invalidates the
+# cache; a changed seed set / horizon / direction is a different key. Custom deploy-tool runs
+# have unique bodies, so they miss and are served live. `analysis_edge` (the run's only
+# wall-clock field) is not read by the client, so a frozen copy in a cached response is
+# harmless. lru_cache is thread-safe and does not cache exceptions, so a 422/503 recomputes.
+_FORECAST_CACHE_CAP = 32
+
+
+def _field_version() -> float:
+    """The field store's version token: the manifest mtime `_get_field_index` already stats
+    each request (bumped on every slow build write). Raises `FileNotFoundError` on an
+    empty/missing store, exactly as `_get_field_index` does (-> 503 upstream)."""
+    _get_field_index()  # refreshes `_index_mtime` if the manifest changed; may raise
+    assert _index_mtime is not None  # set by the call above on success
+    return _index_mtime
+
+
+@lru_cache(maxsize=_FORECAST_CACHE_CAP)
+def _cached_batch_run(
+    field_version: float, direction: str, horizon_h: float, seeds: tuple
+) -> dict:
+    """:func:`_batch_run` memoized on the field version + request. ``seeds`` is a hashable
+    tuple of ``(lon, lat, start)`` triples (so the arguments are hashable); ``field_version``
+    scopes every entry to the store state it was computed against."""
+    return _batch_run(
+        [Seed(lon=lon, lat=lat, start=start) for lon, lat, start in seeds],
+        horizon_h,
+        direction,
+    )
+
+
 # --- app ---------------------------------------------------------------------
 
 app = FastAPI(title="WHIRLS deployment forecast")
@@ -415,7 +453,8 @@ def forecast(req: ForecastRequest) -> dict:
     even at the seed cap (vectorized RK4), comfortably inside the gateway's 60 s
     timeout."""
     try:
-        return _batch_run(req.seeds, req.horizon_h, req.direction)
+        seeds = tuple((s.lon, s.lat, s.start) for s in req.seeds)
+        return _cached_batch_run(_field_version(), req.direction, req.horizon_h, seeds)
     except ValueError as exc:  # no seeds / unparseable start time
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:  # store missing/empty — the static map still serves

@@ -317,3 +317,61 @@ move to `done/` and gain a `docs/` counterpart.
     (no dash split, nothing ahead of the clock, no vessel route) and always shown;
     the MD track crops at 28 Jun and the scrubber drops its type-in jump box.
     **Done** ([docs/controls.md](../docs/controls.md)).
+34. [Defaults & quick wins](040-defaults-and-quick-wins.md) — a batch of small
+    frontend issues: drop the scrubber's "Now" button and the now-marker pulse
+    (#36); deployment defaults to 10 km spacing + instantaneous release (#26);
+    tracks (drifter/glider/ship) show on first load without stalling first paint
+    (#28, which needs the track-visibility state decoupled from the Instruments
+    tab's DOM since Deploy is the default tab); and forward + backward runs become
+    an OR (both checkable, run and drawn from the same drops) instead of an
+    exclusive switch (#32). **Open.**
+35. [Track visual overhaul](041-track-visual-overhaul.md) — every instrument and
+    virtual track gains a fixed **deployment dot** (4× line width, identity
+    colour, no outline) at its deployment point plus a clock-driven **moving
+    head**, marrying the real-instrument and virtual-deployment marker styling
+    (#33; ships excluded); and the reporting-lag gap between an observed track and
+    its forecast is closed with a **dashed bridge** (the advected last-fix→now
+    vertices, currently discarded, rendered dashed and clock-clipped, #34).
+    Sources the dot colour from a single identity-colour seam so the deferred
+    **#35 (per-class palette)** later converges line = dot = head. **Open**
+    (#35 deferred to its own session — needs rendered examples + human review).
+36. [Zoom levels](042-zoom-levels.md) — half-level intermediate zoom
+    (`zoomSnap`/`zoomDelta` 0.5) and a finer max zoom (raise `MAX_ZOOM`), bounded
+    by the CMEMS 1/12° raster resolution — past it only the pixels enlarge (#27).
+    **Open.**
+37. [Default continent basemap](043-continent-basemap.md) — a highly compressed
+    static gray-land / blue-sea WebP mask at CMEMS resolution, baked from the
+    field's own NaN-land pattern (same grid, co-registered) and drawn in a pane
+    below the shadings as a permanent basemap — land context with no OSM and no
+    per-pan transfer (#29). **Open.**
+38. [Outlier toggle](044-outlier-toggle.md) — a client-only "Hide outliers"
+    toggle keyed on the `derived_speed_mps` already in `tracks.geojson` (no second
+    download): flag out-and-back GPS spikes (anomalous speed on both adjacent
+    segments), then **interpolate** the resulting gap if it spans ≤ 24 h or
+    **blank** it beyond 24 h (#30). Server-side despike stays a separate BACKLOG
+    item. **Open.**
+39. [Slow-derive cold-start OOM](045-slow-derive-oom.md) — the slow-tier
+    `derive` is OOMKilled at 2 Gi on a cold start (#37): the full-cruise 6-hourly
+    shading window loads as **float64** (~449 MB, no cast) and `to_landmask_webp`
+    `sortby`s the **entire** window to compute a time-invariant 2-D land mask (a
+    full second copy). Fixes: make float32 canonical in RAM via a **chunked-lazy
+    cast** on load (`copernicusmarine.subset` can't emit float32 at download, so no
+    on-disk cast for the direct fetch; the field store is already float32 on disk),
+    derive the land mask from a **single** time slice, and `del`+`gc` the window
+    before the inertial step. Deploy-side, `oc_gateway` bumped the slow-cron cap
+    2 Gi → 3 Gi as a stopgap. Fix #4 (store-derived shadings / batching — the true
+    float32-on-disk end state, bounds peak independent of span) deferred. **Open.**
+40. [Cache the observed-drifter forecast](046-forecast-response-cache.md) — the map
+    fires the same observed forecast at page load for every client; on the single API
+    pod it should compute once per data version, not once per client. A
+    `functools.lru_cache` over `_batch_run`, keyed on the field-manifest mtime (the
+    version token) + the request (seeds/horizon/direction); a store write bumps the mtime
+    and invalidates. `analysis_edge` is unused by the client, so a frozen copy is harmless.
+    **Done** (server-only, no behaviour change). The higher-value precompute-as-static
+    variant and the ragged-start compute speedup (numba / lean in-RAM field) are tracked
+    in the forecast-perf issue (#39), a separate MR.
+
+Deferred / not in these batches: **#35** (instrument colormap — own session,
+human-in-the-loop); **#16** (CMEMS rollover validation), **#17** (static
+streamlines), **#25** (re-enable flow/near-inertial overlays), **#31** (xspar/float
+forecasts — needs more CMEMS layers) — out of scope for this frontend pass.
