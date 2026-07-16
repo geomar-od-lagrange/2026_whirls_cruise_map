@@ -115,10 +115,13 @@ lands.
 
 ### Per-batch colour
 
-`styleForBatch()` is the single seam for per-batch appearance, and the swatches
-in the control follow whatever it returns. Staged drifters (`pre_deploy`) render
-muted grey; each deployment batch has its own vivid colour (Deployment 1 blue,
-Deployment 2 teal, Deployment 3 orange, Deployment 4 purple, Deployment 5 magenta),
-so in-water drifters stand out from those still awaiting deployment and successive
-deployments read apart. Colours live in `BATCH_STYLES` in `app.js`; a further
-deployment with no entry falls back to blue until given one.
+`styleForBatch()` is the single seam for per-batch appearance, and the swatches in
+the control follow whatever it returns. Staged drifters (`pre_deploy`) render a
+muted grey; each deployment batch takes the next step along the active palette's
+**drifter ramp** — an ordinal light-to-dark ramp in one hue family (warm
+amber→crimson under the default `ember` palette), so successive deployments read
+apart *and* the whole set reads as one drifter family. The ramp and every other
+instrument colour are defined once in the palette (`BATCH_STYLES` is built from it);
+a further deployment past the ramp falls back to the first step until the ramp is
+extended. See [palette.md](palette.md) for the full scheme, the shading-clash and
+colour-blindness rationale, and the `?palette=` switch.

@@ -227,11 +227,12 @@ the Agulhas's use the reported speed/course plus status/area.
   as the current position filled with that fix's own data, so the along-track
   times stay readable without dots; the segments are interactive for the hover
   but swallow their click (a ship has no highlight axis). The two vessels are
-  told apart by colour: the Marion Dufresne is dark blue (`#1e40af`), the
-  Agulhas deep crimson (`#9b1c31`) — both distinct from the drifters' blue/teal
-  and the gliders' amber/sky (the MD blue is deeper than the drifters'
-  deployment-1 blue and the seaglider sky-blue, so it reads as a distinct line). The vessel marker is a coloured disc with a
-  white ring and a boat glyph, set apart from the small blue drifter circles —
+  told apart by colour: each has its own identity colour from the active palette (a
+  deep blue for the Marion Dufresne, a dark maroon for the Agulhas under the default
+  `ember` scheme) — chosen, like every instrument colour, to read apart from the
+  drifters and gliders and to clear the surface shadings (see
+  [palette.md](palette.md)). The vessel marker is a coloured disc with a white ring
+  and a boat glyph, set apart from the smaller drifter circles by that ring and glyph —
   and it **rides the app clock**: the track clips to the fixes at or before the
   clock and the disc sits at the vessel's interpolated position at that instant
   with the bracketing fix's tooltip, parking at the latest fix when the clock is
