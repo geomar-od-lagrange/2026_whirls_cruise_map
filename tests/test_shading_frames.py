@@ -249,3 +249,47 @@ def test_prune_removes_retired_and_out_of_span_only(tmp_path):
         assert (tmp_path / name).exists()
     assert (tmp_path / "currents_meta.json").exists()
     assert (tmp_path / "build.json").exists()
+
+
+# --- #37: float32 window cast + single-slice land mask ------------------------
+
+def test_fetch_shading_window_casts_to_float32(monkeypatch):
+    """fetch_shading_window returns a float32 window even though the CMEMS product is
+    float64 on the wire — the chunked-lazy astype (#37) narrows uo/vo without holding
+    the full float64 window. copernicusmarine.subset is mocked to emit a float64 .nc,
+    mirroring the real product's dtype."""
+    lats = np.linspace(-55.0, -15.0, 20)
+    lons = np.linspace(-10.0, 35.0, 22)
+    times = np.datetime64("2026-06-28T00", "ns") + (np.arange(6) * 6).astype("timedelta64[h]")
+    u = np.ones((times.size, lats.size, lons.size), dtype=np.float64)
+    v = -np.ones((times.size, lats.size, lons.size), dtype=np.float64)
+    u[:, :4, :4] = np.nan  # land block, NaN at every step
+    v[:, :4, :4] = np.nan
+
+    def fake_subset(**kwargs):
+        xr.Dataset(
+            {"uo": (("time", "latitude", "longitude"), u),
+             "vo": (("time", "latitude", "longitude"), v)},
+            coords={"time": times, "latitude": lats, "longitude": lons},
+        ).to_netcdf(kwargs["output_filename"])
+
+    monkeypatch.setattr(_currents.copernicusmarine, "subset", fake_subset)
+
+    win = _currents.fetch_shading_window(
+        t_lo=datetime(2026, 6, 28, tzinfo=timezone.utc),
+        t_hi=datetime(2026, 6, 29, 6, tzinfo=timezone.utc),
+    )
+    assert win["uo"].dtype == np.float32 and win["vo"].dtype == np.float32
+    assert np.array_equal(np.isnan(win["uo"].values), np.isnan(u))  # land pattern kept
+    assert np.isfinite(win["vo"].values[:, 10, 10]).all()           # sea stays finite
+
+
+def test_landmask_is_single_slice_equivalent():
+    """The land mask is time-invariant, so to_landmask_webp (#37) reads a single time
+    slice: its output for the full N-step window is byte-identical to the 1-step slice."""
+    win = _window(n_steps=7, with_land=True)
+    full = _currents.to_landmask_webp(win)
+    one = _currents.to_landmask_webp(win.isel(time=[0]))
+    assert full[0] == one[0]  # identical WebP bytes
+    assert full[1] == one[1]  # identical bounds
+    assert full[0][:4] == b"RIFF" and full[0][8:12] == b"WEBP"

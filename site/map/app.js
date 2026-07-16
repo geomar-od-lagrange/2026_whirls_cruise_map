@@ -33,10 +33,11 @@ const DATA = {
 // Fallback view if no valid positions are present (cruise staging, Table Bay).
 const FALLBACK_CENTER = [-33.9, 18.43];
 const FALLBACK_ZOOM = 12;
-// Deepest zoom (bounded — no zooming into empty space past the field's
-// resolution). Also the top of the track line-weight ramp (see trackWeight);
-// passed to L.map so the two stay in sync.
-const MAX_ZOOM = 12;
+// Deepest zoom (bounded — past the CMEMS 1/12° raster resolution there's no more
+// detail, only enlarged pixels, so this is a legibility cap not a data one; #27
+// lifts it a little to read dense drops/tracks). Also the top of the track
+// line-weight ramp (see trackWeight); passed to L.map so the two stay in sync.
+const MAX_ZOOM = 14;
 
 // R/V Marion Dufresne live track. Fetched client-side from the French
 // Oceanographic Fleet (Flotte Océanographique Française) localisation API — the
@@ -286,14 +287,24 @@ const stateFor = (key) =>
 
 // Register a freshly-built element's restyler and immediately apply the current
 // selection state, so a part built while a selection is active renders correctly.
-function registerPart(key, restyle) {
-  (trackParts[key] ??= []).push(restyle);
+// `owner` tags a family that may be torn down and rebuilt together (track segments,
+// owner "trackseg", on the outlier toggle); untagged parts (heads) persist.
+function registerPart(key, restyle, owner) {
+  (trackParts[key] ??= []).push({ fn: restyle, owner });
   restyle(stateFor(key));
 }
 
 function applySelection() {
   for (const key of Object.keys(trackParts))
-    for (const restyle of trackParts[key]) restyle(stateFor(key));
+    for (const p of trackParts[key]) p.fn(stateFor(key));
+}
+
+// Drop every restyler tagged with `owner` across all keys — used when a part family is
+// rebuilt (the outlier-toggle track rebuild), so stale restylers pointing at removed
+// polylines don't accumulate. Heads (untagged) survive.
+function dropPartsByOwner(owner) {
+  for (const key of Object.keys(trackParts))
+    trackParts[key] = trackParts[key].filter((p) => p.owner !== owner);
 }
 
 // Toggle: clicking the current selection clears it; another instrument replaces it.
@@ -386,6 +397,8 @@ function updateClock(ms) {
     for (const entry of atTimeEntries) updateAtTimeMarker(entry, atTimeClockMs);
     for (const entry of trackClockEntries) clipTrack(entry, atTimeClockMs);
     updatePointHeads(atTimeClockMs);
+    updateDeploymentDots(atTimeClockMs); // reveal each deployment dot once the clock passes its deploy time
+
     // Crop the virtual deployment drift lines to the clock (forward + backward runs).
     for (const key of Object.keys(deployTracks))
       clipDeployTrack(deployTracks[key], atTimeClockMs, key === selectedTrack);
@@ -471,7 +484,7 @@ const registerHead = (key, ctl) => {
 // observed heads follow the app clock regardless of this toggle (plan 035): their
 // track clips are registered eagerly at load, so scrubbing walks every head even with
 // the lines hidden.
-let tracksOn = false;
+let tracksOn = true;
 
 // Set once the observed tracks (drifter tracks.geojson + gliders) are built, so the
 // full multi-fix head set is known. Until then the point-head clock stays quiet
@@ -479,6 +492,20 @@ let tracksOn = false;
 let tracksLoaded = false;
 
 const trackClockEntries = [];
+
+// Outlier toggle (#30): hide out-and-back GPS spikes in the observed drifter/glider
+// tracks, computed client-side from the `derived_speed_mps` already in tracks.geojson
+// (no extra download). Default hide. `observedTrackSources` keeps each track's raw
+// geometry so the toggle can rebuild the segments + clock entries in place (see
+// rebuildObservedTracks); `observedTrackHandles` are the live builds to tear down.
+let hideOutliers = true;
+const observedTrackSources = [];
+const observedTrackHandles = [];
+
+// Fixed per-instrument deployment dots (#33), each { marker, t, shown }: shown only once
+// the app clock reaches the deployment time `t` (see updateDeploymentDots). Built once
+// with the tracks, outside the outlier rebuild.
+const deploymentDots = [];
 
 // Real-drifter forecast clips (#22). Each is one violet polyline per deployed drifter,
 // its vertices timed from the /api/forecast advection, driving the SAME head as the
@@ -615,51 +642,77 @@ function clipTrack(entry, ms) {
   head?.at(pos, entry.tip ? entry.tip(entry.fixes[i], pos, i, entry.fixes) : null);
 }
 
-// Clip one real-drifter forecast to clock `ms` and walk its head (#22). Unlike an
-// observed clip this is a single non-interactive violet polyline, so it clips by
-// `setLatLngs` (cheap: no per-segment add/remove) rather than segment membership. The
-// track's first vertex is the drifter's position at ~now (pre-now vertices were dropped
-// when it was built), so it is **inactive** — line hidden, head left to the observed/
-// point clock at the drifter's last real fix — when the clock is at/before now. When
-// **active** (clock past now) it walks the drifter's own head to the forecast position
-// at the clock REGARDLESS of the "Show tracks" master, and additionally draws the violet
-// line from now up to the clock ONLY while that master is on (`tracksOn`, read live: the
-// projected marker still moves with tracks off, just not its line). Runs last in
+// Interpolate the [lat,lng] position at time `t` along the ascending `times[]`
+// (clamped to the endpoints). Returns null for an empty series.
+function interpAtTime(times, lats, lngs, t) {
+  const n = times.length;
+  if (n === 0) return null;
+  if (t <= times[0]) return [lats[0], lngs[0]];
+  if (t >= times[n - 1]) return [lats[n - 1], lngs[n - 1]];
+  let i = 0;
+  while (i < n - 1 && times[i + 1] < t) i++;
+  const t0 = times[i], t1 = times[i + 1];
+  const f = t1 === t0 ? 0 : (t - t0) / (t1 - t0);
+  return [lats[i] + f * (lats[i + 1] - lats[i]), lngs[i] + f * (lngs[i + 1] - lngs[i])];
+}
+
+// Leaflet [lat,lng][] of the path clipped to the time window [tA, tB], with both
+// endpoints interpolated. Returns null when the window is empty.
+function clipPathToWindow(times, lats, lngs, tA, tB) {
+  if (!(tB > tA)) return null;
+  const coords = [interpAtTime(times, lats, lngs, tA)];
+  for (let k = 0; k < times.length; k++)
+    if (times[k] > tA && times[k] < tB) coords.push([lats[k], lngs[k]]);
+  coords.push(interpAtTime(times, lats, lngs, tB));
+  return coords;
+}
+
+// Clip one real-drifter forecast to clock `ms` and walk its head (#22, #34). The
+// forecast is seeded at the drifter's last fix, so its full path spans [last fix →
+// field end]; the entry holds two non-interactive violet polylines — a DASHED `bridge`
+// (last fix → now: the un-transmitted reporting-lag gap, #34) and the SOLID `line`
+// (now → field end: the forecast). At/before the last fix the entry is inactive (both
+// lines hidden, head owned by the observed/point clock). Otherwise it walks the drifter's
+// own head to the clock along the modeled path REGARDLESS of the "Show tracks" master,
+// and — while that master is on and the batch is selected — draws the modeled path
+// CLIPPED to the clock: the dashed bridge up to min(clock, now) and the solid forecast
+// from now up to the clock, so the trail unfolds continuously (observed → dashed → solid)
+// as the scrubber advances and nothing shows ahead of the head (#34). Runs last in
 // updateClock, so an active forecast wins the head over the observed clip.
 function clipForecast(entry, ms) {
   if (ms == null) return;
-  const { line, times, lats, lngs, headKey, group } = entry;
-  const start = times[0];
+  const { line, bridge, times, lats, lngs, headKey, group, nowMs } = entry;
+  const start = times[0]; // the drifter's last observed fix (the forecast seed time)
+  const show = (obj, coords, flag) => {
+    if (coords && coords.length >= 2) {
+      obj.setLatLngs(coords);
+      if (!entry[flag]) { group.addLayer(obj); entry[flag] = true; }
+    } else if (entry[flag]) {
+      group.removeLayer(obj); entry[flag] = false;
+    }
+  };
   if (ms <= start) {
-    if (entry.shown) { group.removeLayer(line); entry.shown = false; }
-    return; // at/before now: the real last-known position is owned by the observed clip
+    show(bridge, null, "bridgeShown");
+    show(line, null, "lineShown");
+    return; // at/before the last fix: the real last-known position is owned by the observed clip
   }
   const head = trackHeads[headKey];
-  const lastT = times[times.length - 1];
-  let cut, pos;
-  if (ms >= lastT) {
-    cut = times.length;
-    pos = L.latLng(lats[times.length - 1], lngs[times.length - 1]);
-  } else {
-    let i = 0;
-    while (i < times.length - 1 && times[i + 1] < ms) i++;
-    const t0 = times[i], t1 = times[i + 1];
-    const f = t1 === t0 ? 0 : (ms - t0) / (t1 - t0);
-    pos = L.latLng(lats[i] + f * (lats[i + 1] - lats[i]), lngs[i] + f * (lngs[i + 1] - lngs[i]));
-    cut = i + 1; // vertices 0..i, then the interpolated at-clock point
-  }
-  // The head always walks the forecast in the future; the line shows only when "Show
-  // tracks" is on AND this drifter's batch is selected in the Instruments panel.
-  head?.at(pos, entry.tip);
+  const clockT = Math.min(ms, times[times.length - 1]);
+  const pos = interpAtTime(times, lats, lngs, clockT);
+  // The head walks the modeled path to the clock; the lines show only while "Show tracks"
+  // is on AND this drifter's batch is selected in the Instruments panel.
+  head?.at(L.latLng(pos[0], pos[1]), entry.tip);
   if (tracksOn && forecastBatchVisible(entry.batch)) {
-    const coords = [];
-    for (let k = 0; k < cut; k++) coords.push([lats[k], lngs[k]]);
-    coords.push([pos.lat, pos.lng]);
-    line.setLatLngs(coords);
-    if (!entry.shown) { group.addLayer(line); entry.shown = true; }
-  } else if (entry.shown) {
-    group.removeLayer(line);
-    entry.shown = false;
+    // Unfold with the scrubber (clock-clipped, nothing ahead of the head): the dashed
+    // bridge grows obs-end → min(clock, now), then the solid forecast grows now → clock
+    // (only once the clock passes now). The trail stays continuous — observed → dashed →
+    // solid → head — because the bridge starts at the observed track's last fix and the
+    // bridge/solid meet at now (#34).
+    show(bridge, clipPathToWindow(times, lats, lngs, start, Math.min(clockT, nowMs)), "bridgeShown");
+    show(line, clockT > nowMs ? clipPathToWindow(times, lats, lngs, nowMs, clockT) : null, "lineShown");
+  } else {
+    show(bridge, null, "bridgeShown");
+    show(line, null, "lineShown");
   }
 }
 
@@ -680,13 +733,15 @@ function removeAtTimeSet(key, exact = false) {
   if (selectedAtTimeSet && hit(selectedAtTimeSet)) selectedAtTimeSet = null;
 }
 
-// Shared line style — all track lines are TRACK_COLOR, so both drifter and glider
-// elements use it. Opacity is held constant across states: dimming is by
-// desaturation, not transparency. Weight follows the live zoom (see trackWeight).
-const trackColor = (state) =>
-  state === "selected" ? SELECTED_COLOR : state === "dim" ? desaturate(TRACK_COLOR) : TRACK_COLOR;
-const lineStyle = (state) => ({
-  color: trackColor(state),
+// Shared line style. Each track line carries its instrument's identity colour (`base`
+// — the batch/glider head colour; a per-instrument request, the #35 seam), defaulting
+// to TRACK_COLOR for any caller that doesn't pass one. Opacity is held constant across
+// states: dimming is by desaturation, not transparency. Weight follows the live zoom
+// (see trackWeight).
+const trackColor = (state, base = TRACK_COLOR) =>
+  state === "selected" ? SELECTED_COLOR : state === "dim" ? desaturate(base) : base;
+const lineStyle = (state, base = TRACK_COLOR) => ({
+  color: trackColor(state, base),
   weight: trackWeight(trackZoom, state === "selected"),
   opacity: state === "selected" ? 1 : 0.85,
 });
@@ -695,11 +750,27 @@ const lineStyle = (state) => ({
 // selected instrument's segments to the front of the shared track renderer
 // (overlayPane) so the picked track sits above every *other track* — but still
 // below the head/ship marker panes (issue #11). Both the drifter and glider
-// builders route through this so front-raising is defined once.
-function restyleLine(line, state) {
-  line.setStyle(lineStyle(state));
+// builders route through this so front-raising is defined once. `base` is the line's
+// identity colour (see lineStyle).
+function restyleLine(line, state, base) {
+  line.setStyle(lineStyle(state, base));
   if (state === "selected") line.bringToFront();
 }
+
+// The drifter + glider true tracks render on a shared **canvas** renderer, not the
+// default SVG one. "Show tracks" reveals ~100k fix-to-fix segments; as SVG that is
+// ~100k <path> DOM nodes the browser must lay out, composite, and hit-test on every
+// pan/zoom — the "Show tracks" lag. A canvas renderer draws them all in one redraw
+// with no DOM, so pan/zoom stays smooth (hover/click hit-testing and bringToFront
+// still work, done by the renderer). They share the default overlayPane (400).
+//
+// Only ONE full-viewport track canvas may exist: a canvas hit-tests its whole
+// rectangle (transparent or not), so a second track canvas above this one would
+// swallow every hover/click meant for the tracks below. The ship tracks therefore
+// stay on SVG (few segments — see makeShipLayer). Created lazily on first use — by
+// then main() has created the panes.
+const _trackRenderers = {};
+const trackRenderer = (pane) => (_trackRenderers[pane] ??= L.canvas({ pane }));
 
 // Build a track as one polyline *per fix-to-fix segment* rather than a single
 // line plus a dot at every fix. The segments abut into one continuous line, but
@@ -712,19 +783,63 @@ function restyleLine(line, state) {
 // the instrument's latest-position head marker, so every fix stays reachable.
 // Returns the segments with their endpoints + time span ({ line, t0, t1, a, b, on })
 // so registerTrackClock can clip the track at the app clock.
-function addTrackSegments(group, coords, fixes, key, tip) {
+// A drifter/glider fix is an out-and-back GPS spike when the implied speed is anomalous
+// on BOTH the segment arriving at it and the one leaving it (a genuine fast leg trips
+// only one). `derived_speed_mps[i]` is the speed INTO fix i, so fix i is a spike when
+// fixes[i] and fixes[i+1] both exceed the threshold. Nulls (the first fix, coincident
+// fixes) and the last fix (no outgoing segment) are never outliers. The threshold sits
+// well above the drift regime (<~2 m/s) and the 4-dp rounding floor — real spikes imply
+// 15+ m/s (#30).
+const OUTLIER_SPEED_MPS = 5;
+const OUTLIER_MAX_GAP_MS = 24 * 3600 * 1000; // bridge a de-spiked gap up to 24 h; blank beyond
+function outlierFlags(fixes) {
+  const n = fixes?.length ?? 0;
+  const flags = new Array(n).fill(false);
+  for (let i = 0; i < n - 1; i++) {
+    const a = fixes[i]?.derived_speed_mps, b = fixes[i + 1]?.derived_speed_mps;
+    if (Number.isFinite(a) && Number.isFinite(b) && a > OUTLIER_SPEED_MPS && b > OUTLIER_SPEED_MPS)
+      flags[i] = true;
+  }
+  return flags;
+}
+
+// Resolve a track's display geometry for the current "hide outliers" state. Showing:
+// the raw vertices, nothing skipped. Hiding: drop the spike fixes, then for each
+// consecutive kept pair that spans a removed spike, bridge it with a straight segment
+// when the gap is ≤ 24 h, else blank it (skip that segment). The kept vertices feed both
+// the drawn segments and the clock entry, so the head interpolates the cleaned path.
+function displayTrack(coords, fixes, hide) {
+  if (!hide) return { coords, fixes, skipSeg: null };
+  const flags = outlierFlags(fixes);
+  const keep = [];
+  for (let i = 0; i < (coords?.length ?? 0); i++) if (!flags[i]) keep.push(i);
+  const skipSeg = new Array(Math.max(0, keep.length - 1)).fill(false);
+  for (let j = 0; j < keep.length - 1; j++) {
+    if (keep[j + 1] === keep[j] + 1) continue; // no spike removed between them — a normal leg
+    const t0 = Date.parse(fixes[keep[j]]?.date_UTC);
+    const t1 = Date.parse(fixes[keep[j + 1]]?.date_UTC);
+    if (!(Number.isFinite(t0) && Number.isFinite(t1)) || t1 - t0 > OUTLIER_MAX_GAP_MS)
+      skipSeg[j] = true; // blank a > 24 h gap (or an unknowable span)
+  }
+  return { coords: keep.map((i) => coords[i]), fixes: keep.map((i) => fixes[i]), skipSeg };
+}
+
+function addTrackSegments(group, coords, fixes, key, tip, skipSeg, color) {
+  const base = color ?? TRACK_COLOR; // per-instrument identity colour for this track's lines
   const pts = coords.map(([lng, lat]) => [lat, lng]);
   const segs = [];
   for (let i = 0; i < pts.length - 1; i++) {
+    if (skipSeg?.[i]) continue; // blanked de-spiked gap (> 24 h) — draw no segment (#30)
     const seg = L.polyline([pts[i], pts[i + 1]], {
-      color: TRACK_COLOR,
+      renderer: trackRenderer("overlayPane"), // canvas, not one SVG <path> per segment
+      color: base,
       weight: 2,
       opacity: 0.85,
       bubblingMouseEvents: false, // background clicks (not this) clear selection
     }).addTo(group);
     seg.bindTooltip(tip(fixes?.[i] ?? {}, L.latLng(pts[i])), { sticky: true });
     if (key != null) {
-      registerPart(key, (s) => restyleLine(seg, s));
+      registerPart(key, (s) => restyleLine(seg, s, base), "trackseg");
       seg.on("click", () => selectInstrument(key));
     }
     segs.push({
@@ -737,6 +852,78 @@ function addTrackSegments(group, coords, fixes, key, tip) {
     });
   }
   return segs;
+}
+
+// A fixed "deployment dot" at a track's deployment point (its first free-drift fix —
+// true tracks are truncated at deployment, plan 010): a filled disc in the
+// instrument's identity colour, no outline, radius 2.4 (a small filled disc). The
+// real-instrument counterpart of a virtual deployment's drop disc (#33). It is
+// non-interactive so it never steals a hover/click from the track canvas beneath it
+// (plan 039), lives in the deployDrops pane (above the track canvas, below the heads),
+// and is added to the instrument's MARKER group — so the Instruments row governs it
+// like the head, independent of the "Show tracks" master (matching the virtual drops).
+// It is clock-gated: shown only once the app clock reaches the deployment time
+// (`depTimeMs`, the first-fix time) — "only after it is actually deployed".
+function addDeploymentDot(markerGroup, lng, lat, color, depTimeMs) {
+  if (markerGroup == null || !Number.isFinite(lat) || !Number.isFinite(lng)) return;
+  const t = Number.isFinite(depTimeMs) ? depTimeMs : -Infinity;
+  const shown = atTimeClockMs != null && atTimeClockMs >= t;
+  const marker = L.circleMarker([lat, lng], {
+    pane: "deployDrops",
+    radius: 2.4,
+    weight: 0,
+    fillColor: color,
+    fillOpacity: shown ? 1 : 0, // hidden until the clock reaches the deployment time
+    interactive: false,
+  }).addTo(markerGroup);
+  deploymentDots.push({ marker, t, shown });
+}
+
+// Show each deployment dot only once the app clock has reached its deployment time
+// (#33). Cheap and idempotent (only touches dots whose visibility flips); called from
+// updateClock so scrubbing reveals/hides the dots in step with the tracks.
+function updateDeploymentDots(ms) {
+  if (ms == null) return;
+  for (const d of deploymentDots) {
+    const show = ms >= d.t;
+    if (show !== d.shown) {
+      d.marker.setStyle({ fillOpacity: show ? 1 : 0 });
+      d.shown = show;
+    }
+  }
+}
+
+// Build one observed track (drifter or glider) from its raw geometry, honouring the
+// current "hide outliers" state (#30): resolve the display geometry, draw the segments,
+// and register the clock entry over the same (possibly de-spiked) vertices so the head
+// walks the cleaned path. Records a handle so the outlier toggle can tear it down and
+// rebuild it. `src` = { group, coords, fixes, key, tip }.
+function buildObservedTrack(src) {
+  const { group, coords, fixes, key, tip } = src;
+  const d = displayTrack(coords, fixes, hideOutliers);
+  const segs = addTrackSegments(group, d.coords, d.fixes, key, tip, d.skipSeg, src.color);
+  const entry = registerTrackClock(group, segs, d.coords, d.fixes, key, tip);
+  const handle = { group, segs, entry };
+  observedTrackHandles.push(handle);
+  return handle;
+}
+
+// Rebuild every observed track for the current `hideOutliers` state (#30): drop the old
+// segment polylines, clock entries, and their selection restylers, then rebuild from the
+// stored raw sources and re-apply the clock. Cheap on the canvas renderer; the heads and
+// deployment dots are untouched (built once, outside this path).
+function rebuildObservedTracks() {
+  for (const h of observedTrackHandles) {
+    for (const seg of h.segs) h.group.removeLayer(seg.line);
+    if (h.entry) {
+      const idx = trackClockEntries.indexOf(h.entry);
+      if (idx >= 0) trackClockEntries.splice(idx, 1);
+    }
+  }
+  dropPartsByOwner("trackseg");
+  observedTrackHandles.length = 0;
+  for (const src of observedTrackSources) buildObservedTrack(src);
+  updateClock(atTimeClockMs);
 }
 // A drifter head is a per-batch circleMarker: hold its batch colour, enlarge it
 // when selected, and desaturate that batch colour when another instrument is.
@@ -836,7 +1023,11 @@ function buildInstrumentRows(div, map, markerGroups, tracksOverlay, vessels = []
   for (const batch of Object.keys(markerGroups))
     batchOn[batch] = batch !== "pre_deploy";
 
-  let tracksMasterOn = false;
+  // Adopt the module master so tracks show at first paint when defaulted on (#28):
+  // sync() at build then lights the glider groups immediately instead of waiting on
+  // the eager 18 MB drifter fetch to flip it (that fetch still lights the drifters
+  // on arrival). Ships adopt it directly via ship.setTrackShown(tracksOn) in main.
+  let tracksMasterOn = tracksOn;
 
   const toggle = (layer, show) =>
     layer && (show ? layer.addTo(map) : map.removeLayer(layer));
@@ -882,6 +1073,19 @@ function buildInstrumentRows(div, map, markerGroups, tracksOverlay, vessels = []
     cb.addEventListener("change", apply);
     rows.push({ cb, apply });
   };
+
+  // Hide-outliers toggle (#30): drop out-and-back GPS spikes from the observed tracks
+  // (client-side, from the derived speeds already downloaded). Rebuilds the tracks'
+  // segments + clock entries in place. Default on (a clean view); flip to see raw fixes.
+  const outRow = L.DomUtil.create("label", "batch-row batch-outlier", div);
+  const outCb = L.DomUtil.create("input", "", outRow);
+  outCb.type = "checkbox";
+  outCb.checked = hideOutliers;
+  L.DomUtil.create("span", "batch-text", outRow).textContent = "Hide GPS outliers";
+  outCb.addEventListener("change", () => {
+    hideOutliers = outCb.checked;
+    rebuildObservedTracks();
+  });
 
   // Drifter batches sort ahead of the glider-group types (float pinned last), so the
   // family split falls between them: one two-column grid for the drifter batches, a
@@ -1124,7 +1328,7 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 // jumps; unparseable input is refused visibly). Plain positioned element (not an
 // L.control) so it can centre and span the map width; Leaflet mouse propagation is
 // disabled so dragging never pans the map.
-function buildTimeSlider(map, { t0Ms, spanHours, value, nowMs, onChange, tracks }) {
+function buildTimeSlider(map, { t0Ms, spanHours, value, nowMs, onChange, tracks, stepH = 1 }) {
   const HOUR_MS = 3600000;
   const DAY_MS = 86400000;
   const lastMs = t0Ms + spanHours * HOUR_MS;
@@ -1145,23 +1349,12 @@ function buildTimeSlider(map, { t0Ms, spanHours, value, nowMs, onChange, tracks 
     tracksCb.addEventListener("change", () => tracks.onToggle?.(tracksCb.checked));
   }
 
-  // Right side of the head row: the live clock readout and — when "now" falls inside
-  // the clock span — a "now" chip that snaps the scrubber back to the wall-clock
-  // present (#19). The blue now-dot on the scrub line is deliberately non-interactive
-  // (it must never block grabbing a thumb parked near it), so this chip carries the
-  // click. It drives the exact input→onChange path a drag uses, so every clock-aware
-  // layer re-syncs identically, and dims to "at-now" when the thumb already sits there.
+  // Right side of the head row: just the live clock readout. (The "now" jump chip
+  // was removed — #36.) The blue now-dot on the scrub line still marks where
+  // wall-clock "now" falls; it is non-interactive so it never blocks grabbing a
+  // thumb parked near it.
   const headRight = L.DomUtil.create("div", "ts-head-right", head);
   const timeEl = L.DomUtil.create("div", "ts-time", headRight);
-  const nowOffset = Math.min(spanHours, Math.max(0, Math.round((nowMs - t0Ms) / HOUR_MS)));
-  let nowBtn = null;
-  if (nowMs >= t0Ms && nowMs <= lastMs) {
-    nowBtn = L.DomUtil.create("button", "ts-nowbtn", headRight);
-    nowBtn.type = "button";
-    nowBtn.title = "Jump the clock to now";
-    L.DomUtil.create("span", "ts-nowbtn-dot", nowBtn);
-    L.DomUtil.create("span", "", nowBtn).textContent = "now";
-  }
 
   const pctOf = (ms) => (spanHours ? ((ms - t0Ms) / (spanHours * HOUR_MS)) * 100 : 0);
 
@@ -1175,11 +1368,23 @@ function buildTimeSlider(map, { t0Ms, spanHours, value, nowMs, onChange, tracks 
   input.type = "range";
   input.min = "0";
   input.max = String(spanHours);
-  input.step = "1";
+  input.step = String(stepH); // slider unit is hours; a fractional step gives sub-hour resolution
   input.value = String(value);
   input.setAttribute("aria-label", "Field clock time (UTC)");
   if (nowMs >= t0Ms && nowMs <= lastMs) {
-    L.DomUtil.create("div", "ts-nowdot", rangeWrap).style.left = pctOf(nowMs) + "%";
+    // The wall-clock "now" dot doubles as the jump-to-now control (#36 follow-up):
+    // clicking it snaps the scrubber to the now hour via the same input→onChange path a
+    // drag uses. nowOffset is now, clamped into the span and snapped to the slider step.
+    const nowOffset =
+      Math.min(spanHours, Math.max(0, Math.round((nowMs - t0Ms) / HOUR_MS / stepH) * stepH));
+    const nowDot = L.DomUtil.create("div", "ts-nowdot", rangeWrap);
+    nowDot.style.left = pctOf(nowMs) + "%";
+    nowDot.title = "Jump the clock to now";
+    L.DomEvent.on(nowDot, "click", (e) => {
+      L.DomEvent.stop(e);
+      input.value = String(nowOffset);
+      input.dispatchEvent(new Event("input")); // reuse the drag path (setTime + onChange)
+    });
   }
 
   // Absolutely-positioned tick lane under the range: a mark at each 00Z day boundary
@@ -1209,24 +1414,13 @@ function buildTimeSlider(map, { t0Ms, spanHours, value, nowMs, onChange, tracks 
   const setTime = (v) => {
     timeEl.textContent = formatClock(t0Ms + v * HOUR_MS);
   };
-  // Dim the now chip to "at-now" when the thumb already sits on the now hour, so it
-  // reads as a satisfied target rather than an always-live button.
-  const syncNowBtn = () => nowBtn?.classList.toggle("at-now", Number(input.value) === nowOffset);
   setTime(value);
-  syncNowBtn();
 
   L.DomEvent.on(input, "input", () => {
     const v = Number(input.value);
     setTime(v);
-    syncNowBtn();
     onChange(v);
   });
-  if (nowBtn) {
-    L.DomEvent.on(nowBtn, "click", () => {
-      input.value = String(nowOffset);
-      input.dispatchEvent(new Event("input")); // reuse the drag path (setTime + onChange)
-    });
-  }
 
   L.DomEvent.disableClickPropagation(el);
   L.DomEvent.disableScrollPropagation(el);
@@ -1347,7 +1541,7 @@ const KN_TO_KMH = 1.852;
 // falls back to the line-level identity (D_number/batch) with an unknown time.
 // Segments are interactive: clicking one selects the drifter (see selectInstrument).
 // Returns { batch: featureGroup }.
-function buildTrackGroups(geojson) {
+function buildTrackGroups(geojson, markerGroups) {
   const groups = {};
   for (const feature of geojson.features ?? []) {
     if (feature.geometry?.type !== "LineString") continue;
@@ -1355,16 +1549,19 @@ function buildTrackGroups(geojson) {
     const key = batch ?? "unknown";
     const group = (groups[key] ??= L.featureGroup());
     const tip = (fix, latlng) => popupHtml({ D_number, batch, ...fix }, latlng);
-    const segs = addTrackSegments(
-      group,
-      feature.geometry.coordinates,
-      fixes,
-      D_number,
-      tip,
+    const coords = feature.geometry.coordinates;
+    // Record the raw source + build the track (clock-clipped, outlier-aware). The
+    // outlier toggle rebuilds from these sources (plan 035 clock; #30 despike).
+    const src = { group, coords, fixes, key: D_number, tip, color: styleForBatch(batch).fillColor };
+    observedTrackSources.push(src);
+    buildObservedTrack(src);
+    // A fixed deployment dot at the track's first fix, in the batch colour (#33) —
+    // added to this batch's always-on marker group so the Instruments row governs it.
+    // Built once (the first fix is never an outlier), so the outlier toggle leaves it.
+    // Clock-gated on the first-fix time so it appears only once deployed.
+    addDeploymentDot(
+      markerGroups?.[key], coords[0]?.[0], coords[0]?.[1], src.color, Date.parse(fixes?.[0]?.date_UTC)
     );
-    // Follow the app clock: the track clips to what has happened by the clock and
-    // the drifter's head marker rides the clipped end (plan 035).
-    registerTrackClock(group, segs, feature.geometry.coordinates, fixes, D_number, tip);
   }
   return groups;
 }
@@ -1481,7 +1678,9 @@ function drawDrops(drops, layer, deploymentId) {
   const selected = String(deploymentId) === selectedDropSet;
   drops.forEach((d, i) => {
     const disc = L.circleMarker(d.latlng, {
-      pane: "deployDrops", radius: DEPLOY_DROP_RADIUS, color: "#fff", weight: 1,
+      // No outline (#33): a filled disc of the deploy colour, matching the real
+      // instruments' deployment dots. The selection restyle re-adds a ring.
+      pane: "deployDrops", radius: DEPLOY_DROP_RADIUS, weight: 0,
       fillColor: DEPLOY_COLOR, fillOpacity: 1,
       bubblingMouseEvents: false,
     });
@@ -1509,15 +1708,16 @@ function buildDeployTool(deployLayer, getStartTime, getSpanHours) {
   const state = {
     on: false,
     vertices: [],            // LatLng[] — the clicked path, grows per click
-    spacing: 2,              // km between drops along the path
+    spacing: 10,             // km between drops along the path (#26)
     shipKn: 6.5,             // ship transit speed, knots
     horizonH: 120,           // run duration from the release time, hours (5 d default)
-    direction: "forward",    // advection direction: "forward" | "backward"
+    runForward: true,        // advection directions to run — both may run at once (#32)
+    runBackward: false,
     // Water-entry timing: "alongtrack" staggers each drop by the ship's transit to
     // it (a real vessel steaming the route); "instant" puts every drop in the water
     // at the release time (an idealised simultaneous release, e.g. to read pure
     // flow-field deformation of the line).
-    timing: "alongtrack",
+    timing: "instant",       // default to a simultaneous release (#26)
   };
   let statusEl = null;
   let mapRef = null;
@@ -1669,12 +1869,27 @@ function buildDeployTool(deployLayer, getStartTime, getSpanHours) {
     setRelease(getStartTime ? getStartTime() : null);
 
     // Direction: forward advects downstream from the release time, backward walks the
-    // field in reverse (where did water here come from).
-    switchRow(
-      settings, "direction",
-      { value: "forward", text: "Forward" },
-      { value: "backward", text: "Backward" }
-    );
+    // field in reverse (where did water here come from). Both can run at once (#32) —
+    // two independent toggles, not an exclusive switch; at least one stays on.
+    const dirRow = L.DomUtil.create("div", "pt-dirrow", settings);
+    const dirToggle = (key, otherKey, text) => {
+      const b = L.DomUtil.create("button", "pt-dir-toggle", dirRow);
+      b.type = "button";
+      b.textContent = text;
+      const paint = () => {
+        b.classList.toggle("on", !!state[key]);
+        b.setAttribute("aria-pressed", String(!!state[key]));
+      };
+      b.addEventListener("click", () => {
+        // Never leave both off: refuse to turn off the last remaining direction.
+        if (state[key] && !state[otherKey]) return;
+        state[key] = !state[key];
+        paint();
+      });
+      paint();
+    };
+    dirToggle("runForward", "runBackward", "Forward");
+    dirToggle("runBackward", "runForward", "Backward");
 
     // Timing: instantaneous (every drop enters at the release time — an idealised
     // simultaneous release) vs along-track (each drop enters as the ship reaches it,
@@ -1767,7 +1982,8 @@ function buildDeployTool(deployLayer, getStartTime, getSpanHours) {
         vis.checked = d.visible;
         vis.title = "Show / hide this deployment";
         vis.addEventListener("change", () => setDeploymentVisible(id, vis.checked));
-        const arrow = d.direction === "backward" ? "←" : "→";
+        const arrow =
+          d.directions?.length === 2 ? "⇄" : d.directions?.[0] === "backward" ? "←" : "→";
         const rel = d.release ? formatClock(Date.parse(d.release)) : "—";
         const timing = d.timing === "instant" ? " · instant" : "";
         L.DomUtil.create("span", "pt-manage-label", toggle).textContent =
@@ -2002,7 +2218,11 @@ function validatePlacement(limits, nSeeds, durationH, direction, releaseIso) {
 // list on every exit path.
 async function commitDeployment(drops, totalKm, deployLayer, setStatus, startTime, opts) {
   const deploymentId = ++deployCounter; // namespaces this placement's drops, tracks, markers
-  const direction = opts.direction === "backward" ? "backward" : "forward";
+  // Which advection directions to run — forward and/or backward, both allowed (#32).
+  const directions = [];
+  if (opts.runForward) directions.push("forward");
+  if (opts.runBackward) directions.push("backward");
+  if (!directions.length) directions.push("forward"); // never run nothing
   // This deployment owns a child group of the umbrella deployLayer, holding every
   // element it draws (drops, drift lines, at-time markers), so the manager can hide or
   // delete it wholesale (setDeploymentVisible / deleteDeployment).
@@ -2033,7 +2253,7 @@ async function commitDeployment(drops, totalKm, deployLayer, setStatus, startTim
     group,
     parent: deployLayer,
     release: startTime,
-    direction,
+    directions,
     durationH: opts.horizonH,
     nDrops: drops.length,
     timing: instant ? "instant" : "alongtrack",
@@ -2049,58 +2269,48 @@ async function commitDeployment(drops, totalKm, deployLayer, setStatus, startTim
     ? `${drops.length} drops · ${totalKm.toFixed(1)} km · instant release`
     : `${drops.length} drops · ${totalKm.toFixed(1)} km · ~${transitH.toFixed(1)} h transit`;
 
-  // Pre-validate against /limits before the POST (decision D3): seed cap, seeds×duration
-  // budget, and release+duration vs the loaded window. On a violation the drops are
-  // still placed (exportable) — we skip the doomed POST and say why.
-  const limits = await getDeployLimits();
-  const invalid = validatePlacement(
-    limits, drops.length, opts.horizonH, direction, startTime
-  );
-  if (invalid) {
-    drawDrops(dropRecords, group, deploymentId);
-    done(`${geom} · ${invalid}`);
-    return;
-  }
-
+  // The drops are shared by both directions — draw them once, up front, so they show
+  // even if every run is rejected or fails (they stay exportable — decision D3).
+  drawDrops(dropRecords, group, deploymentId);
   done(`${geom} · computing drift…`);
-  // The whole batch advects server-side in ~1–2 s even at the seed cap (vectorized RK4),
-  // well inside the gateway's 60 s timeout — one POST, no retry/cache handshake. The v2
-  // API takes the run-level direction + duration; it no longer takes mark_step_h.
-  const body = JSON.stringify({ seeds, horizon_h: opts.horizonH, direction });
-  try {
-    const resp = await fetch(FORECAST_API, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      drawDrops(dropRecords, group, deploymentId);
-      done(`${geom} · ${apiErrorText(data, resp.status)}`);
-      return;
+
+  // Run each selected direction independently (#32): pre-validate against /limits (seed
+  // cap, seeds×duration budget, release+duration vs the window — decision D3), then POST
+  // + draw. Both direction line sets ride the same group and share the drops;
+  // drawDeployForecastLines keys each track by direction so forward and backward never
+  // collide. One bad direction (invalid or failed) doesn't sink the other — collect a
+  // note per run and report them together. The batch advects server-side in ~1–2 s even
+  // at the seed cap (vectorized RK4), well inside the gateway's 60 s timeout.
+  const limits = await getDeployLimits();
+  const notes = [];
+  for (const direction of directions) {
+    const invalid = validatePlacement(limits, drops.length, opts.horizonH, direction, startTime);
+    if (invalid) { notes.push(`${direction}: ${invalid}`); continue; }
+    try {
+      const resp = await fetch(FORECAST_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seeds, horizon_h: opts.horizonH, direction }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) { notes.push(`${direction}: ${apiErrorText(data, resp.status)}`); continue; }
+      const p = data.properties ?? {};
+      const runStart = p.run_start ?? startTime;
+      // One green drift line per drop, clipped to the app clock (plan 036), plus an
+      // at-time marker per drop keyed to this deployment (decisions 6/7).
+      drawDeployForecastLines(data.features ?? [], group, runStart, deploymentId, direction);
+      if (p.tracks === 0 && p.n_seeds > 0) {
+        const w = p.window ? ` (field ${p.window[0]}…${p.window[1]})` : "";
+        notes.push(`${direction}: 0 tracks — release outside the field window${w}`);
+      } else {
+        const skipped = p.skipped ? `, ${p.skipped} skipped` : "";
+        notes.push(`${direction}: ${p.tracks}/${p.n_seeds}${skipped}`);
+      }
+    } catch (err) {
+      notes.push(`${direction}: request failed — is \`pixi run serve-api\` running?`);
     }
-    const p = data.properties ?? {};
-    const runStart = p.run_start ?? startTime;
-    // One green drift line per drop, clipped to the app clock (plan 036). Each track
-    // also gets an at-time marker keyed to this deployment, so scrubbing shows the
-    // array's shape at any instant (decisions 6/7).
-    drawDeployForecastLines(data.features ?? [], group, runStart, deploymentId);
-    // Drops sit in their own pane (deployDrops), below the at-time markers, so the
-    // draw order here doesn't matter.
-    drawDrops(dropRecords, group, deploymentId);
-    // A run whose release (or its far end) falls outside the loaded field window gets
-    // every seed skipped — say so, rather than a bare "0/N drift" that reads as a bug.
-    if (p.tracks === 0 && p.n_seeds > 0) {
-      const w = p.window ? ` (field ${p.window[0]}…${p.window[1]})` : "";
-      done(`${geom} · 0 tracks — release outside the field window${w}`);
-    } else {
-      const skipped = p.skipped ? ` · ${p.skipped} skipped` : "";
-      done(`${geom} · ${p.tracks}/${p.n_seeds} drift${skipped}`);
-    }
-  } catch (err) {
-    drawDrops(dropRecords, group, deploymentId);
-    done(`${geom} · request failed — is \`pixi run serve-api\` running?`);
   }
+  done(`${geom} · ${notes.join(" · ")}`);
 }
 
 // Each placed deployment gets its own id (deployCounter), namespacing its drop set,
@@ -2189,7 +2399,8 @@ let selectedDropSet = null; // deploymentId (string) or null
 let selectedTrack = null;   // track key or null
 
 function restyleDropDisc(disc, selected) {
-  disc.setStyle({ color: selected ? "#111827" : "#fff", weight: selected ? 2 : 1 });
+  // Selected: a dark ring as the selection affordance. Unselected: no outline (#33).
+  disc.setStyle({ color: "#111827", weight: selected ? 2 : 0 });
   disc.setRadius(selected ? DEPLOY_DROP_RADIUS + 3 : DEPLOY_DROP_RADIUS);
   if (selected) disc.bringToFront();
 }
@@ -2346,17 +2557,22 @@ function downloadOneDeployment(id) {
 // wants [lat,lng]. (The drops are drawn client-side by the caller; the API returns
 // only track features.) Everything is drawn into `layer` — the deployment's own
 // group — so it hides/deletes with it.
-function drawDeployForecastLines(features, layer, runStart, deploymentId) {
+function drawDeployForecastLines(features, layer, runStart, deploymentId, direction) {
   const ll = ([lon, lat]) => [lat, lon];
+  // The whole call is one run in one direction (#32), so the growth sign is per-call.
+  const dir = direction === "backward" ? -1 : 1;
   for (const f of features) {
     const props = f.properties ?? {};
     if (props.role !== "track") continue;
     const coords = f.geometry?.coordinates ?? [];
     if (coords.length < 2) continue;
     let latlngs = coords.map(ll);
-    const trackKey = `${deploymentId}#${props.index}`;
+    // Key by direction too: forward and backward share this deploymentId and both run
+    // index 0..N-1, so without the direction they'd overwrite each other in deployTracks
+    // (orphaning one set from the clock clip + selection). forgetDeployment's
+    // `${id}#`-prefix match still catches both for cleanup.
+    const trackKey = `${deploymentId}#${direction}#${props.index}`;
     const startMs = Date.parse(props.start ?? runStart);
-    const dir = props.direction === "backward" ? -1 : 1;
     const cadenceMs = (props.cadence_s ?? 0) * 1000;
     let times = latlngs.map((_, i) => startMs + dir * i * cadenceMs);
     if (dir < 0) {
@@ -2401,14 +2617,17 @@ function drawDeployForecastLines(features, layer, runStart, deploymentId) {
   }
 }
 
-// Register one CLOCK-CLIPPED violet forecast per real deployed drifter (#22). Each
+// Register one CLOCK-CLIPPED forecast per real deployed drifter (#22, #34). Each
 // role:"track" feature carries `index` (its seed's slot in the POSTed batch) and a
 // `start`/`cadence_s`, so vertex i sits at `start + i·cadence`; `seeds[index].dNumber`
-// maps the track back to its drifter's head. Pre-now vertices are dropped so the track
-// begins at the clock's "now", then it is registered in forecastClockEntries — a single
-// non-interactive violet polyline in the driftForecast pane (below every marker), shown
-// clipped to the clock only in the future and only while "Show tracks" is on, with the
-// drifter's own head walking its end (see clipForecast). GeoJSON coords are [lon,lat].
+// maps the track back to its drifter's head. The forecast is seeded at the drifter's
+// last fix, so we keep the FULL advected path [last fix → field end] and let
+// clipForecast split it at `nowMs`: the [last fix → now] segment renders DASHED (the
+// un-transmitted reporting-lag gap, #34), the [now → end] segment SOLID (the forecast).
+// Registered in forecastClockEntries as a pair of non-interactive violet polylines in
+// the driftForecast pane (below every marker), clock-clipped and shown only while "Show
+// tracks" is on, with the drifter's own head walking the combined path (see
+// clipForecast). GeoJSON coords are [lon,lat].
 function drawDrifterForecastLines(features, layer, seeds, nowMs) {
   for (const f of features) {
     const props = f.properties ?? {};
@@ -2421,27 +2640,28 @@ function drawDrifterForecastLines(features, layer, seeds, nowMs) {
     const startMs = Date.parse(props.start);
     const cadenceMs = (props.cadence_s ?? 0) * 1000;
     if (!Number.isFinite(startMs) || cadenceMs <= 0) continue;
-    // Keep only the vertices at/after now, so the forecast starts at the clock's "now".
+    // Keep the full advected path; clipForecast splits it at now into the dashed bridge
+    // (past-of-now) and the solid forecast (future-of-now).
     const lats = [], lngs = [], times = [];
     coords.forEach(([lon, lat], i) => {
-      const t = startMs + i * cadenceMs;
-      if (t >= nowMs) {
-        lats.push(lat);
-        lngs.push(lon);
-        times.push(t);
-      }
+      lats.push(lat);
+      lngs.push(lon);
+      times.push(startMs + i * cadenceMs);
     });
-    if (times.length < 2) continue; // nothing left in the future to draw
-    const line = L.polyline([], {
-      pane: "driftForecast",
-      color: VIOLET_FORECAST_COLOR,
-      weight: 2,
-      opacity: 0.85,
-      interactive: false,
-    });
+    if (times.length < 2) continue;
+    const mkLine = (dashed) =>
+      L.polyline([], {
+        pane: "driftForecast",
+        color: VIOLET_FORECAST_COLOR,
+        weight: 2,
+        opacity: 0.85,
+        interactive: false,
+        ...(dashed ? { dashArray: "6 4" } : {}),
+      });
     forecastClockEntries.push({
-      line, times, lats, lngs, headKey, batch: seed.batch, group: layer,
-      tip: `${headKey} · forecast`, shown: false,
+      line: mkLine(false), bridge: mkLine(true),
+      times, lats, lngs, headKey, batch: seed.batch, group: layer, nowMs,
+      tip: `${headKey} · forecast`, lineShown: false, bridgeShown: false,
     });
   }
   // Apply the current clock so a forecast landing mid-scrub places itself at once.
@@ -3023,23 +3243,25 @@ function buildGliderMarkerGroups(geojson) {
 // instrument identity stays on the coloured marker); this keeps every past track
 // reading as one layer. A platform with a single deployed fix has no LineString
 // and so no track group, only its marker. Returns { type: featureGroup }.
-function buildGliderTrackGroups(geojson) {
+function buildGliderTrackGroups(geojson, markerGroups) {
   const groups = {};
   for (const feature of geojson.features ?? []) {
     if (feature.geometry?.type !== "LineString") continue;
     const { id, type, fixes } = feature.properties ?? {};
     const group = (groups[type] ??= L.featureGroup());
     const tip = (fix, latlng) => gliderPopupHtml({ id, type, ...fix }, latlng);
-    const segs = addTrackSegments(
-      group,
-      feature.geometry.coordinates,
-      fixes,
-      id,
-      tip,
+    const coords = feature.geometry.coordinates;
+    // Record the raw source + build the track (clock-clipped, outlier-aware); the
+    // outlier toggle rebuilds from these sources (plan 035 clock; #30 despike).
+    const src = { group, coords, fixes, key: id, tip, color: gliderStyle(type).color };
+    observedTrackSources.push(src);
+    buildObservedTrack(src);
+    // A fixed deployment dot at the track's first fix, in the platform-type colour
+    // (#33) — added to this type's always-on marker group (governed by its row).
+    // Clock-gated on the first-fix time so it appears only once deployed.
+    addDeploymentDot(
+      markerGroups?.[type], coords[0]?.[0], coords[0]?.[1], src.color, Date.parse(fixes?.[0]?.date_UTC)
     );
-    // Follow the app clock: track clipped at the clock, the platform's diamond head
-    // riding the clipped end (plan 035).
-    registerTrackClock(group, segs, feature.geometry.coordinates, fixes, id, tip);
   }
   return groups;
 }
@@ -3337,6 +3559,11 @@ function makeShipLayer(vessel) {
   // (a ship has no highlight axis) so it doesn't clear a selection.
   function segFor(p, prev) {
     const seg = L.polyline([[prev.lat, prev.lon], [p.lat, p.lon]], {
+      // SVG (the default), NOT the drifter/glider track canvas. A second full-viewport
+      // canvas above the overlay-pane track canvas would sit on top and swallow every
+      // hover/click meant for the drifter/glider tracks below it (a canvas hit-tests
+      // its whole rect, transparent or not). The ship tracks are few segments, so SVG
+      // costs nothing here and keeps the overlay-pane canvas the topmost track layer.
       pane: "shipTrack",
       color: vessel.trackColor,
       weight: 2,
@@ -3482,6 +3709,11 @@ async function main() {
     center: FALLBACK_CENTER,
     zoom: FALLBACK_ZOOM,
     maxZoom: MAX_ZOOM,
+    // Half-level zoom so the wheel/buttons can settle between the old integer
+    // stops — the CMEMS pixels upscale crisply, so intermediate scales are useful
+    // for reading dense drops/tracks (#27).
+    zoomSnap: 0.5,
+    zoomDelta: 0.5,
   });
 
   // Track line weight scales with zoom (see trackWeight): thin lines when zoomed
@@ -3521,6 +3753,7 @@ async function main() {
   // 600 fixes it and keeps the pre-deploy-cluster property that motivated shipTrack
   // < drifters (the ship track's early dots still can't intercept marker clicks —
   // it is now below every marker pane, not just the drifters').
+  map.createPane("basemap").style.zIndex = 300; // static land/sea mask, below every shading (#29)
   map.createPane("shading").style.zIndex = 350;
   map.createPane("flow").style.zIndex = 355; // static streamline overlay, over the shading colour
   map.createPane("inertial").style.zIndex = 360;
@@ -3637,6 +3870,19 @@ async function main() {
   // Resolve a frame file under the data dir.
   const frameUrl = (file) => DATA.dataBase + file;
 
+  // Static continent basemap (#29): a highly-compressed gray-land/blue-sea WebP baked at
+  // CMEMS resolution, drawn once in the `basemap` pane below every shading. It reuses the
+  // shadings' bounds (same grid, co-registered) and needs no scrubbing (land is time-
+  // invariant). Gated on its presence: a static/no-CMEMS deploy has no meta, so the map
+  // falls back to the CSS #map sea-tone. A shading paints over it; picking "None" reveals
+  // the continent underneath.
+  if (meta?.landmask && meta?.bounds) {
+    L.imageOverlay(frameUrl(meta.landmask), meta.bounds, {
+      pane: "basemap",
+      className: "crisp-raster",
+    }).addTo(map);
+  }
+
   // The index of the frame in a manifest whose valid_time is nearest a given instant
   // (epoch ms). The frames carry no offset any more — the anchor is computed here from
   // their absolute valid_times.
@@ -3654,10 +3900,12 @@ async function main() {
   };
 
   // The app clock spans the shading frames' full range [first valid_time, last
-  // valid_time] at 1 h granularity (the slider steps 1 h; rasters/flow snap to the
-  // nearest 12 h frame). It opens at the now-nearest *frame*, so the initial displayed
-  // field is a real frame, not an interpolated hour. `meta.frames` is the canonical
-  // span (vorticity/flow share the same times).
+  // valid_time] at 10-minute granularity (the slider steps 10 min; rasters/flow snap to
+  // the nearest 12 h frame). It opens at the **now instant** so the scrubber thumb sits
+  // exactly under the wall-clock "now" dot (the nearest-frame open used to leave it a
+  // little off the dot — #36 follow-up). The shading still snaps to the now-nearest
+  // frame; only the clock cursor is the exact hour. `meta.frames` is the canonical span
+  // (vorticity/flow share the same times).
   const HOUR_MS = 3600000;
   const clockFrames = meta?.frames ?? [];
   const clockT0 = clockFrames.length ? Date.parse(clockFrames[0].valid_time) : 0;
@@ -3669,14 +3917,22 @@ async function main() {
   const nowFrameIdx = nearestFrameIndex(clockFrames, nowMs);
   // The clock instant as a clean ISO-Z string (no millis), matching the frame shape.
   const clockIso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+  // The now instant, clamped into the span and snapped to the scrubber's 10-minute grid
+  // (#36 follow-up) — the clock cursor + scrubber thumb both open here (matching the now
+  // dot), and the scrubber resolves to 10 minutes, not a whole hour.
+  const STEP_H = 1 / 6; // 10-minute scrubber resolution
+  const nowOffsetH = clockFrames.length
+    ? Math.min(spanHours, Math.max(0, Math.round((nowMs - clockT0) / HOUR_MS / STEP_H) * STEP_H))
+    : 0;
+  const nowClockMs = clockT0 + nowOffsetH * HOUR_MS;
   // Lock the interactive forecast's start time to the displayed field's instant: the
-  // now-nearest frame at load, then the exact clock time as the slider moves.
-  displayedFieldTime = clockFrames.length ? clockFrames[nowFrameIdx].valid_time : null;
+  // now hour at load, then the exact clock time as the slider moves.
+  displayedFieldTime = clockFrames.length ? clockIso(nowClockMs) : null;
   // Seed the app clock so clock-aware elements registered later (drifter tracks on
   // the True-track tick, deployments on placement, ships on first fix) clip and
   // place themselves at the displayed instant right away. Falls back to now when
   // there is no currents field to scrub.
-  atTimeClockMs = displayedFieldTime ? Date.parse(displayedFieldTime) : Date.now();
+  atTimeClockMs = clockFrames.length ? nowClockMs : Date.now();
 
   // Warm the browser cache with a **band** of frames around now (±FRAME_PREFETCH
   // indices) so nearby scrubbing is smooth without bulk-prefetching the whole (now
@@ -3808,9 +4064,10 @@ async function main() {
     buildTimeSlider(map, {
       t0Ms: clockT0,
       spanHours,
-      value: Math.round((Date.parse(clockFrames[nowFrameIdx].valid_time) - clockT0) / HOUR_MS),
+      stepH: STEP_H, // 10-minute scrubber resolution (#36 follow-up)
+      value: nowOffsetH, // open the thumb on the now instant (under the now dot) — #36 follow-up
       nowMs,
-      tracks: { initial: false, onToggle: setTracksVisible },
+      tracks: { initial: true, onToggle: setTracksVisible },
       onChange: (value) => {
         const ms = clockT0 + value * HOUR_MS;
         displayedFieldTime = clockIso(ms);
@@ -3847,7 +4104,7 @@ async function main() {
   } else {
     // No scrubber (no currents field) → host the "Show tracks" master on a standalone
     // chip so tracks stay toggleable in the static/no-CMEMS fallback.
-    buildTracksChip(map, { initial: false, onToggle: setTracksVisible });
+    buildTracksChip(map, { initial: true, onToggle: setTracksVisible });
   }
 
   // Current flow: a **pre-rendered static streamline** raster per frame
@@ -3919,7 +4176,7 @@ async function main() {
   // `type`). Optional so a missing file can't blank the map.
   const gliders = await fetchJSON(DATA.gliders, { optional: true });
   const gliderMarkerGroups = gliders ? buildGliderMarkerGroups(gliders) : {};
-  const gliderTrackGroups = gliders ? buildGliderTrackGroups(gliders) : {};
+  const gliderTrackGroups = gliders ? buildGliderTrackGroups(gliders, gliderMarkerGroups) : {};
 
   // One instrument list governs drifter batches *and* gliders. Marker rows =
   // drifter batches + glider platforms; the "Show tracks" master carries both the
@@ -4041,17 +4298,16 @@ async function main() {
         ]
       : []),
   ];
-  // Build the dock immediately with Deploy leading and open, and deliberately do NOT
-  // await the /limits probe: a cold or hanging API pod (limits() calls _get_field_index)
-  // could otherwise stall the dock — and the ship setup below it — up to the gateway's
-  // edge timeout even though the map, currents, scrubber, and at-time markers are already
-  // live. The memoized probe only downgrades: if it resolves unreachable, the dock falls
-  // back to Instruments. The deploy tool's own later getDeployLimits() reuses this fetch.
+  // Build the dock with Deploy leading and open. Deploy is the app's primary
+  // capability, so it is the default tab **unconditionally** — the tab is never
+  // auto-switched based on API availability (a static/no-API deploy still places
+  // drops + exports CSV; only the drift compute needs the forecast API, which the
+  // tool reports inline on placement). We only WARM the memoized /limits probe here,
+  // off the critical path (a cold/hanging API pod must not stall the dock), so the
+  // deploy tool's own getDeployLimits() reuses the fetch.
   const dock = buildControlDock(map, [deployTab, ...otherTabs], "deploy");
   dock.addTo(map);
-  getDeployLimits().then((limits) => {
-    if (limits == null) dock.select("instruments");
-  });
+  getDeployLimits(); // warm the probe; no tab downgrade (#28 follow-up)
 
   // Eager-load the drifter true tracks so every drifter head follows the app clock
   // from the start (plan 035): the clock clips register on build regardless of the
@@ -4061,7 +4317,7 @@ async function main() {
   // when it lands, merge the groups, reconcile line visibility, mark the point-head
   // set complete, and re-apply the clock.
   fetchJSON(DATA.tracks, { optional: true }).then((tracks) => {
-    if (tracks) Object.assign(tracksOverlay.groups, buildTrackGroups(tracks));
+    if (tracks) Object.assign(tracksOverlay.groups, buildTrackGroups(tracks, batchGroups));
     tracksLoaded = true;
     setInstrumentTracks(tracksOn); // reconcile visibility for the merged track groups
     updateClock(atTimeClockMs);    // drive the freshly-registered clips + point heads
@@ -4070,7 +4326,9 @@ async function main() {
   // Violet forecast drift for the real deployed drifters (#22): fire once, async,
   // now that the map + clock span are live. Not awaited — the layer appears when the
   // /api/forecast POST resolves, and silently no-ops if the dynamic API is absent.
-  kickDrifterForecasts(latest, map, spanHours, nowMs);
+  // Pass the clock's "now" (nowClockMs, the scrubber's default slot) as the bridge/
+  // forecast split, so the head sits exactly at their junction at the default view (#34).
+  kickDrifterForecasts(latest, map, spanHours, nowClockMs || nowMs);
 
   // R/V Marion Dufresne live track (client-side; Flotte Océanographique Française
   // API). Last, and deliberately not awaited: it is the one third-party fetch, so

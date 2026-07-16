@@ -32,6 +32,7 @@ Output roots default to the Pages layout and are overridable by
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import tempfile
@@ -344,6 +345,13 @@ def _derive_slow(data_dir: Path, map_dir: Path, refetch_all: bool = False) -> No
             flow_frames = _currents.to_flowvis_frames(shading, to_render)
             for fr in flow_frames:
                 _data.atomic_write_bytes(map_dir / fr["file"], fr["image"])
+            # Static land/sea basemap (#29): one gray-land/blue-sea WebP baked from the
+            # field's own NaN land pattern, co-registered with the shading bounds. Time-
+            # invariant, so it rides along with the (already-fetched) window at no extra
+            # egress; the frontend draws it in a pane below the shadings, reusing meta.bounds.
+            landmask, _ = _currents.to_landmask_webp(shading)
+            _data.atomic_write_bytes(map_dir / "landmask.webp", landmask)
+            meta["landmask"] = "landmask.webp"
             meta["valid_time"] = _currents.nearest_valid_time(grid, now)
             meta["frames"] = _currents.frame_manifest("speed", grid)
             meta["flow_frames"] = _currents.frame_manifest("flowvis", grid, ext="webp")
@@ -377,6 +385,16 @@ def _derive_slow(data_dir: Path, map_dir: Path, refetch_all: bool = False) -> No
                 print(f"pruned {len(removed)} stale frame file(s)")
         except Exception as exc:
             print(f"WARNING: frame pruning failed: {exc}")
+
+    # Free the shading window before the inertial step builds its own hourly window +
+    # complex NI array; nothing below needs it. Guard on the fetch alone, not `grid`:
+    # fetch_shading_window can succeed while a *later* line in its try/except raises
+    # (e.g. window_frame_edge on an empty time axis), leaving `shading` bound but `grid`
+    # None — otherwise ~225 MB would stay pinned through the inertial step, the exact
+    # second spike this frees.
+    if shading is not None:
+        del shading
+        gc.collect()
 
     # A separate hourly window feeds the near-inertial animation decomposition,
     # sampling the current at its own clock time. The deployment forecast API

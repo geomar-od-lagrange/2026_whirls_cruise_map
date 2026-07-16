@@ -305,47 +305,11 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* "now" chip (#19): snaps the scrubber back to the wall-clock present. A filled,
-   accented pill so the target reads as attractive; dims to a quiet outline once the
-   thumb already sits on now (.at-now), where it still clicks but signals "you're here". */
-.time-slider-control .ts-nowbtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 8px;
-  border: 1px solid #2563eb;
-  border-radius: 999px;
-  background: #2563eb;
-  color: #fff;
-  font: inherit;
-  font-size: 0.72rem;
-  line-height: 1.4;
-  cursor: pointer;
-  user-select: none;
-}
-.time-slider-control .ts-nowbtn:hover {
-  background: #1d4ed8;
-  border-color: #1d4ed8;
-}
-.time-slider-control .ts-nowbtn .ts-nowbtn-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #fff;
-}
-.time-slider-control .ts-nowbtn.at-now {
-  background: transparent;
-  color: var(--muted);
-  border-color: var(--muted);
-}
-.time-slider-control .ts-nowbtn.at-now .ts-nowbtn-dot {
-  background: var(--muted);
-}
-
 /* The range rides in a positioned wrapper so the wall-clock "now" dot can be
    percent-placed on the scrub line itself. */
 .time-slider-control .ts-rangewrap {
   position: relative;
+  margin-top: 12px; /* a band above the track for the clickable "now" marker (#36 follow-up) */
 }
 
 .time-slider-control .ts-range {
@@ -356,12 +320,14 @@ body {
   cursor: pointer;
 }
 
-/* Wall-clock "now": a small blue dot sitting on the scrub line (replacing the old
-   tick-lane mark, whose caption collided with the date labels). Ignores the pointer
-   so it can never block grabbing a thumb parked at/near now. */
+/* Wall-clock "now": a small blue dot marking the now column, sitting in the band just
+   ABOVE the scrub track (not on it) so it never blocks grabbing the thumb — which
+   defaults to the now hour, right under it (#36 follow-up). Static — the pulse animation
+   was removed (#36). Clickable: it snaps the scrubber to the now hour, so it takes the
+   pointer (cursor hint). */
 .time-slider-control .ts-nowdot {
   position: absolute;
-  top: 50%;
+  top: -8px;
   width: 10px;
   height: 10px;
   border-radius: 50%;
@@ -369,24 +335,8 @@ body {
   border: 1px solid #fff;
   box-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
   transform: translate(-50%, -50%);
-  pointer-events: none;
-}
-/* A slow expanding ring so "now" reads at a glance on the line — paired with the
-   clickable chip in the head (the dot itself stays pointer-transparent). */
-.time-slider-control .ts-nowdot::after {
-  content: "";
-  position: absolute;
-  inset: -3px;
-  border-radius: 50%;
-  border: 1px solid #2563eb;
-  animation: ts-now-pulse 2.4s ease-out infinite;
-}
-@keyframes ts-now-pulse {
-  0% { transform: scale(1); opacity: 0.7; }
-  100% { transform: scale(2.4); opacity: 0; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .time-slider-control .ts-nowdot::after { animation: none; opacity: 0.5; }
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 /* Tick lane: day marks absolutely positioned by percent over the range width
@@ -690,6 +640,14 @@ body {
   color: #55636f;
 }
 
+/* The "Hide GPS outliers" toggle sits above the instrument families, set off by a
+   divider so it reads as a track-quality control, not an instrument row (#30). */
+.batch-outlier {
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
 /* Two-column grid for each instrument family (drifter batches, gliders, ships) — the
    merged instrument panel (#24). auto-fit against the actual dock width gives two
    columns when it is wide enough and collapses to one when the dock is narrow, so a
@@ -906,6 +864,38 @@ body {
   background: #e8edf2;
 }
 .deploy-tool .pt-duration-stop.on {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Direction toggles: forward/backward run independently (#32) — two segmented
+   buttons that light when active. Unlike the duration stops (exclusive), both may be
+   lit at once; the JS refuses to turn off the last remaining one. */
+.deploy-tool .pt-dirrow {
+  display: flex;
+  margin: 0 0 6px;
+  border: 1px solid #c3ccd6;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.deploy-tool .pt-dir-toggle {
+  flex: 1 1 0;
+  padding: 3px 0;
+  border: 0;
+  border-left: 1px solid #c3ccd6;
+  background: #f4f6f8;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.deploy-tool .pt-dir-toggle:first-child {
+  border-left: 0;
+}
+.deploy-tool .pt-dir-toggle:hover {
+  background: #e8edf2;
+}
+.deploy-tool .pt-dir-toggle.on {
   background: var(--accent);
   color: #fff;
 }
