@@ -188,16 +188,22 @@ def test_far_prehistory_encounter_is_treated_as_attachment():
     assert starts == {"D1": _ts(2026, 7, 1, 18)}
 
 
-def _offset_exactly(km: float) -> float:
-    """Latitude offset (deg) whose distance from the origin, through the
-    module's own haversine, is *exactly* ``km`` — pins threshold inclusivity."""
+def _offset_at_threshold(km: float) -> float:
+    """Largest latitude offset (deg) whose distance from the origin, through the
+    module's own haversine, is still ``<= km`` — the inclusive threshold boundary.
+
+    A distance *exactly* equal to ``km`` is not float-reachable now that the km
+    haversine divides the metre distance by 1000 (each ULP step in the offset moves
+    the metre distance further than the half-ULP window that would round to exactly
+    ``km``). Pinning the boundary is the faithful test anyway: this offset is within
+    the threshold and the next float out is beyond it, so it exercises the ``<=`` /
+    ``>`` comparison exactly at the edge."""
     deg = math.degrees(km / _deploy._EARTH_RADIUS_KM)
-    for _ in range(50):
-        d = _deploy._haversine_km(deg, 0.0, 0.0, 0.0)
-        if d == km:
-            return deg
-        deg = math.nextafter(deg, math.inf if d < km else -math.inf)
-    raise AssertionError(f"no float offset lands exactly on {km} km")
+    while _deploy._haversine_km(deg, 0.0, 0.0, 0.0) > km:  # back inside if the seed overshot
+        deg = math.nextafter(deg, -math.inf)
+    while _deploy._haversine_km(math.nextafter(deg, math.inf), 0.0, 0.0, 0.0) <= km:
+        deg = math.nextafter(deg, math.inf)  # advance to the last offset still within km
+    return deg
 
 
 def test_fix_exactly_at_near_threshold_counts_as_attached():
@@ -205,7 +211,7 @@ def test_fix_exactly_at_near_threshold_counts_as_attached():
     starts = _deploy.deployment_starts(
         _tracks(
             [
-                ("D1", _ts(2026, 7, 1, 0), _offset_exactly(_deploy.NEAR_SHIP_KM)),
+                ("D1", _ts(2026, 7, 1, 0), _offset_at_threshold(_deploy.NEAR_SHIP_KM)),
                 ("D1", _ts(2026, 7, 1, 6), MID),
             ]
         ),
@@ -217,7 +223,7 @@ def test_fix_exactly_at_near_threshold_counts_as_attached():
 def test_fix_exactly_at_detached_threshold_does_not_freeze():
     """DETACHED_KM is exclusive: consecutive fixes at exactly 5.0 km are no
     clear departure, so the scan continues to the later near fixes."""
-    at_5km = _offset_exactly(_deploy.DETACHED_KM)
+    at_5km = _offset_at_threshold(_deploy.DETACHED_KM)
     starts = _deploy.deployment_starts(
         _tracks(
             [

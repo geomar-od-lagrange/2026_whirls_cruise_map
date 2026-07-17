@@ -41,9 +41,7 @@ import matplotlib.colors as mcolors  # noqa: E402
 import numpy as np  # noqa: E402
 import xarray as xr  # noqa: E402
 
-from . import _raster  # noqa: E402
-
-OMEGA = 7.2921159e-5  # Earth's rotation rate (rad/s); f = 2*OMEGA*sin(lat)
+from . import _geo, _raster, _time  # noqa: E402
 
 # The inertial amplitude ships UN-GAINED. The drifter calibration
 # (plans/done/013-inertial-gain-generalization.md) measured sim/obs NI amplitude
@@ -128,7 +126,7 @@ def decompose(window: xr.Dataset, t_ref: float | None = None) -> xr.Dataset:
     w = u + 1j * v  # (time, lat, lon)
     n = times.size
 
-    coriolis = 2.0 * OMEGA * np.sin(np.radians(lats))  # (lat,); < 0 in the SH
+    coriolis = _geo.coriolis(lats)  # f = 2Ω sinφ (lat,); < 0 in the SH
     g = np.exp(-1j * np.outer(times - t_ref, coriolis))  # (time, lat)
 
     # Normal equations, closed form (see docstring): S and the 2x2 depend only
@@ -145,9 +143,7 @@ def decompose(window: xr.Dataset, t_ref: float | None = None) -> xr.Dataset:
     def masked(a: np.ndarray) -> np.ndarray:
         return np.where(land, np.nan, a)
 
-    t_ref_iso = (
-        np.datetime_as_string(np.datetime64(int(round(t_ref)), "s"), unit="s") + "Z"
-    )
+    t_ref_iso = _time.iso_z_from_epoch(t_ref)
     return xr.Dataset(
         {
             "mean_u": (("latitude", "longitude"), masked(m.real)),
@@ -255,7 +251,7 @@ def to_inertial_field_json(decomp: xr.Dataset, stride: int = INERTIAL_STRIDE) ->
         "dx": float(abs(lons[1] - lons[0])),
         "dy": float(abs(lats[1] - lats[0])),
         "t_ref": decomp.attrs["t_ref"],
-        "omega": OMEGA,
+        "omega": _geo.OMEGA,
         "units": "m.s-1",
     }
     return {

@@ -41,7 +41,7 @@ import matplotlib.colors as mcolors  # noqa: E402
 import numpy as np  # noqa: E402
 import xarray as xr  # noqa: E402
 
-from . import _raster  # noqa: E402
+from . import _raster, _time  # noqa: E402
 from ._retry import with_retry  # noqa: E402
 
 BBOX = {"lon_min": -10.0, "lon_max": 35.0, "lat_min": -55.0, "lat_max": -15.0}
@@ -224,7 +224,7 @@ def frame_valid_time(when: datetime) -> str:
     """The full ISO-8601 ``valid_time`` (``...T00:00:00Z``) a manifest carries for the
     frame at ``when`` — the same shape :func:`valid_time` emits for a single slice, so
     clients parse frame and slice times identically."""
-    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _time.iso_z(when)
 
 
 def frame_filename(kind: str, when: datetime, ext: str = "webp") -> str:
@@ -250,7 +250,7 @@ def frame_tmin() -> datetime:
     """The first frame's valid time: :data:`FIELD_TMIN` floored to 00Z. The whole
     frame grid is anchored here, so every frame time is this plus a multiple of
     ``FRAME_STEP_H``."""
-    t = datetime.fromisoformat(FIELD_TMIN.replace("Z", "+00:00")).astimezone(timezone.utc)
+    t = _time.parse_iso(FIELD_TMIN)
     return t.replace(hour=0, minute=0, second=0, microsecond=0)
 
 

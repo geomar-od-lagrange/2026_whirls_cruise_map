@@ -6,10 +6,9 @@ import math
 
 import pandas as pd
 
+from . import _geo
 from ._clean import PRE_DEPLOY_BATCH
 from ._forecast import _COORD_NDIGITS
-
-_EARTH_RADIUS_M = 6_371_000.0
 
 # A glider track's leading fixes can be the launch vessel carrying it out to the
 # deployment site. A Seaglider's own horizontal speed is ~0.25 m/s (0.1–0.4 m/s
@@ -36,17 +35,6 @@ def _point(row) -> tuple[float, float, pd.Timestamp]:
     return (row.Latitude, row.Longitude, row.date_UTC)
 
 
-def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    rlat1, rlat2 = math.radians(lat1), math.radians(lat2)
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(rlat1) * math.cos(rlat2) * math.sin(dlon / 2) ** 2
-    )
-    return 2 * _EARTH_RADIUS_M * math.asin(math.sqrt(a))
-
-
 def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     rlat1, rlat2 = math.radians(lat1), math.radians(lat2)
     dlon = math.radians(lon2 - lon1)
@@ -66,7 +54,7 @@ def _segment_motion(prev_pt, cur_pt) -> tuple[float | None, float | None]:
     dt = (cur_pt[2] - prev_pt[2]).total_seconds()
     if dt <= 0:
         return None, None
-    dist = _haversine_m(prev_pt[0], prev_pt[1], cur_pt[0], cur_pt[1])
+    dist = _geo.haversine_m(prev_pt[0], prev_pt[1], cur_pt[0], cur_pt[1])
     heading = (
         _bearing_deg(prev_pt[0], prev_pt[1], cur_pt[0], cur_pt[1]) if dist > 0 else None
     )

@@ -53,6 +53,7 @@ from . import (
     _gliders,
     _inertial,
     _ship,
+    _time,
     _vorticity,
 )
 from ._clean import PRE_DEPLOY_BATCH
@@ -63,7 +64,7 @@ SITE_DATA = REPO_ROOT / "site" / "map" / "data"  # the map's data (derive output
 
 
 def _stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _time.now_iso()
 
 
 def _write_json(path: Path, obj) -> None:

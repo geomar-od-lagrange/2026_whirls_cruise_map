@@ -36,10 +36,7 @@ import matplotlib.colors as mcolors  # noqa: E402
 import numpy as np  # noqa: E402
 import xarray as xr  # noqa: E402
 
-from . import _currents, _raster  # noqa: E402
-
-OMEGA = 7.2921159e-5  # Earth's rotation rate (rad/s); f = 2*OMEGA*sin(lat)
-_EARTH_RADIUS_M = 6_371_000.0
+from . import _currents, _geo, _raster  # noqa: E402
 
 # Diverging map (blue-green ↔ white ↔ dark-red across the sampled stops) for the
 # signed field, clipped symmetrically at a **frozen** ±VORT_CLIP (|ζ/f|) so a few
@@ -75,11 +72,11 @@ def zeta_over_f(field: xr.Dataset) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     lon_r = np.radians(lons)
     cos_phi = np.cos(lat_r)[:, np.newaxis]
 
-    dv_dx = np.gradient(v, lon_r, axis=1) / (_EARTH_RADIUS_M * cos_phi)
-    du_dy = np.gradient(u, lat_r, axis=0) / _EARTH_RADIUS_M
+    dv_dx = np.gradient(v, lon_r, axis=1) / (_geo.EARTH_RADIUS_M * cos_phi)
+    du_dy = np.gradient(u, lat_r, axis=0) / _geo.EARTH_RADIUS_M
     zeta = dv_dx - du_dy
 
-    fcor = (2.0 * OMEGA * np.sin(lat_r))[:, np.newaxis]  # < 0 in the SH
+    fcor = _geo.coriolis(lats)[:, np.newaxis]  # f = 2Ω sinφ, < 0 in the SH
     return zeta / fcor, lats, lons
 
 

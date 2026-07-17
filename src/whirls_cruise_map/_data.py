@@ -33,6 +33,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import _time
 from ._clean import PRE_DEPLOY_BATCH, load_deployments
 from ._gliders import Platform
 
@@ -71,8 +72,10 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 def iso_utc(when) -> str:
     """Format a tz-aware datetime / :class:`pandas.Timestamp` as ISO-8601 UTC
-    ``…Z`` at second precision (the app's uniform time convention)."""
-    return pd.Timestamp(when).tz_convert("UTC").strftime(_TIME_FMT)
+    ``…Z`` at second precision (the app's uniform time convention). Delegates to the
+    shared :func:`._time.iso_z` (audit IDIOM-2), coercing via ``pd.Timestamp`` first so
+    a ``datetime``/``datetime64``/string input is accepted as before."""
+    return _time.iso_z(pd.Timestamp(when))
 
 
 def _iso_series(s: pd.Series) -> pd.Series:

@@ -50,7 +50,7 @@ import copernicusmarine
 import numpy as np
 import xarray as xr
 
-from . import _currents, _forecast
+from . import _currents, _forecast, _time
 from ._retry import with_retry
 
 _log = logging.getLogger(__name__)
@@ -187,12 +187,9 @@ def _to_dt64(when: datetime) -> np.datetime64:
     return np.datetime64(_to_utc(when).replace(tzinfo=None), "ns")
 
 
-def _iso(when: datetime) -> str:
-    return _to_utc(when).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _parse_iso(s: str) -> datetime:
-    return _to_utc(datetime.fromisoformat(s.replace("Z", "+00:00")))
+# ISO-8601 formatting/parsing lives in the shared :mod:`._time` module (audit IDIOM-2);
+# `_to_utc`/`_to_dt64` above stay — they are the store's numpy-datetime64 plumbing, not
+# the shared ISO surface.
 
 
 # --- default field time range (CMEMS catalogue reach) ------------------------
@@ -321,7 +318,7 @@ def update_store(
     """
     store = _resolve_store_dir(store_dir)
     now = _to_utc(now) if now is not None else datetime.now(timezone.utc)
-    tmin = _to_utc(tmin) if tmin is not None else _parse_iso(_currents.FIELD_TMIN)
+    tmin = _to_utc(tmin) if tmin is not None else _time.parse_iso(_currents.FIELD_TMIN)
     fetch_day = fetch_day or _default_fetch_day
     if time_range is None:
         available_min, available_max = _default_time_range(tmin, now)
@@ -362,7 +359,7 @@ def update_store(
 
     manifest["dataset_id"] = _currents.WINDOW_DATASET_ID
     manifest["bbox"] = _currents.BBOX
-    manifest["tmin"] = _iso(tmin)
+    manifest["tmin"] = _time.iso_z(tmin)
 
     # Drop entries whose files no longer exist (a wiped/partial store, or a
     # manually removed day file) so the manifest never claims stale coverage.
@@ -394,12 +391,12 @@ def update_store(
         days_meta[day.isoformat()] = {
             "file": filename,
             "final": final,
-            "fetched": _iso(datetime.now(timezone.utc)),
+            "fetched": _time.iso_z(datetime.now(timezone.utc)),
         }
-        manifest["updated"] = _iso(datetime.now(timezone.utc))
+        manifest["updated"] = _time.iso_z(datetime.now(timezone.utc))
         _write_manifest(store, manifest)
 
-    manifest["updated"] = _iso(datetime.now(timezone.utc))
+    manifest["updated"] = _time.iso_z(datetime.now(timezone.utc))
     _write_manifest(store, manifest)
     return manifest
 
