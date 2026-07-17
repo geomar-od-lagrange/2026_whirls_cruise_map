@@ -12,7 +12,8 @@ import numpy as np
 import xarray as xr
 from PIL import Image
 
-from whirls_cruise_map._currents import N_BINS, frame_span, frame_valid_time
+from whirls_cruise_map._currents import frame_span
+from whirls_cruise_map._frames import N_BINS, frame_valid_time
 from whirls_cruise_map._geo import EARTH_RADIUS_M as _EARTH_RADIUS_M
 from whirls_cruise_map._geo import OMEGA
 from whirls_cruise_map._vorticity import (

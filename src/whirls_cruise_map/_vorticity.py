@@ -36,7 +36,7 @@ import matplotlib.colors as mcolors  # noqa: E402
 import numpy as np  # noqa: E402
 import xarray as xr  # noqa: E402
 
-from . import _currents, _geo, _raster  # noqa: E402
+from . import _frames, _geo, _raster  # noqa: E402
 
 # Diverging map (blue-green ↔ white ↔ dark-red across the sampled stops) for the
 # signed field, clipped symmetrically at a **frozen** ±VORT_CLIP (|ζ/f|) so a few
@@ -80,10 +80,10 @@ def zeta_over_f(field: xr.Dataset) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return zeta / fcor, lats, lons
 
 
-def _colorbar_stops(n: int = _currents.N_BINS) -> list[str]:
+def _colorbar_stops(n: int = _frames.N_BINS) -> list[str]:
     """The ``n`` discrete bin colours the ζ/f raster uses across the full diverging
     map, low (anticyclonic) → high (cyclonic) — the ``(i+0.5)/n`` midpoints
-    :func:`._currents._quantize_unit` snaps to. A local twin of
+    :func:`._frames._quantize_unit` snaps to. A local twin of
     :func:`._currents._colorbar_stops`, which is bound to the sequential speed map
     (cf. :func:`._inertial._colorbar_stops`)."""
     return [mcolors.to_hex(VORT_CMAP((i + 0.5) / n)) for i in range(n)]
@@ -107,21 +107,21 @@ def to_vorticity_frames(
     """
     def to_rgba(warped):
         # [-clip, clip] -> [0, 1] so zero maps to the diverging map's midpoint, then
-        # quantize to N_BINS flat classes before the lookup (see _currents.N_BINS).
+        # quantize to N_BINS flat classes before the lookup (see _frames.N_BINS).
         # N_BINS is even, so zero (-> 0.5) stays a bin *edge*: 6 classes per sign.
-        t = _currents._quantize_unit(np.clip(warped / VORT_CLIP, -1.0, 1.0) * 0.5 + 0.5)
+        t = _frames._quantize_unit(np.clip(warped / VORT_CLIP, -1.0, 1.0) * 0.5 + 0.5)
         rgba = VORT_CMAP(t)
         rgba[np.isnan(warped), 3] = 0.0  # land transparent
         return rgba
 
     frames, bounds = [], None
     for ft in frame_times:
-        zof, lats, lons = zeta_over_f(_currents._slice_at(window, ft))
+        zof, lats, lons = zeta_over_f(_frames._slice_at(window, ft))
         image, bounds = _raster.mercator_rgba_webp(zof, lats, lons, to_rgba)
         frames.append(
             {
-                "valid_time": _currents.frame_valid_time(ft),
-                "file": _currents.frame_filename("vorticity", ft),
+                "valid_time": _frames.frame_valid_time(ft),
+                "file": _frames.frame_filename("vorticity", ft),
                 "image": image,
             }
         )
