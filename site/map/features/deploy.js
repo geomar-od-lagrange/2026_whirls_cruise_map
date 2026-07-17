@@ -11,6 +11,7 @@
 
 import { PALETTE, DEPLOY_DROP_RADIUS } from "../config.js";
 import { FORECAST_API, getDeployLimits, apiErrorText } from "../api.js";
+import { makeSelection } from "../core/selection.js";
 
 // App-provided dependencies, injected once by buildDeployTool(deps):
 //   deployLayer          — the umbrella Leaflet featureGroup every placement's group rides
@@ -148,7 +149,7 @@ function drawDeployPreview(previewLayer, vertices, cursor, opts) {
 // group (`layer`) so it hides/deletes with the deployment.
 function drawDrops(drops, layer, deploymentId) {
   const set = (deployDropSets[deploymentId] ??= []);
-  const selected = String(deploymentId) === selectedDropSet;
+  const selected = String(deploymentId) === dropSetSel.selected;
   const color = deployColor(deploymentId);
   drops.forEach((d, i) => {
     const disc = L.circleMarker(d.latlng, {
@@ -870,8 +871,8 @@ function forgetDeployment(id) {
   delete deployWaypoints[id];
   delete deployments[id];
   removeAtTimeSet(`deploy:${id}`, true); // exact — "deploy:2" must not catch "deploy:20"
-  if (selectedDropSet === String(id)) selectedDropSet = null;
-  if (selectedTrack && selectedTrack.startsWith(`${id}#`)) selectedTrack = null;
+  if (dropSetSel.selected === String(id)) dropSetSel.set(null);
+  if (trackSel.selected && trackSel.selected.startsWith(`${id}#`)) trackSel.set(null);
 }
 
 // Delete one deployment: remove its group from the umbrella parent, forget its
@@ -924,8 +925,8 @@ const deployTracks = {};
 // deploymentId -> [{ deployment, drop, lat, lon, start, cumKm }]. Populated in
 // placeDeployment, cleared with the rest in resetDeployHighlights.
 const deployWaypoints = {};
-let selectedDropSet = null; // deploymentId (string) or null
-let selectedTrack = null;   // track key or null
+const dropSetSel = makeSelection(applyDropSetSelection);  // drop-set highlight (FS-2)
+const trackSel = makeSelection(applyTrackSelection);  // deploy-track highlight (FS-2)
 
 function restyleDropDisc(disc, selected) {
   // Selected: a dark ring as the selection affordance. Unselected: no outline (#33).
@@ -936,14 +937,12 @@ function restyleDropDisc(disc, selected) {
 
 function applyDropSetSelection() {
   for (const id of Object.keys(deployDropSets))
-    for (const disc of deployDropSets[id]) restyleDropDisc(disc, id === selectedDropSet);
+    for (const disc of deployDropSets[id]) restyleDropDisc(disc, id === dropSetSel.selected);
 }
 
 // Toggle: clicking a disc of the selected deployment clears it; another replaces it.
 function selectDropSet(deploymentId) {
-  const id = String(deploymentId);
-  selectedDropSet = id === selectedDropSet ? null : id;
-  applyDropSetSelection();
+  dropSetSel.toggle(String(deploymentId));
 }
 
 // Restyle one virtual track's line: magenta + thicker when its drifter is picked, its
@@ -994,14 +993,11 @@ function clipDeployTrack(entry, ms, selected) {
 
 function applyTrackSelection() {
   for (const key of Object.keys(deployTracks))
-    restyleTrack(deployTracks[key], key === selectedTrack);
+    restyleTrack(deployTracks[key], key === trackSel.selected);
 }
 
 // Toggle: clicking the selected track clears it; another track replaces it.
-function selectDeployTrack(key) {
-  selectedTrack = key === selectedTrack ? null : key;
-  applyTrackSelection();
-}
+function selectDeployTrack(key) { trackSel.toggle(key); }
 
 // Clear every deploy highlight — at-time marker sets, drop sets, and tracks — and
 // forget their id-keyed registries. Called by clearAllDeployments (the Deploy tab's
@@ -1012,8 +1008,8 @@ function resetDeployHighlights() {
   for (const key of Object.keys(deployTracks)) delete deployTracks[key];
   for (const id of Object.keys(deployWaypoints)) delete deployWaypoints[id];
   removeAtTimeSet("deploy:");
-  selectedDropSet = null;
-  selectedTrack = null;
+  dropSetSel.set(null);
+  trackSel.set(null);
 }
 
 // --- waypoint CSV export -----------------------------------------------------
@@ -1130,8 +1126,8 @@ function drawDeployForecastLines(features, layer, runStart, deploymentId, direct
       times, lats: latlngs.map((p) => p[0]), lngs: latlngs.map((p) => p[1]),
     };
     deployTracks[trackKey] = entry;
-    restyleTrack(entry, trackKey === selectedTrack);
-    clipDeployTrack(entry, getClockMs(), trackKey === selectedTrack); // initial crop
+    restyleTrack(entry, trackKey === trackSel.selected);
+    clipDeployTrack(entry, getClockMs(), trackKey === trackSel.selected); // initial crop
 
     // At-time marker: rides the deployment's group, coloured with this deployment's
     // cycling colour, click highlights the whole deployment's array at the clock's
@@ -1151,16 +1147,16 @@ function drawDeployForecastLines(features, layer, runStart, deploymentId, direct
 // Crop every virtual deployment's drift line to clock `ms` (release→clock forward,
 // clock→release backward), re-raising a selected track. This is the loop app.js's
 // updateClock used to run inline; it now calls this each scrub so the deploy internals
-// (deployTracks / selectedTrack) stay owned here.
+// (deployTracks / trackSel) stay owned here.
 function clipAllDeployTracks(ms) {
   for (const key of Object.keys(deployTracks))
-    clipDeployTrack(deployTracks[key], ms, key === selectedTrack);
+    clipDeployTrack(deployTracks[key], ms, key === trackSel.selected);
 }
 
 // Clear the drop-set + track highlights — the background-click handler's block, moved
 // here so app.js's map "click" never reaches into the deploy selection state.
 function clearSelections() {
-  if (selectedDropSet != null) { selectedDropSet = null; applyDropSetSelection(); }
-  if (selectedTrack != null) { selectedTrack = null; applyTrackSelection(); }
+  dropSetSel.clear();
+  trackSel.clear();
 }
 

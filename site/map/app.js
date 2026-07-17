@@ -37,6 +37,7 @@ import {
 } from "./format.js";
 import { FORECAST_API, getDeployLimits, apiErrorText } from "./api.js";
 import { buildDeployTool } from "./features/deploy.js";
+import { makeSelection } from "./core/selection.js";
 
 // The two cruise vessels share one ship renderer (makeShipLayer), differing only
 // in colour, sidebar panel, and the tooltip/readout rows a fix produces — so one
@@ -221,7 +222,12 @@ function desaturate(hex, amount = 0.72) {
 }
 
 const trackParts = {}; // instrument key -> [restyle(state), ...]
-let selectedInstrument = null;
+// Instrument-track highlight, via the shared Selection helper (FS-2). Its restyle pass
+// reads the selected key through stateFor to give each part its 3-state look.
+const instrumentSel = makeSelection(() => {
+  for (const key of Object.keys(trackParts))
+    for (const p of trackParts[key]) p.fn(stateFor(key));
+});
 // Current map zoom, kept live by a `zoomend` handler in main(). Track line
 // weight scales with it (trackWeight) so tracks stay distinct when zoomed out.
 let trackZoom = FALLBACK_ZOOM;
@@ -242,7 +248,7 @@ function weightBucket(zoom) {
 }
 
 const stateFor = (key) =>
-  key === selectedInstrument ? "selected" : selectedInstrument ? "dim" : "normal";
+  key === instrumentSel.selected ? "selected" : instrumentSel.selected ? "dim" : "normal";
 
 // Register a freshly-built element's restyler and immediately apply the current
 // selection state, so a part built while a selection is active renders correctly.
@@ -253,10 +259,7 @@ function registerPart(key, restyle, owner) {
   restyle(stateFor(key));
 }
 
-function applySelection() {
-  for (const key of Object.keys(trackParts))
-    for (const p of trackParts[key]) p.fn(stateFor(key));
-}
+function applySelection() { instrumentSel.refresh(); }
 
 // Drop every restyler tagged with `owner` across all keys — used when a part family is
 // rebuilt (the outlier-toggle track rebuild), so stale restylers pointing at removed
@@ -267,10 +270,7 @@ function dropPartsByOwner(owner) {
 }
 
 // Toggle: clicking the current selection clears it; another instrument replaces it.
-function selectInstrument(key) {
-  selectedInstrument = key === selectedInstrument ? null : key;
-  applySelection();
-}
+function selectInstrument(key) { instrumentSel.toggle(key); }
 
 // --- at-time position markers ------------------------------------------------
 // Each virtual drift track carries ONE marker at the position it occupies at the
@@ -290,7 +290,7 @@ function selectInstrument(key) {
 const AT_TIME_RADIUS = 5;
 const atTimeEntries = [];      // every registered marker entry
 const atTimeSets = {};         // setKey -> [entry, ...]
-let selectedAtTimeSet = null;  // the highlighted set's key, or null
+const atTimeSel = makeSelection(applyAtTimeSelection);  // at-time marker-set highlight (FS-2)
 let atTimeClockMs = null;      // the app clock as epoch ms (null until set in main)
 let atTimeRaf = 0;             // pending rAF handle for a throttled repaint
 
@@ -340,7 +340,7 @@ function updateAtTimeMarker(entry, ms) {
   entry.onMap = true;
   entry.marker.setLatLng([s.lat, s.lng]);
   entry.marker.setTooltipContent(`${entry.label} · ${atTimeIso(ms)}`);
-  restyleAtTimeMarker(entry, entry.setKey === selectedAtTimeSet);
+  restyleAtTimeMarker(entry, entry.setKey === atTimeSel.selected);
 }
 
 // The interactive deploy tool (site/map/features/deploy.js), a page singleton built in
@@ -375,15 +375,12 @@ function updateClock(ms) {
 // keeps its zero radius until the clock brings it back).
 function applyAtTimeSelection() {
   for (const entry of atTimeEntries)
-    if (entry.onMap) restyleAtTimeMarker(entry, entry.setKey === selectedAtTimeSet);
+    if (entry.onMap) restyleAtTimeMarker(entry, entry.setKey === atTimeSel.selected);
 }
 
 // Toggle the highlighted set: clicking a marker of the current set clears it, another
 // set replaces it (decision 7 — a deployment's whole array at this instant).
-function selectAtTimeSet(setKey) {
-  selectedAtTimeSet = setKey === selectedAtTimeSet ? null : setKey;
-  applyAtTimeSelection();
-}
+function selectAtTimeSet(setKey) { atTimeSel.toggle(setKey); }
 
 // Register a time-aware track's at-time marker. `owner` is the Leaflet group the
 // track rides (so the marker shows/hides with that layer); `times/lats/lngs` are
@@ -703,7 +700,7 @@ function removeAtTimeSet(key, exact = false) {
     }
   }
   for (const k of Object.keys(atTimeSets)) if (hit(k)) delete atTimeSets[k];
-  if (selectedAtTimeSet && hit(selectedAtTimeSet)) selectedAtTimeSet = null;
+  if (atTimeSel.selected && hit(atTimeSel.selected)) atTimeSel.set(null);
 }
 
 // Shared line style. Each track line carries its instrument's identity colour (`base`
@@ -2709,14 +2706,8 @@ async function main() {
       deployTool.handleClick(e.latlng);
       return;
     }
-    if (selectedInstrument != null) {
-      selectedInstrument = null;
-      applySelection();
-    }
-    if (selectedAtTimeSet != null) {
-      selectedAtTimeSet = null;
-      applyAtTimeSelection();
-    }
+    instrumentSel.clear();
+    atTimeSel.clear();
     deployTool.clearSelections();
   });
   map.on("dblclick", (e) => {
