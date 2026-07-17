@@ -45,18 +45,17 @@ mtime changes — one ``stat`` per request, same shape as the old single-file
 mtime dance); each request then opens a fresh
 :class:`whirls_cruise_map._field_store.StoreField` over just the span its run
 needs, streaming day files through a bounded day cache so a run holds only a
-handful of days resident however long it runs. What it does *not* bound by
-itself is the seed-start *spread*: since :func:`_forecast._batch_advect` never
-resyncs seeds to a shared wall clock, seeds started on far-apart calendar days
-keep that many days resident at once. Two run-time guards cap that (SEC-1):
-:data:`_MAX_START_SPREAD_DAYS` rejects a run whose in-window starts span too many
-days, and :data:`_MAX_CONCURRENCY` gates how many runs hold a field at once, so
-peak memory stays inside the API pod's 4 Gi limit. A missing or empty store →
-503; the static map still serves.
+handful of days resident however long it runs. Crucially, that residency tracks
+the run's horizon *window*, not the seed-start *spread*:
+:func:`_forecast._batch_advect` releases seeds onto a shared wall clock, so at any
+instant only the seeds on the current window day are being stepped — a batch whose
+drops start on far-apart calendar days no longer pins that many days at once. Peak
+memory is then bounded (SEC-1) by :data:`_MAX_CONCURRENCY` alone — the semaphore
+gating how many runs hold a field at once — keeping it inside the API pod's 4 Gi
+limit. A missing or empty store → 503; the static map still serves.
 """
 from __future__ import annotations
 
-import math
 import threading
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -94,50 +93,30 @@ _MAX_SEEDS = 2000
 # gateway-killed request.
 _MAX_SEED_HOURS = 1_000_000
 
-# SEC-1 memory bound. The seeds x hours budget above caps *compute*, but not resident
-# *memory*: `_batch_advect` never resyncs seeds to a shared wall clock, so at every
-# step the still-active seeds' absolute times differ by exactly their original start
-# spread, and the streaming field must keep that many distinct calendar days resident
-# at once (~50 MB/day). A cheap request (small budget) that places seeds one-per-store
-# -day therefore pins the store's whole span in RAM and, run a few times concurrently,
-# OOM-kills the pod. Two constants below are the whole memory contract, tied together
-# by one budget. A run's field residency is capped not at the spread but at the LRU
-# cap `_field_store.day_cache_cap_for_starts` derives from it — spread + 2 bracketing
-# days, ceilinged at `_MAX_DAY_CACHE_CAP` (= `_MAX_START_SPREAD_DAYS` + 2 = 10). The
-# semaphore multiplies BOTH that field residency and the transient trajectory buffer
-# `_batch_advect` allocates by `_MAX_CONCURRENCY`. Since FC-1 landed, that buffer holds
-# only vertex-cadence rows (not every 5-min sub-step), ~vertex_every-fold smaller — a
-# few tens of MB even at the budget, so it no longer meaningfully competes with the day
-# residency:
+# SEC-1 memory bound. The seeds x hours budget above caps *compute*; resident *memory*
+# is bounded by the field a run streams plus its transient trajectory buffer, times how
+# many runs hold a field at once. Each run streams its day files through a bounded LRU
+# whose residency tracks the run's horizon *window*, not the seed-start spread:
+# `_batch_advect` releases seeds onto a shared wall clock, so at any instant only the
+# seeds on the current window day are stepped, and the cache never holds more than that
+# day plus its bracketing neighbour (~2 x 50 MB) however far apart the seeds started. So
+# a single run's field residency is ~100 MB regardless of how it places its seeds — no
+# cheap request can pin the whole store in RAM. The one constant below multiplies that
+# (and the vertex-cadence trajectory buffer, a few tens of MB since FC-1) by the number
+# of concurrent runs:
 #
-#     (_MAX_START_SPREAD_DAYS + 2) x ~50 MB/day x _MAX_CONCURRENCY   field days
-#   + a few tens of MB trajectory buffer        x _MAX_CONCURRENCY   (vertex-cadence, FC-1)
+#     ~2 x 50 MB/day field window x _MAX_CONCURRENCY
+#   + a few tens of MB trajectory buffer x _MAX_CONCURRENCY   (vertex-cadence, FC-1)
 #   + ~0.7 Gi base process
-#   = (8+2) x 50 MB x 3  +  ~0.1 Gi  +  0.7 Gi  ~=  1.5 + 0.1 + 0.7  ~=  2.3 Gi < 4 Gi
+#   ~= 0.1 Gi x 3 + 0.1 Gi x 3 + 0.7 Gi  ~=  1.3 Gi < 4 Gi
 #
-#   * `_MAX_START_SPREAD_DAYS` — reject (422) a run whose in-window seed starts span
-#     more than this many calendar days, so one run's field residency is bounded
-#     (~10 days x 50 MB ~= 500 MB, the +2 bracket included) regardless of how cheap
-#     its compute is. `_field_store._MAX_DAY_CACHE_CAP` is the matching hard backstop
-#     inside the cache itself, so even a request that somehow slips the guard can
-#     never pin more than the ceiling.
 #   * `_MAX_CONCURRENCY` — a semaphore around the memory-heavy advection so at most
 #     this many runs hold a field resident at once.
 #
-# WHY 8, AND HOW TO RAISE IT. A real *observation* forecast staggers water-entry over
-# hours, and an active cruise's drifters all report within a reporting cycle, so 8 days
-# never binds in normal use. It is deliberately the ONE knob to turn if the app is
-# repurposed for wider-spread *planning* runs — e.g. "here is a 20-day cruise track;
-# lay 200 drifters equidistant in time and forecast each," which needs a ~20-day start
-# spread. To support that: raise `_MAX_START_SPREAD_DAYS` to cover the widest planned
-# spread AND drop `_MAX_CONCURRENCY` so the budget above still clears the pod limit
-# (e.g. 20-day spread -> (20+2) x 50 MB x 2 + 180 MB x 2 + 0.7 Gi ~= 2.2 + 0.4 + 0.7
-# ~= 3.3 Gi < 4 Gi), then bump the pod's memory limit if you need both wide and
-# concurrent. Do not raise the spread alone.
-# The deeper fix that removes the trade-off entirely — resync seeds to a shared wall
-# clock in `_batch_advect` so residency tracks the *horizon window* not the start
-# spread — is out of scope here (see the review's SEC-1 / FC-1 notes).
-_MAX_START_SPREAD_DAYS = 8
+# Because residency no longer tracks the start spread, wide-spread *planning* runs
+# ("lay 200 drifters equidistant across a 20-day cruise track and forecast each") are
+# served like any other — there is no spread cap to raise and no memory trade-off
+# against concurrency (the wall-clock resync in `_batch_advect` is what removed it).
 _MAX_CONCURRENCY = 3
 _run_semaphore = threading.BoundedSemaphore(_MAX_CONCURRENCY)
 
@@ -221,11 +200,13 @@ def _build_field_index(
     return _dt64_to_utc(lo_t), _dt64_to_utc(hi_t)
 
 
-def _get_field_index() -> tuple[datetime, datetime]:
-    """The store's currently available ``(lo, hi)`` span, rebuilt only when the
-    manifest's mtime changes (one ``stat`` per request, thread-safe) — the same
-    one-stat-per-request shape the v1 single-file mtime dance used, now against
-    the per-day store's manifest. Raises :class:`FileNotFoundError` when the
+def _get_field_index() -> tuple[tuple[datetime, datetime], float]:
+    """The store's currently available ``(lo, hi)`` span paired with its version
+    token (the manifest's mtime), both read under a single lock acquisition so the
+    version a caller memoizes against always matches the span it just fetched.
+    Rebuilt only when the mtime changes (one ``stat`` per request, thread-safe) —
+    the same one-stat-per-request shape the v1 single-file mtime dance used, now
+    against the per-day store's manifest. Raises :class:`FileNotFoundError` when the
     store has no manifest at all; :func:`_build_field_index` returning ``None``
     (a manifest with no day files on disk) raises the same, so both map to the
     503 the endpoints below give for "field unavailable"."""
@@ -241,7 +222,7 @@ def _get_field_index() -> tuple[datetime, datetime]:
                 raise FileNotFoundError(f"field store at {store} has no day files on disk")
             _index = idx
             _index_mtime = mtime
-        return _index
+        return _index, _index_mtime
 
 
 # The epoch/ISO/parse helpers this endpoint's bookkeeping uses (``to_epoch``,
@@ -285,10 +266,10 @@ class ForecastRequest(BaseModel):
     ``len(seeds) * horizon_h`` budget (:data:`_MAX_SEED_HOURS`) bounds worst-case
     compute + serialization to stay well inside the edge router's ~60 s timeout even
     when neither knob alone would. ``extra="forbid"`` rejects unknown fields (422, not
-    silently ignored). Resident *memory* is bounded separately, at run
-    time: a run whose in-window seed starts span more than :data:`_MAX_START_SPREAD_DAYS`
-    calendar days is rejected (422) so no cheap request can pin the whole field store in
-    RAM (SEC-1)."""
+    silently ignored). Resident *memory* needs no request-shape bound: the run streams
+    its field through a bounded day cache whose residency tracks the horizon window (the
+    wall-clock resync in :func:`_forecast._batch_advect`), so no seed placement — however
+    wide the start spread — can pin the whole field store in RAM (SEC-1)."""
 
     model_config = {"extra": "forbid"}
     seeds: list[Seed] = Field(max_length=_MAX_SEEDS)
@@ -330,7 +311,7 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
         raise ValueError("no seeds")
     sign = 1 if direction == "forward" else -1
 
-    field_lo, field_hi = _get_field_index()
+    (field_lo, field_hi), _ = _get_field_index()
     field_lo_e, field_hi_e = _time.to_epoch(field_lo), _time.to_epoch(field_hi)
     now_iso = _time.now_iso()
 
@@ -376,34 +357,6 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
     horizon_i = horizon_h - offset_h  # this seed's own remaining run length
     alive0 = (starts >= clipped_lo) & (starts <= clipped_hi) & (horizon_i > 0)
 
-    # Size the streaming field's day cache to the advected seeds' actual start spread
-    # (out-of-window stragglers are skipped-and-counted, never sampled, so they don't
-    # grow it). _batch_advect never resyncs seeds to a shared wall clock, so far-apart
-    # starts keep that many distinct calendar days resident for the whole run
-    # (~50 MB/day) — the cap tracks exactly that. Bound it (SEC-1): reject a run whose
-    # in-window starts span more than _MAX_START_SPREAD_DAYS, so one run can never pin
-    # more than that many days resident however cheap its compute; the semaphore below
-    # then bounds how many such runs hold a field at once. A real deployment staggers
-    # water-entry over hours, so this only ever fires on the pathological one-per-day
-    # placement the guard exists to stop.
-    alive_starts = starts[alive0]
-    if alive_starts.size:
-        spread_days = math.ceil(
-            (float(alive_starts.max()) - float(alive_starts.min())) / 86400.0
-        )
-        if spread_days > _MAX_START_SPREAD_DAYS:
-            raise ValueError(
-                f"seed-start spread too wide: in-window seeds span {spread_days} "
-                f"calendar days > {_MAX_START_SPREAD_DAYS} max (would pin that many "
-                f"days of field resident at once); stagger water-entry over a narrower "
-                f"window or split into separate deployments"
-            )
-        day_cache_cap = _field_store.day_cache_cap_for_starts(
-            float(alive_starts.min()), float(alive_starts.max())
-        )
-    else:
-        day_cache_cap = _field_store._DEFAULT_DAY_CACHE_CAP
-
     seed_lon = np.array([s.lon for s in seeds], dtype=np.float64)
     seed_lat = np.array([s.lat for s in seeds], dtype=np.float64)
     n_steps = np.where(
@@ -415,10 +368,12 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
     # exactly the memory-heavy span (SEC-1). Cached responses never reach here — the
     # lru_cache in `_cached_batch_run` short-circuits before `_batch_run` is called —
     # so a page-load flood of the identical observed-forecast request doesn't queue on
-    # the semaphore.
+    # the semaphore. The day-cache cap is the small fixed default: _batch_advect's
+    # wall-clock resync keeps residency at the horizon window's bracketing pair whatever
+    # the seed-start spread, so no per-request sizing is needed (SEC-1).
     with _run_semaphore:
         field = _field_store.StoreField(
-            None, _time.from_epoch(clipped_lo), _time.from_epoch(clipped_hi), day_cache_cap=day_cache_cap
+            None, _time.from_epoch(clipped_lo), _time.from_epoch(clipped_hi)
         )
         # Advect at the fine sub-step but store only at the vertex cadence: the buffer
         # is ~vertex_every-fold smaller than a full-substep one, and every stored row is
@@ -481,15 +436,6 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
 # wall-clock field) is not read by the client, so a frozen copy in a cached response is
 # harmless. lru_cache is thread-safe and does not cache exceptions, so a 422/503 recomputes.
 _FORECAST_CACHE_CAP = 32
-
-
-def _field_version() -> float:
-    """The field store's version token: the manifest mtime `_get_field_index` already stats
-    each request (bumped on every slow build write). Raises `FileNotFoundError` on an
-    empty/missing store, exactly as `_get_field_index` does (-> 503 upstream)."""
-    _get_field_index()  # refreshes `_index_mtime` if the manifest changed; may raise
-    assert _index_mtime is not None  # set by the call above on success
-    return _index_mtime
 
 
 @lru_cache(maxsize=_FORECAST_CACHE_CAP)
@@ -640,7 +586,8 @@ def forecast(req: ForecastRequest) -> dict:
     timeout."""
     try:
         seeds = tuple((s.lon, s.lat, s.start) for s in req.seeds)
-        return _cached_batch_run(_field_version(), req.direction, req.horizon_h, seeds)
+        _, version = _get_field_index()  # (span, version) under one lock; may raise -> 503
+        return _cached_batch_run(version, req.direction, req.horizon_h, seeds)
     except (FileNotFoundError, _field_store.FieldUnavailableError):
         # Store missing/empty/still-filling/gapped/corrupt — a transient operational
         # state, not a bug; the static map still serves. Fixed message: the exception can
@@ -649,9 +596,9 @@ def forecast(req: ForecastRequest) -> dict:
         # real 500, left to surface (and be logged) rather than masked as a 503.
         raise HTTPException(status_code=503, detail=_FIELD_UNAVAILABLE_DETAIL)
     except ValueError as exc:
-        # Client input only: no seeds / unparseable start / seed-start spread too wide.
-        # These messages echo the caller's own input (timestamps, counts), never
-        # internal state, so they are safe to return.
+        # Client input only: no seeds / unparseable start. These messages echo the
+        # caller's own input (timestamps, counts), never internal state, so they are
+        # safe to return.
         raise HTTPException(status_code=422, detail=str(exc))
 
 
@@ -662,7 +609,7 @@ def limits() -> dict:
     with an explicit message *before* POSTing. A plain GET, reached under the
     same CORS as the forecast POST (see the middleware note)."""
     try:
-        field_lo, field_hi = _get_field_index()
+        (field_lo, field_hi), _ = _get_field_index()
     except (FileNotFoundError, _field_store.FieldUnavailableError):
         # store missing/empty/corrupt — the static map still serves (SEC-2/SEC-7)
         raise HTTPException(status_code=503, detail=_FIELD_UNAVAILABLE_DETAIL)
@@ -670,7 +617,6 @@ def limits() -> dict:
     return {
         "max_seeds": _MAX_SEEDS,
         "max_seed_hours": _MAX_SEED_HOURS,
-        "max_start_spread_days": _MAX_START_SPREAD_DAYS,
         "window": [_time.iso_z_from_epoch(_time.to_epoch(field_lo)), _time.iso_z_from_epoch(_time.to_epoch(field_hi))],
         "analysis_edge": now_iso,
     }

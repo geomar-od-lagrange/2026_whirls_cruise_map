@@ -574,20 +574,6 @@ def test_store_array_rejects_unsupported_index_shapes(tmp_path):
         field.u[(0, 1)]
 
 
-def test_day_cache_cap_for_starts_scales_with_spread():
-    """A batch whose seeds all start close together needs no more than the
-    default cap; one whose seeds' starts spread across N calendar days needs
-    a cap that covers that spread (+2 for the bracketing pair at each end)."""
-    same_day = _field_store.day_cache_cap_for_starts(0.0, 3600.0)
-    assert same_day == _field_store._DEFAULT_DAY_CACHE_CAP
-
-    week_spread = _field_store.day_cache_cap_for_starts(0.0, 7 * 86400.0)
-    assert week_spread == 7 + 2
-
-    # Order of the two epochs must not matter.
-    assert _field_store.day_cache_cap_for_starts(7 * 86400.0, 0.0) == week_spread
-
-
 def test_field_unavailable_error_is_a_value_error_subclass():
     """FieldUnavailableError must subclass ValueError so every existing `except
     ValueError` caller keeps working, while the API can catch it specifically for a 503
@@ -606,27 +592,21 @@ def test_load_window_on_an_empty_store_raises_field_unavailable(tmp_path):
         )
 
 
-def test_day_cache_cap_for_starts_is_clamped_to_the_ceiling():
-    """SEC-1 backstop: however wide the start spread, the cap can never exceed
-    ``_MAX_DAY_CACHE_CAP`` — so no single run can pin an unbounded number of day
-    files resident. A spread that would ask for more degrades to bounded cache
-    thrash inside that ceiling rather than an OOM. (The API rejects such a spread
-    up front; this clamp guards the store even if some caller doesn't.)"""
-    huge = _field_store.day_cache_cap_for_starts(0.0, 100 * 86400.0)
-    assert huge == _field_store._MAX_DAY_CACHE_CAP
-    # A custom lower ceiling is honoured too.
-    assert _field_store.day_cache_cap_for_starts(0.0, 100 * 86400.0, max_cap=5) == 5
+def test_store_field_wide_start_spread_stays_within_a_small_day_cache(tmp_path, monkeypatch):
+    """SEC-1 (wall-clock resync): a batch whose still-active seeds start on
+    far-apart calendar days (here one seed per day across an 8-day span) must NOT
+    force that many day files resident. Because ``_batch_advect`` releases seeds
+    onto a shared wall clock, at any instant only the seeds on the current day are
+    stepped, so the day cache sweeps the store monotonically and opens each day only
+    a small bounded number of times — even at the *bare default* (small) cap. Before
+    the resync this exact placement pinned all 8 days at once and thrashed any cap
+    below the spread (it needed a cache sized to the spread by the now-removed
+    ``day_cache_cap_for_starts`` — see git history). The trajectory still matches the
+    in-RAM comparator field bit-for-bit, so the cap is a pure memory bound.
 
-
-def test_store_field_wide_seed_start_spread_does_not_thrash_the_day_cache(tmp_path, monkeypatch):
-    """Reproduces the reported pathology: a batch whose still-active seeds start
-    on far-apart calendar days (here, one seed per day across an 8-day span)
-    must not thrash the day cache — every step re-touches the same N distinct
-    days (N == the seed-start spread), so a cache sized by
-    day_cache_cap_for_starts keeps them all resident, while the bare default
-    cap (4) re-opens files every step. Also pins the result identical to the
-    in-RAM comparator field, so sizing the cache changes only performance, not
-    the trajectory."""
+    A common-end horizon keeps all eight seeds alive across the whole sweep (the
+    realistic shape: the API stops every seed at a shared wall-clock end), so the run
+    genuinely walks all 8 calendar days, not a single-day corner."""
     first, last = date(2026, 7, 1), date(2026, 7, 8)  # 8 distinct days
     _build_sf_store(tmp_path, first, last)
 
@@ -635,14 +615,11 @@ def test_store_field_wide_seed_start_spread_does_not_thrash_the_day_cache(tmp_pa
     in_ram = _forecast._Field(_field_store.load_window(tmp_path, t0=t_lo, t1=t_hi))
 
     lon0, lat0 = _ocean_seeds(in_ram, 8, seed=7)
-    # One seed start per calendar day, spanning the whole 8-day store.
+    # One seed start per calendar day, spanning the whole 8-day store, all running to
+    # a shared common end near the store's far edge (as the API's run semantics do).
     t0 = np.array([_utc(2026, 7, i).timestamp() for i in range(1, 9)])
-    # Just 2 sub-steps (30 min): plenty to expose the bare default cap's
-    # per-step thrash (confirmed manually to run into the thousands of opens
-    # and seconds of wall time within a handful of steps already) without
-    # burning the per-test timeout budget on a pathology this test exists to
-    # show is now avoided.
-    n_steps = np.full(lon0.shape, 2, dtype=int)
+    common_end = _utc(2026, 7, 8, 22).timestamp()
+    n_steps = np.round((common_end - t0) / (_forecast.STEP_MIN * 60.0)).astype(int)
 
     open_calls = {"n": 0}
     real_open_dataset = xr.open_dataset
@@ -651,32 +628,22 @@ def test_store_field_wide_seed_start_spread_does_not_thrash_the_day_cache(tmp_pa
         open_calls["n"] += 1
         return real_open_dataset(*args, **kwargs)
 
-    cap = _field_store.day_cache_cap_for_starts(float(t0.min()), float(t0.max()))
-    assert cap >= 8  # must cover the whole spread, not just the default
-
     monkeypatch.setattr(_field_store.xr, "open_dataset", counting_open_dataset)
-    field_scaled = _field_store.StoreField(tmp_path, t_lo, t_hi, day_cache_cap=cap)
-    p_scaled, c_scaled = _forecast._batch_advect(field_scaled, lon0, lat0, t0, n_steps)
-    scaled_opens = open_calls["n"]
-
-    open_calls["n"] = 0
-    field_default = _field_store.StoreField(tmp_path, t_lo, t_hi)  # bare _DEFAULT_DAY_CACHE_CAP
-    p_default, c_default = _forecast._batch_advect(field_default, lon0, lat0, t0, n_steps)
-    default_opens = open_calls["n"]
-
+    field = _field_store.StoreField(tmp_path, t_lo, t_hi)  # bare _DEFAULT_DAY_CACHE_CAP
+    p, c = _forecast._batch_advect(field, lon0, lat0, t0, n_steps)
+    opens = open_calls["n"]
     monkeypatch.setattr(_field_store.xr, "open_dataset", real_open_dataset)
 
     in_ram_p, in_ram_c = _forecast._batch_advect(in_ram, lon0, lat0, t0, n_steps)
-    assert np.array_equal(c_scaled, in_ram_c)
-    assert np.array_equal(p_scaled, in_ram_p)
-    assert np.array_equal(c_default, in_ram_c)
-    assert np.array_equal(p_default, in_ram_p)
+    assert np.array_equal(c, in_ram_c)
+    assert np.array_equal(p, in_ram_p)
 
-    # The scaled cap opens each of the 8 day files at most once (plus the
-    # StoreField constructor's own one open-for-time-coord-only pass per day);
-    # the bare default cap thrashes, reopening far more even over just 2 steps.
-    assert scaled_opens <= 20
-    assert default_opens > 20 * scaled_opens  # thrash signature
+    # No thrash: the constructor opens each of the 8 day files once for the time
+    # coordinate, and the monotone sweep reopens each day only a few times as its
+    # cursor crosses day boundaries — a small multiple of the day count, nowhere near
+    # the per-step reopen storm the pre-resync lockstep produced at this small a cap
+    # (which ran into the thousands over even a couple of steps).
+    assert opens <= 4 * 8
 
 
 def test_store_field_raises_on_gap_in_span(tmp_path):
