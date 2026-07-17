@@ -47,14 +47,14 @@ aren't cache-pinned.
 
 ## MR groups
 
-- [ ] **G1 — SEC-1: cap field-cache residency** (M) · *urgent, land first*
+- [x] **G1 — SEC-1: cap field-cache residency** (M) · *urgent, land first* · **landed** (MR !33)
       `#1`. Cap `day_cache_cap_for_starts` to a ceiling that keeps several concurrent
       requests inside the pod limit; gate endpoint concurrency (semaphore / lower AnyIO
       thread limit); optionally 422 on excessive seed-start spread.
       **NB:** review cites a 3 Gi pod; it is now **4 Gi** (`instance.yaml.tmpl:135`,
       hotfixed). Tune the clamp against 4 Gi.
 
-- [ ] **G2 — Web-surface hardening** (S) · independent
+- [x] **G2 — Web-surface hardening** (S) · independent · **landed** (MR !34)
       `#2/#36` narrow catch-all `except`→503 to real "field missing" types, stop
       interpolating `str(exc)`/store path into the public body · `#8` escape/`textContent`
       third-party ship fields before `innerHTML` + add CSP to `index.html` (must allow
@@ -63,15 +63,22 @@ aren't cache-pinned.
       `lat∈[-90,90]`, `allow_inf_nan=False`, fix docstring · `SEC-6/SEC-7` (parcels
       oracle is not deployed — app-side only).
 
-- [ ] **G3 — Shared primitives `_geo.py` + `_time.py`** (M) · *foundation, before G4*
+- [x] **G3 — Shared primitives `_geo.py` + `_time.py`** (M) · *foundation, before G4* · **landed** (MR !35)
       `#25-28`, `IDIOM-1..4`. Earth radius, haversine, Coriolis, uv→deg into `_geo.py`;
       ISO format/parse into `_time.py`; delete the 3–5 copies each.
 
-- [ ] **G4 — Backend/forecast/ingest refactors** (M, split if large) · *after G3*
-      `#3` `_batch_advect` stores only vertex-cadence rows · `#4` break `_derive_slow`
-      into `_render_*` helpers, drop manual `del`/`gc.collect()` · `#5/#29` one
-      `NamedTuple` for point-tuple ordering · plus `API-*`, `FC-*`, `ING-*`, `DER-*`,
-      `SRC-*` batched as convenient.
+- [x] **G4 — Backend/forecast/ingest refactors** (M, split) · *after G3* · **landed** (MRs !36/!37/!38 + G4d)
+      `#3` `_batch_advect` stores only vertex-cadence rows (G4a/!36) · `#4` break
+      `_derive_slow` into `_render_*` helpers (G4b/!37; the per-variable `del` is gone,
+      a single documented phase-boundary `gc.collect()` retained for the OOM-sensitive
+      path — plan 045) · `#5/#29` one `NamedTuple` for point-tuple ordering (G4c/!38) ·
+      G4d batch: `API-2` (`_reset_caches`), `API-3/4` (folded into G3), `FC-3`,
+      `ING-2/3/5/6`, `IDIOM-5/6`, `DER-4` (G3).
+      **Deferred (LOW, larger refactors, out of this pass):** `API-1` (single locked
+      `(span, version)`), `FC-2` (`_StoreArray` key validation), `ING-4`
+      (`platforms.csv` memoize), `SRC-1..4` (shared `_portal`, `_render_frames`,
+      `_parse_time`, timeout/retry), `DER-2` (vectorize Mercator warp), `DER-3` (move
+      `_currents` privates to a shared `_frames`/`_raster`). Tracked here for a later pass.
 
 - [ ] **G5 — FS-1: split `app.js` into ES modules** (L) · *see cross-repo coupling above*
       Split along a concern spine, `type=module`, no bundler; start with the

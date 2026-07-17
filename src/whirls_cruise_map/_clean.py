@@ -50,6 +50,15 @@ def concat_snapshots(csv_paths: list[Path]) -> pd.DataFrame:
     snapshots), sentinel (-99999) rows, and the source ``date_UTC`` strings
     unchanged, so :func:`clean` can be audited against exactly what it consumed.
     """
+    if not csv_paths:
+        # A valid share zip whose internal folder was renamed/emptied yields no CSVs
+        # (an upstream layout change, not a transient fetch failure). `pd.concat(())`
+        # would raise a bare "No objects to concatenate"; name the real cause instead
+        # so the failure is actionable (ING-2).
+        raise ValueError(
+            "no drifter snapshot CSVs found — the share zip's internal folder is "
+            "empty or was renamed (upstream layout change)"
+        )
     return pd.concat((pd.read_csv(path) for path in csv_paths), ignore_index=True)
 
 
@@ -97,6 +106,12 @@ def clean(raw: pd.DataFrame) -> pd.DataFrame:
     out["D_number"] = out["D_number"].astype(str)
     out["date_UTC"] = _parse_dates(out["date_UTC"])
     out = out.dropna(subset=["date_UTC"]).reset_index(drop=True)
+    # `keep="first"` (the default) keeps the earliest snapshot's copy of a repeated
+    # (D_number, date_UTC) fix. This assumes a fix's identity implies an identical
+    # payload — i.e. upstream never revises a fix's coordinates under the same
+    # timestamp. If it ever does, the correction would be silently dropped; switch to
+    # `keep="last"` only after confirming the snapshot concatenation order is
+    # chronological (ING-5).
     out = out.drop_duplicates(subset=["D_number", "date_UTC"], ignore_index=True)
     out["batch"] = out["D_number"].map(load_deployments()).fillna(PRE_DEPLOY_BATCH)
     return out
@@ -109,7 +124,9 @@ def tracks(raw: pd.DataFrame) -> pd.DataFrame:
     return valid.sort_values(["D_number", "date_UTC"], ignore_index=True)
 
 
-def awaiting(raw: pd.DataFrame) -> list[str]:
-    """D_numbers that have no valid fix in any snapshot, sorted."""
-    fixed = set(tracks(raw)["D_number"])
-    return sorted(set(raw["D_number"]) - fixed)
+def awaiting(clean: pd.DataFrame, tracks: pd.DataFrame) -> list[str]:
+    """D_numbers present in ``clean`` but with no valid fix — i.e. absent from the
+    already-computed ``tracks`` frame — sorted. Takes ``tracks`` rather than
+    recomputing :func:`tracks` (its sentinel filter + sort) that the caller already
+    holds (ING-3)."""
+    return sorted(set(clean["D_number"]) - set(tracks["D_number"]))

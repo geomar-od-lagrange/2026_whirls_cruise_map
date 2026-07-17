@@ -32,9 +32,12 @@ import xarray as xr
 from . import _geo, _time
 
 # Integrate this far forward, with this RK4 sub-step and this polyline-vertex
-# spacing (minutes). The marks (hours) and vertex spacing must divide the step
-# evenly so each mark lands exactly on an emitted vertex; at ~0.5 m/s a particle
-# moves ~1 grid cell in 6 h, so the scheme is not delicate.
+# spacing (minutes). ``step_min`` must divide the vertex spacing and each mark
+# interval (in minutes) evenly — the code snaps marks/vertices to the nearest
+# sub-step via ``round(interval / step_min)``, so a non-dividing knob would land a
+# mark on the wrong step. (With the shipped defaults 5 min divides 15 min and 60/180/
+# 360 min.) At ~0.5 m/s a particle moves ~1 grid cell in 6 h, so the scheme is not
+# delicate.
 HORIZON_H = 6.0
 STEP_MIN = 5.0
 VERTEX_MIN = 15.0
@@ -172,8 +175,9 @@ def _integrate(
 
     The four cadence knobs default to the module constants (the build's ±6 h,
     1/3/6 h forecast); the interactive deployment API passes its own (e.g. a +48 h
-    horizon, marks every 3 h). ``mark_hours`` and ``vertex_min`` must divide ``step_min``
-    evenly so each mark lands on an emitted vertex."""
+    horizon, marks every 3 h). ``step_min`` must divide ``vertex_min`` and each
+    ``mark_hours`` interval evenly (they are snapped to the nearest sub-step via
+    ``round(...)``), so each mark lands on an emitted vertex."""
     dt = direction * step_min * 60.0
     n_steps = round(horizon_h * 60.0 / step_min)
     vertex_every = round(vertex_min / step_min)

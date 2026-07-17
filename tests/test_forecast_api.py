@@ -81,15 +81,11 @@ def _build_store(store_dir, first: date, last: date, fetch_day=None) -> dict:
 @pytest.fixture(autouse=True)
 def _fresh_field_index():
     """The API's field-index cache and forecast response cache are module globals —
-    reset both around every test so one test's store or cached run can never leak
-    into the next's."""
-    _api._index = None
-    _api._index_mtime = None
-    _api._cached_batch_run.cache_clear()
+    reset both around every test (via the one `_reset_caches` entrypoint, API-2) so one
+    test's store or cached run can never leak into the next's."""
+    _api._reset_caches()
     yield
-    _api._index = None
-    _api._index_mtime = None
-    _api._cached_batch_run.cache_clear()
+    _api._reset_caches()
 
 
 @pytest.fixture
