@@ -575,6 +575,18 @@ def test_day_cache_cap_for_starts_scales_with_spread():
     assert _field_store.day_cache_cap_for_starts(7 * 86400.0, 0.0) == week_spread
 
 
+def test_day_cache_cap_for_starts_is_clamped_to_the_ceiling():
+    """SEC-1 backstop: however wide the start spread, the cap can never exceed
+    ``_MAX_DAY_CACHE_CAP`` — so no single run can pin an unbounded number of day
+    files resident. A spread that would ask for more degrades to bounded cache
+    thrash inside that ceiling rather than an OOM. (The API rejects such a spread
+    up front; this clamp guards the store even if some caller doesn't.)"""
+    huge = _field_store.day_cache_cap_for_starts(0.0, 100 * 86400.0)
+    assert huge == _field_store._MAX_DAY_CACHE_CAP
+    # A custom lower ceiling is honoured too.
+    assert _field_store.day_cache_cap_for_starts(0.0, 100 * 86400.0, max_cap=5) == 5
+
+
 def test_store_field_wide_seed_start_spread_does_not_thrash_the_day_cache(tmp_path, monkeypatch):
     """Reproduces the reported pathology: a batch whose still-active seeds start
     on far-apart calendar days (here, one seed per day across an 8-day span)

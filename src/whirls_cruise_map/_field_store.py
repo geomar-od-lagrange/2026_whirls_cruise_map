@@ -482,7 +482,7 @@ def load_window(store_dir: Path | str | None = None, *, t0: datetime, t1: dateti
 # build and the PoC API read today, but the deployment API's runs cover the full
 # cruise span (``plans/done/034-deployment-focused-app.md``, workstream B), where
 # loading every touched day file whole would put the entire field back in API
-# RAM — exactly what streaming exists to avoid (the API pod's 3 Gi limit).
+# RAM — exactly what streaming exists to avoid (the API pod's 4 Gi limit).
 # ``StoreField`` is the streaming alternative: a drop-in for
 # ``_forecast._Field`` (the same ``lons``/``lats``/``times``/``u``/``v``/
 # ``velocity()`` contract the scalar ``_Field.velocity`` and the vectorized
@@ -499,9 +499,23 @@ def load_window(store_dir: Path | str | None = None, *, t0: datetime, t1: dateti
 
 _DEFAULT_DAY_CACHE_CAP = 4  # ~200 MB at ~50 MB/day file (see the module docstring)
 
+# Hard ceiling on the per-request day-cache cap, whatever start spread a caller
+# asks for. Each resident day is ~50 MB, so this bounds one run's field residency
+# at ~500 MB; with the API's concurrency gate (:data:`_api._MAX_CONCURRENCY`) that
+# keeps several concurrent forecast runs inside the pod's memory limit. It is the
+# memory backstop for SEC-1: even if a request's seed-start spread slipped past the
+# API's spread guard (:data:`_api._MAX_START_SPREAD_DAYS`), the cache can never pin
+# more than this many day files at once — a wider spread degrades to cache thrash
+# (bounded by the seeds x hours budget), never an OOM.
+_MAX_DAY_CACHE_CAP = 10
+
 
 def day_cache_cap_for_starts(
-    min_start_epoch: float, max_start_epoch: float, *, default: int = _DEFAULT_DAY_CACHE_CAP
+    min_start_epoch: float,
+    max_start_epoch: float,
+    *,
+    default: int = _DEFAULT_DAY_CACHE_CAP,
+    max_cap: int = _MAX_DAY_CACHE_CAP,
 ) -> int:
     """The day-cache cap a batch needs so its currently-active seeds' distinct
     calendar days all stay resident at once, given the earliest/latest seed
@@ -517,9 +531,14 @@ def day_cache_cap_for_starts(
     start spread makes every step thrash the cache — evicting and reopening
     day files it just evicted — the moment the spread exceeds the cap (see
     :class:`_DayArrayCache`). ``+ 2`` covers the bracketing pair (``jt``,
-    ``jt+1``) at each end of the spread."""
+    ``jt+1``) at each end of the spread. The result is clamped to ``max_cap``
+    (:data:`_MAX_DAY_CACHE_CAP`) so no single run can pin an unbounded number of
+    day files resident — the SEC-1 memory backstop; the API rejects a spread wide
+    enough to hit the clamp before it gets here (see
+    :data:`_api._MAX_START_SPREAD_DAYS`), so in normal operation the clamp never
+    binds."""
     spread_days = math.ceil(abs(max_start_epoch - min_start_epoch) / 86400.0)
-    return max(default, spread_days + 2)
+    return min(max_cap, max(default, spread_days + 2))
 
 
 class _DayArrayCache:
