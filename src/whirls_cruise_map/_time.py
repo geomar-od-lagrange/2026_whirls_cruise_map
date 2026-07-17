@@ -62,3 +62,44 @@ def parse_iso_to_epoch(s: str) -> float:
 def now_iso() -> str:
     """Wall-clock now as ISO-8601 UTC ``Z`` (second precision)."""
     return iso_z_from_epoch(to_epoch(datetime.now(timezone.utc)))
+
+
+def parse_fix_time(raw) -> datetime | None:
+    """Tolerantly parse an instrument fix time to a tz-aware **UTC** ``datetime``;
+    ``None`` if unparseable. The WHIRLS feeds mix four encodings and the format no longer
+    tracks the platform type (even the seagliders differ), so it is detected per value
+    (SRC-3 — one parser for ``_gliders``/``_ship``/``_agulhas``):
+
+    - Unix epoch seconds, e.g. ``1783078052.0`` (a Seaglider);
+    - ISO with no offset, read as UTC (a Seaglider; also the Agulhas
+      ``YYYY-MM-DD HH:MM``);
+    - ISO with an explicit offset, e.g. ``...+00:00`` / ``...+0000`` (XSPAR, the MD API);
+    - day-first ``DD/MM/YYYY HH:MM:SS`` (the SeaExplorer glider), read as UTC.
+
+    On Python >= 3.11 :func:`datetime.fromisoformat` absorbs the offset and no-seconds
+    ISO variants directly, so the day-first branch is strictly a fallback after it.
+    Naive results are taken as UTC; offset-aware ones are normalised to UTC."""
+    if not isinstance(raw, str):
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    # A bare number is Unix epoch seconds; an ISO string fails float() and falls
+    # through to the parsers below.
+    try:
+        epoch = float(raw)
+    except ValueError:
+        pass
+    else:
+        try:
+            return datetime.fromtimestamp(epoch, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        try:
+            dt = datetime.strptime(raw, "%d/%m/%Y %H:%M:%S")  # SeaExplorer day-first, UTC
+        except ValueError:
+            return None
+    return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)

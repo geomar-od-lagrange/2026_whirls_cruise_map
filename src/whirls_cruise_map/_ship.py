@@ -12,23 +12,14 @@ import json
 import urllib.request
 from datetime import datetime, timezone
 
+from . import _time
+
 # `MD` is the Marion Dufresne. Start well before the cruise so port/transit fixes
 # are covered; the API returns whatever it holds within the window.
 POSITIONS_URL = (
     "https://localisation.flotteoceanographique.fr/api/v2/vessels/MD/positions"
 )
 TRACK_START = "2026-06-20T00:00:00.000Z"
-
-
-def _parse_time(s: str) -> datetime | None:
-    """Parse the API's `date` (e.g. ``2026-07-01T20:20:00.000+0000``) to a
-    tz-aware UTC datetime; ``None`` if unparseable."""
-    try:
-        return datetime.fromisoformat(s.replace("+0000", "+00:00")).astimezone(
-            timezone.utc
-        )
-    except (ValueError, AttributeError):
-        return None
 
 
 def fetch_raw() -> str | None:
@@ -60,7 +51,7 @@ def parse(text: str) -> list[tuple[datetime, float, float]]:
     for p in raw:
         if not isinstance(p, dict):
             continue  # a well-formed JSON list of non-objects must not raise
-        t = _parse_time(p.get("date", ""))
+        t = _time.parse_fix_time(p.get("date", ""))
         lat, lon = p.get("lat"), p.get("lon")
         if t is not None and isinstance(lat, (int, float)) and isinstance(
             lon, (int, float)
