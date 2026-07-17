@@ -538,17 +538,22 @@ function updatePointHeads(ms) {
   }
 }
 
-// Register an observed track for clock clipping. `segs` are the per-fix-pair
-// polylines ({ line, t0, t1, a, b } — see addTrackSegments); `coords`/`fixes` give
-// the vertex samples (a vertex with no finite date_UTC can't be placed on the clock
-// and is skipped); `headKey` names the layer's head controller; `tip(fix, latlng, i,
-// fixes)` renders the head's tooltip for the bracketing fix while scrubbed back (the
-// index + array let the ships derive motion from the preceding fix). Under two timed
-// samples there is nothing to scrub. Applies the current clock immediately.
-function registerTrackClock(group, segs, coords, fixes, headKey, tip) {
-  const times = [], lats = [], lngs = [], timedFixes = [];
+// Register an observed track (one multi-part polyline — see addTrack) for clock
+// clipping. `coords`/`fixes` give the vertex samples (a vertex with no finite date_UTC
+// can't be placed on the clock and is skipped for the head interpolation); `blanked[i]`
+// marks the leg i->i+1 as a de-spike gap (drawn/clipped as a break); `headKey` names the
+// layer's head controller; `tip(fix, latlng, i, fixes)` renders the head's tooltip for
+// the bracketing fix while scrubbed back (the index + array let the ships derive motion
+// from the preceding fix). Under two timed samples there is nothing to scrub. `pts`/`vt`
+// are every drawn vertex + its time (finite or NaN) so clipTrack can rebuild the clipped
+// path; `times`/`lats`/`lngs` are the timed-only subset the head interpolates over.
+// Applies the current clock immediately.
+function registerTrackClock(group, line, coords, fixes, blanked, headKey, tip) {
+  const pts = [], vt = [], times = [], lats = [], lngs = [], timedFixes = [];
   (coords ?? []).forEach(([lng, lat], i) => {
+    pts.push([lat, lng]);
     const t = Date.parse(fixes?.[i]?.date_UTC);
+    vt.push(t);
     if (Number.isFinite(t)) {
       times.push(t);
       lats.push(lat);
@@ -557,14 +562,80 @@ function registerTrackClock(group, segs, coords, fixes, headKey, tip) {
     }
   });
   if (times.length < 2) return null;
-  const entry = { group, segs, times, lats, lngs, fixes: timedFixes, headKey, tip, trimmed: null };
+  const entry = { group, line, pts, vt, blanked: blanked ?? [], times, lats, lngs, fixes: timedFixes, headKey, tip };
   trackClockEntries.push(entry);
   if (headKey != null) trackedHeadKeys.add(headKey);
   clipTrack(entry, atTimeClockMs);
   return entry;
 }
 
-// Show/hide one segment by group membership (cheap when nothing changes; works
+// Clip one track to clock `ms` and move its head. Two entry shapes share this: the
+// observed drifter/glider tracks are one polyline (`entry.line`, clipLineTrack); the
+// ship keeps its per-segment SVG build (`entry.segs`, clipSegTrack).
+function clipTrack(entry, ms) {
+  if (ms == null) return;
+  if (entry.line) clipLineTrack(entry, ms);
+  else clipSegTrack(entry, ms);
+}
+
+// Observed track (one multi-part polyline): set its latlngs to the vertices up to the
+// clock (split at de-spike gaps), ending the in-progress part at the interpolated head.
+// A vertex with no finite time rides its preceding timed vertex (`eff`), matching the
+// old "a non-finite segment stays shown with the track"; the head still interpolates
+// over the timed samples only.
+function clipLineTrack(entry, ms) {
+  const { line, pts, vt, blanked, times, lats, lngs, headKey } = entry;
+  const head = trackHeads[headKey];
+  const last = times[times.length - 1];
+
+  if (ms >= last) {
+    line.setLatLngs(splitAtGaps(pts, blanked));
+    head?.latest();
+    return;
+  }
+  if (ms < times[0]) {
+    line.setLatLngs([]);
+    head?.hide();
+    return;
+  }
+
+  // Head position: interpolate over the timed samples (bracketing pair around ms).
+  let ti = 0;
+  while (ti < times.length - 1 && times[ti + 1] < ms) ti++;
+  const t0 = times[ti], t1 = times[ti + 1];
+  const f = t1 === t0 ? 0 : (ms - t0) / (t1 - t0);
+  const pos = L.latLng(
+    lats[ti] + f * (lats[ti + 1] - lats[ti]),
+    lngs[ti] + f * (lngs[ti + 1] - lngs[ti])
+  );
+
+  // Line: every drawn vertex at or before ms, split at gaps; the in-progress part ends
+  // at the head unless the crossing leg is itself a gap (then the head floats over it).
+  const parts = [];
+  let cur = [], eff = -Infinity, done = false;
+  for (let i = 0; i < pts.length && !done; i++) {
+    if (Number.isFinite(vt[i])) eff = vt[i];
+    if (eff > ms) break;
+    cur.push(pts[i]);
+    if (i === pts.length - 1) break;
+    if (blanked[i]) {
+      parts.push(cur);
+      cur = [];
+      continue;
+    }
+    const nextEff = Number.isFinite(vt[i + 1]) ? vt[i + 1] : eff;
+    if (nextEff > ms) {
+      cur.push([pos.lat, pos.lng]);
+      done = true;
+    }
+  }
+  if (cur.length) parts.push(cur);
+  line.setLatLngs(parts);
+
+  head?.at(pos, entry.tip ? entry.tip(entry.fixes[ti], pos, ti, entry.fixes) : null);
+}
+
+// Show/hide one ship segment by group membership (cheap when nothing changes; works
 // whether or not the group itself is on the map).
 function setSegShown(entry, seg, on) {
   if (seg.on === on) return;
@@ -573,12 +644,11 @@ function setSegShown(entry, seg, on) {
   else entry.group.removeLayer(seg.line);
 }
 
-// Clip one observed track to clock `ms` and move its head. A segment with a
-// non-finite time can't be placed on the clock, so it stays shown whenever any of
-// the track shows (only the before-first-sample branch hides it, with everything
-// else).
-function clipTrack(entry, ms) {
-  if (ms == null) return;
+// Ship track (per-segment SVG): show/hide whole segments by clock and trim the one
+// crossing segment to the interpolated position. A segment with a non-finite time can't
+// be placed on the clock, so it stays shown whenever any of the track shows (only the
+// before-first-sample branch hides it, with everything else).
+function clipSegTrack(entry, ms) {
   const { segs, times, lats, lngs, headKey } = entry;
   const head = trackHeads[headKey];
   const last = times[times.length - 1];
@@ -752,11 +822,13 @@ function restyleLine(line, state, base) {
 }
 
 // The drifter + glider true tracks render on a shared **canvas** renderer, not the
-// default SVG one. "Show tracks" reveals ~100k fix-to-fix segments; as SVG that is
-// ~100k <path> DOM nodes the browser must lay out, composite, and hit-test on every
-// pan/zoom — the "Show tracks" lag. A canvas renderer draws them all in one redraw
-// with no DOM, so pan/zoom stays smooth (hover/click hit-testing and bringToFront
-// still work, done by the renderer). They share the default overlayPane (400).
+// default SVG one, and each track is ONE multi-part polyline (see addTrack), not one
+// polyline per fix-to-fix segment. "Show tracks" reveals ~100k fix samples; as SVG
+// that is a <path> DOM node per segment to lay out, composite, and hit-test on every
+// pan/zoom. On canvas, a few dozen polylines (one per instrument) draw in one redraw
+// with no DOM — and, crucially, Leaflet re-projects/re-strokes a few dozen paths at
+// zoomend instead of ~100k, so zoom stays smooth (plan 050). Hover/click hit-testing
+// and bringToFront still work, done by the renderer. They share the overlayPane (400).
 //
 // Only ONE full-viewport track canvas may exist: a canvas hit-tests its whole
 // rectangle (transparent or not), so a second track canvas above this one would
@@ -766,17 +838,17 @@ function restyleLine(line, state, base) {
 const _trackRenderers = {};
 const trackRenderer = (pane) => (_trackRenderers[pane] ??= L.canvas({ pane }));
 
-// Build a track as one polyline *per fix-to-fix segment* rather than a single
-// line plus a dot at every fix. The segments abut into one continuous line, but
-// each carries its own hover tooltip — the tooltip that used to live on the
-// per-fix dot — so hovering anywhere along the track shows that leg's fix
-// (no separate dot markers; the whole line is the hover target). `tip(fix, latlng)`
-// renders the fix tooltip; each segment registers for click-to-highlight under
-// `key` (a drifter D_number or glider id) and selects it on click. Segment i
-// (coords[i] -> coords[i+1]) is tagged with fix i at its start; the final fix is
-// the instrument's latest-position head marker, so every fix stays reachable.
-// Returns the segments with their endpoints + time span ({ line, t0, t1, a, b, on })
-// so registerTrackClock can clip the track at the app clock.
+// Build a track as ONE (multi-part) polyline for the whole instrument rather than
+// one polyline per fix-to-fix segment. A per-segment build is ~100k separate canvas
+// paths that Leaflet re-projects and re-strokes individually on every zoomend (the
+// zoom stutter, plan 050); one polyline per track is a few dozen paths total, each a
+// single stroke of many points — what a canvas renderer is fast at. The whole line is
+// still the hover target: one sticky tooltip whose content is resolved on mousemove to
+// the fix nearest the cursor (`tip(fix, latlng)`), the per-leg hover of the old design
+// without ~100k tooltip objects. `key` (a drifter D_number or glider id) registers the
+// line for click-to-highlight and selects it on click. Blanked >24 h de-spike gaps are
+// drawn as disjoint parts (`splitAtGaps`). Returns the line; registerTrackClock holds
+// the timed vertices so clipTrack can clip it to the app clock.
 // A drifter/glider fix is an out-and-back GPS spike when the implied speed is anomalous
 // on BOTH the segment arriving at it and the one leaving it (a genuine fast leg trips
 // only one). `derived_speed_mps[i]` is the speed INTO fix i, so fix i is a spike when
@@ -818,34 +890,62 @@ function displayTrack(coords, fixes, hide) {
   return { coords: keep.map((i) => coords[i]), fixes: keep.map((i) => fixes[i]), skipSeg };
 }
 
-function addTrackSegments(group, coords, fixes, key, tip, skipSeg, color) {
-  const base = color ?? TRACK_COLOR; // per-instrument identity colour for this track's lines
-  const pts = coords.map(([lng, lat]) => [lat, lng]);
-  const segs = [];
-  for (let i = 0; i < pts.length - 1; i++) {
-    if (skipSeg?.[i]) continue; // blanked de-spiked gap (> 24 h) — draw no segment (#30)
-    const seg = L.polyline([pts[i], pts[i + 1]], {
-      renderer: trackRenderer("overlayPane"), // canvas, not one SVG <path> per segment
-      color: base,
-      weight: 2,
-      opacity: 1,
-      bubblingMouseEvents: false, // background clicks (not this) clear selection
-    }).addTo(group);
-    seg.bindTooltip(tip(fixes?.[i] ?? {}, L.latLng(pts[i])), { sticky: true });
-    if (key != null) {
-      registerPart(key, (s) => restyleLine(seg, s, base), "trackseg");
-      seg.on("click", () => selectInstrument(key));
+// Split a track's [lat,lng] vertices into contiguous runs, breaking at each blanked
+// (> 24 h de-spike gap) leg so the multi-part polyline draws no line across the gap.
+function splitAtGaps(pts, blanked) {
+  const parts = [];
+  let cur = [];
+  for (let i = 0; i < pts.length; i++) {
+    cur.push(pts[i]);
+    if (i < pts.length - 1 && blanked?.[i]) {
+      parts.push(cur);
+      cur = [];
     }
-    segs.push({
-      line: seg,
-      t0: Date.parse(fixes?.[i]?.date_UTC),
-      t1: Date.parse(fixes?.[i + 1]?.date_UTC),
-      a: pts[i],
-      b: pts[i + 1],
-      on: true,
-    });
   }
-  return segs;
+  if (cur.length) parts.push(cur);
+  return parts;
+}
+
+// Index of the track vertex nearest `ll` (squared lat/lng distance — the track is a
+// small local patch, so planar is fine). Scans this one track's vertices on hover.
+function nearestVertexIdx(pts, ll) {
+  let best = 0;
+  let bd = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const dLat = pts[i][0] - ll.lat;
+    const dLng = pts[i][1] - ll.lng;
+    const d = dLat * dLat + dLng * dLng;
+    if (d < bd) {
+      bd = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+function addTrack(group, coords, fixes, key, tip, skipSeg, color) {
+  const base = color ?? TRACK_COLOR; // per-instrument identity colour for this track's line
+  const pts = coords.map(([lng, lat]) => [lat, lng]);
+  const line = L.polyline(splitAtGaps(pts, skipSeg), {
+    renderer: trackRenderer("overlayPane"), // canvas, one path for the whole track
+    color: base,
+    weight: 2,
+    opacity: 1,
+    bubblingMouseEvents: false, // background clicks (not this) clear selection
+  }).addTo(group);
+  // One sticky tooltip for the whole track; its content follows the cursor to the
+  // nearest fix (the old per-segment hover, without a tooltip per segment).
+  line.bindTooltip("", { sticky: true });
+  const showTip = (e) => {
+    const i = nearestVertexIdx(pts, e.latlng);
+    line.setTooltipContent(tip(fixes?.[i] ?? {}, L.latLng(pts[i])));
+  };
+  line.on("mouseover mousemove", showTip);
+  if (key != null) {
+    registerPart(key, (s) => restyleLine(line, s, base), "trackseg");
+    line.on("click", () => selectInstrument(key));
+  }
+  return line;
 }
 
 // A fixed "deployment dot" at a track's deployment point (its first free-drift fix —
@@ -899,9 +999,9 @@ function updateDeploymentDots(ms) {
 function buildObservedTrack(src) {
   const { group, coords, fixes, key, tip } = src;
   const d = displayTrack(coords, fixes, hideOutliers);
-  const segs = addTrackSegments(group, d.coords, d.fixes, key, tip, d.skipSeg, src.color);
-  const entry = registerTrackClock(group, segs, d.coords, d.fixes, key, tip);
-  const handle = { group, segs, entry };
+  const line = addTrack(group, d.coords, d.fixes, key, tip, d.skipSeg, src.color);
+  const entry = registerTrackClock(group, line, d.coords, d.fixes, d.skipSeg, key, tip);
+  const handle = { group, line, entry };
   observedTrackHandles.push(handle);
   return handle;
 }
@@ -912,7 +1012,7 @@ function buildObservedTrack(src) {
 // deployment dots are untouched (built once, outside this path).
 function rebuildObservedTracks() {
   for (const h of observedTrackHandles) {
-    for (const seg of h.segs) h.group.removeLayer(seg.line);
+    h.group.removeLayer(h.line);
     if (h.entry) {
       const idx = trackClockEntries.indexOf(h.entry);
       if (idx >= 0) trackClockEntries.splice(idx, 1);
@@ -1018,14 +1118,14 @@ function buildTracksChip(map, { initial, onToggle }) {
 const TRACK_COLOR = "#e07b39";
 
 // Trajectories, grouped by `batch` so each batch's lines toggle with that batch's
-// markers (see buildInstrumentRows). Each drifter's track is drawn as one polyline
-// per fix-to-fix segment (see addTrackSegments), so the whole line is a hover
-// target: hovering a segment shows *that fix's* own time, battery, and
+// markers (see buildInstrumentRows). Each drifter's track is drawn as one multi-part
+// polyline (see addTrack), and the whole line is a hover
+// target: hovering the track shows *the nearest fix's* own time, battery, and
 // reported/derived velocity — read from the per-vertex `fixes` array that rides
 // parallel to `coordinates`, and filled into the same popup as the drifter's main
 // marker. Tolerates a `fixes`-less artifact from an older build: the tooltip then
 // falls back to the line-level identity (D_number/batch) with an unknown time.
-// Segments are interactive: clicking one selects the drifter (see selectInstrument).
+// The line is interactive: clicking it selects the drifter (see selectInstrument).
 // Returns { batch: featureGroup }.
 function buildTrackGroups(geojson, markerGroups) {
   const groups = {};
@@ -1703,9 +1803,9 @@ function buildGliderMarkerGroups(geojson) {
 
 // Glider tracks, one feature group per `type`, keyed like buildGliderMarkerGroups
 // so they ride the "True track" overlay against the matching instrument row. Per
-// platform (from its track LineString): a per-segment line whose segments each
-// carry that fix's hover tooltip — mirroring buildTrackGroups (see
-// addTrackSegments), and (like it) registered for click-to-highlight under the
+// platform (from its track LineString): one multi-part polyline whose hover shows
+// the nearest fix's tooltip — mirroring buildTrackGroups (see
+// addTrack), and (like it) registered for click-to-highlight under the
 // platform `id`, so clicking a glider's line or its head selects it. Drawn in the
 // platform's own identity colour (gliderStyle(type).color) — the same colour as its
 // marker and head, so line = dot = head like the drifters (#35, docs/palette.md).
@@ -1974,8 +2074,10 @@ const byDate = (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
 // A plain track at the drifter-track width in the vessel's own colour (no cased halo,
 // no per-fix dots — plan 034, decision 8), plus a ship marker, in one feature group
 // for the given `vessel` spec (colours, name, per-fix rows). The track is drawn as one
-// polyline per fix-to-fix segment (like the drifter tracks — addTrackSegments), each
-// segment carrying that fix's hover tooltip, so the along-track times stay readable
+// polyline per fix-to-fix segment (the ship keeps the per-segment SVG build — few
+// segments, and a second full-viewport track canvas would swallow the drifter/glider
+// canvas's hover; the drifter/glider tracks moved to one canvas polyline each, addTrack),
+// each segment carrying that fix's hover tooltip, so the along-track times stay readable
 // without dots. The track and the ship marker follow the app clock (plan 035): the
 // track clips to the fixes at or before the clock and the marker rides its clipped
 // end (showing the bracketing fix's tooltip), parking at the latest fix when the
@@ -2182,19 +2284,25 @@ async function main() {
     // for reading dense drops/tracks (#27).
     zoomSnap: 0.5,
     zoomDelta: 0.5,
+    // Don't animate the marker pane ahead of the raster layers. Markers are DOM/vector
+    // and Leaflet snaps them to their final positions at the *start* of a zoom, while
+    // the tiles, WebP shadings, and the track canvas only re-rasterize at `zoomend` —
+    // so the markers visibly "lead" and the rest catches up. Disabling the separate
+    // marker zoom animation lands the whole scene together at zoom end (plan 050).
+    markerZoomAnimation: false,
   });
 
   // Track line weight scales with zoom (see trackWeight): thin lines when zoomed
   // out so overlapping tracks stay separable, a touch heavier zoomed in. Re-run
-  // the registered restylers whenever the zoom lands so every segment picks up
+  // the registered restylers whenever the zoom lands so every track picks up
   // the new weight.
   trackZoom = map.getZoom();
   map.on("zoomend", () => {
     const prevBucket = weightBucket(trackZoom);
     trackZoom = map.getZoom();
-    // Skip the ~100k-part restyle sweep when the zoom stayed within one weight band
-    // (#7): the weight is then identical, so re-styling every segment is pure waste.
-    // Most zoomends — the half-level steps (#42) — don't cross a band boundary.
+    // Skip the restyle sweep when the zoom stayed within one weight band (#7): the
+    // weight is then identical, so re-styling every track is pure waste. Most
+    // zoomends — the half-level steps (#42) — don't cross a band boundary.
     if (weightBucket(trackZoom) !== prevBucket) applySelection();
   });
 
