@@ -45,6 +45,37 @@ MIME/cache are otherwise fine: both nginx confs `include mime.types` and serve `
 `application/javascript`; no gateway conf sets `Cache-Control`, so multiple module files
 aren't cache-pinned.
 
+## Rollout status (2026-07-18)
+
+Session progress, newest facts here so a resumed session has the full picture:
+
+- **Merged to `main`:** G1 (!33), G2 (!34), G3 (!35), G4a (!36), G4b (!37), G4c (!38),
+  G4d (!39), G4e SRC-1/3/4 (!42), G4f FC-2 (!43), G5a (!40), G5b (!44), G7 (!41).
+- **Open MRs awaiting the user's browser validation:**
+  - **!45 — G6** (branch `audit/g6-selection-clock`): FS-2 (selection → `core/selection.js`),
+    FS-3 (clock fan-out → `core/clock.js`), FS-4 (controls → `core/controls.js`), **plus a
+    perf follow-up** (makeSelection uses a plain property, not a getter — fixed a
+    select-all/first-paint stutter the user reported). Rebased on main; statically verified
+    (tsc 0 ref-errors, esbuild, node-check); needs the running map eyeballed.
+  - **!46 — SEC-1 principled fix ("#40")** (branch `audit/sec1-resync-spread-fix`):
+    wall-clock resync in `_batch_advect` bounds memory by the horizon window, removes
+    `_MAX_START_SPREAD_DAYS`; bit-identical, 179 tests pass. Backend-only; reviewed
+    line-by-line. Safe to merge on review; the user wanted it landed.
+- **Remaining, in order:**
+  1. **API-1** — fold into #46's area (`_get_field_index` → `(span, version)` one locked
+     result, drop `_field_version`'s out-of-lock assert). NOT started; note the reload test
+     `test_forecast_api.py:428` asserts `_get_field_index() is _index` → update to `[0]`.
+  2. **DER-3** — move `_currents` layer-neutral privates (`_quantize_unit`, `_slice_at`,
+     `frame_valid_time`, `frame_filename`, `N_BINS`) into a shared `_frames.py`; own MR off
+     clean main. Safe relocation.
+  3. **Wrap-up** — once G6 + #46 land: move this plan to `plans/done/`, mark the review doc
+     actioned. (SRC-2 deliberately skipped — verifier-down-graded, render-pixel risk.)
+- **Dev tooling added (G5a):** `pixi run check-frontend` = `tsc --checkJs` (0 cross-module
+  reference errors is the split's blank-page guard) + `esbuild --bundle` for the import graph.
+- **DEPLOY note:** already carried by G5a's commit; the deploy repo makes the `site/map/` copy
+  recursive. New module files (config/format/api/features/deploy/core/*) ride that — no further
+  deploy change per MR.
+
 ## MR groups
 
 - [x] **G1 — SEC-1: cap field-cache residency** (M) · *urgent, land first* · **landed** (MR !33)
