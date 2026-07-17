@@ -300,27 +300,69 @@ def _derive_fast(data_dir: Path, map_dir: Path) -> None:
         print(f"WARNING: agulhas.json failed: {exc}")
 
 
-def _derive_slow(data_dir: Path, map_dir: Path, refetch_all: bool = False) -> None:
-    """CMEMS-derived overlays (needs a Copernicus login). Each render is
-    independent, so one failing leaves the others (and the last-good file)."""
-    # Top up the incremental per-day field store first (fetch every missing or
-    # non-final day; see _field_store) so the window read just below is served
-    # entirely from disk — no CMEMS fetch on the request path below this step.
-    # A killed run resumes here next time; --refetch-all forces a full re-pull.
-    try:
-        manifest = _field_store.update_store(refetch_all=refetch_all)
-        n_final = sum(1 for d in manifest["days"].values() if d["final"])
-        print(f"field store: {len(manifest['days'])} day(s) on disk, {n_final} final")
-    except Exception as exc:
-        print(f"WARNING: field store update failed: {exc}")
+def _write_frames(map_dir: Path, frames: list[dict]) -> None:
+    """Atomically write each ``{file, image}`` render frame under ``map_dir`` — the one
+    write loop the three raster renderers (speed, flow, vorticity) share."""
+    for fr in frames:
+        _data.atomic_write_bytes(map_dir / fr["file"], fr["image"])
 
-    # Absolute-time shading frames, rendered incrementally. The frame grid spans every
-    # 12 h step from FIELD_TMIN (floored to 00Z) through the 6-hourly product's forecast
-    # edge; only frames that aren't yet final (missing, recent, or forecast) are
-    # (re)rendered, and the 6-hourly fetch covers just that span. One fetch feeds the
-    # coarse vector grid (trails), the speed raster and the ζ/f raster; none needs the
-    # tracks. See _currents.plan_render / docs/currents.md.
-    shading, grid, to_render = None, None, None
+
+def _render_currents(map_dir: Path, shading, grid: list, to_render: list, now: datetime) -> None:
+    """Speed + flow rasters, the static land/sea basemap, and ``currents_meta.json`` off
+    the fetched ``shading`` window. Owns its ``try/except`` so a failure here leaves the
+    vorticity render and last-good files intact."""
+    try:
+        frames, meta = _currents.to_speed_frames(shading, to_render)
+        _write_frames(map_dir, frames)
+        _write_frames(map_dir, _currents.to_flowvis_frames(shading, to_render))
+        # Static land/sea basemap (#29): one gray-land/blue-sea WebP baked from the
+        # field's own NaN land pattern, co-registered with the shading bounds. Time-
+        # invariant, so it rides along with the (already-fetched) window at no extra
+        # egress; the frontend draws it in a pane below the shadings, reusing meta.bounds.
+        landmask, _ = _currents.to_landmask_webp(shading)
+        _data.atomic_write_bytes(map_dir / "landmask.webp", landmask)
+        meta["landmask"] = "landmask.webp"
+        meta["valid_time"] = _currents.nearest_valid_time(grid, now)
+        meta["frames"] = _currents.frame_manifest("speed", grid)
+        meta["flow_frames"] = _currents.frame_manifest("flowvis", grid, ext="webp")
+        _write_json(map_dir / "currents_meta.json", meta)
+        print(
+            f"rendered {len(frames)}/{len(grid)} speed + flow frames "
+            f"(now {meta['valid_time']}, vmax {meta['vmax']:.2f} {meta['units']})"
+        )
+    except Exception as exc:
+        print(f"WARNING: currents render failed: {exc}")
+
+
+def _render_vorticity(map_dir: Path, shading, grid: list, to_render: list, now: datetime) -> None:
+    """ζ/f rasters + ``vorticity_meta.json`` off the same ``shading`` window. Owns its
+    ``try/except`` (independent of the currents render above)."""
+    try:
+        vframes, vmeta = _vorticity.to_vorticity_frames(shading, to_render)
+        _write_frames(map_dir, vframes)
+        vmeta["valid_time"] = _currents.nearest_valid_time(grid, now)
+        vmeta["frames"] = _currents.frame_manifest("vorticity", grid)
+        _write_json(map_dir / "vorticity_meta.json", vmeta)
+        print(
+            f"rendered {len(vframes)}/{len(grid)} vorticity frames "
+            f"(now {vmeta['valid_time']}, |ζ/f| clip {vmeta['vmax']:.2f})"
+        )
+    except Exception as exc:
+        print(f"WARNING: vorticity render failed: {exc}")
+
+
+def _render_shadings(map_dir: Path, refetch_all: bool) -> None:
+    """Fetch the 6-hourly shading window once and render every overlay that rides it
+    (speed/flow, ζ/f), then prune stale frames. The window is a **local** here, so it is
+    released the moment this returns — freeing the ~225 MB before the inertial step
+    builds its own, with no manual ``del``/``gc.collect()`` (the spike the old code
+    hand-managed is now just a normal scope exit).
+
+    The frame grid spans every 12 h step from FIELD_TMIN (floored to 00Z) through the
+    6-hourly product's forecast edge; only frames not yet final (missing, recent, or
+    forecast) are (re)rendered, and the fetch covers just that span. One fetch feeds the
+    coarse vector grid (trails), the speed raster and the ζ/f raster; none needs the
+    tracks. See _currents.plan_render / docs/currents.md."""
     try:
         now = datetime.now(timezone.utc)
         t_lo = _currents.frame_tmin()
@@ -337,98 +379,86 @@ def _derive_slow(data_dir: Path, map_dir: Path, refetch_all: bool = False) -> No
         to_render = _currents.plan_render(grid, existing, now)
     except Exception as exc:
         print(f"WARNING: CMEMS field fetch failed, skipping currents overlays: {exc}")
+        return
+    if not grid:
+        return
 
-    if shading is not None and grid:
-        try:
-            frames, meta = _currents.to_speed_frames(shading, to_render)
-            for fr in frames:
-                _data.atomic_write_bytes(map_dir / fr["file"], fr["image"])
-            flow_frames = _currents.to_flowvis_frames(shading, to_render)
-            for fr in flow_frames:
-                _data.atomic_write_bytes(map_dir / fr["file"], fr["image"])
-            # Static land/sea basemap (#29): one gray-land/blue-sea WebP baked from the
-            # field's own NaN land pattern, co-registered with the shading bounds. Time-
-            # invariant, so it rides along with the (already-fetched) window at no extra
-            # egress; the frontend draws it in a pane below the shadings, reusing meta.bounds.
-            landmask, _ = _currents.to_landmask_webp(shading)
-            _data.atomic_write_bytes(map_dir / "landmask.webp", landmask)
-            meta["landmask"] = "landmask.webp"
-            meta["valid_time"] = _currents.nearest_valid_time(grid, now)
-            meta["frames"] = _currents.frame_manifest("speed", grid)
-            meta["flow_frames"] = _currents.frame_manifest("flowvis", grid, ext="webp")
-            _write_json(map_dir / "currents_meta.json", meta)
-            print(
-                f"rendered {len(frames)}/{len(grid)} speed + flow frames "
-                f"(now {meta['valid_time']}, vmax {meta['vmax']:.2f} {meta['units']})"
-            )
-        except Exception as exc:
-            print(f"WARNING: currents render failed: {exc}")
+    _render_currents(map_dir, shading, grid, to_render, now)
+    _render_vorticity(map_dir, shading, grid, to_render, now)
 
-        try:
-            vframes, vmeta = _vorticity.to_vorticity_frames(shading, to_render)
-            for fr in vframes:
-                _data.atomic_write_bytes(map_dir / fr["file"], fr["image"])
-            vmeta["valid_time"] = _currents.nearest_valid_time(grid, now)
-            vmeta["frames"] = _currents.frame_manifest("vorticity", grid)
-            _write_json(map_dir / "vorticity_meta.json", vmeta)
-            print(
-                f"rendered {len(vframes)}/{len(grid)} vorticity frames "
-                f"(now {vmeta['valid_time']}, |ζ/f| clip {vmeta['vmax']:.2f})"
-            )
-        except Exception as exc:
-            print(f"WARNING: vorticity render failed: {exc}")
-
-        # Prune retired offset-named frames and any absolute frame no longer in the span
-        # so stale artifacts never linger (meta/non-frame files are left untouched).
-        try:
-            removed = _currents.prune_stale_frames(map_dir, grid)
-            if removed:
-                print(f"pruned {len(removed)} stale frame file(s)")
-        except Exception as exc:
-            print(f"WARNING: frame pruning failed: {exc}")
-
-    # Free the shading window before the inertial step builds its own hourly window +
-    # complex NI array; nothing below needs it. Guard on the fetch alone, not `grid`:
-    # fetch_shading_window can succeed while a *later* line in its try/except raises
-    # (e.g. window_frame_edge on an empty time axis), leaving `shading` bound but `grid`
-    # None — otherwise ~225 MB would stay pinned through the inertial step, the exact
-    # second spike this frees.
-    if shading is not None:
-        del shading
-        gc.collect()
-
-    # A separate hourly window feeds the near-inertial animation decomposition,
-    # sampling the current at its own clock time. The deployment forecast API
-    # reads the field store directly instead (whirls_cruise_map._api), so this
-    # window only needs to cover that one consumer here — see _currents.py.
-    window = None
+    # Prune retired offset-named frames and any absolute frame no longer in the span
+    # so stale artifacts never linger (meta/non-frame files are left untouched).
     try:
-        now = datetime.now(timezone.utc)
+        removed = _currents.prune_stale_frames(map_dir, grid)
+        if removed:
+            print(f"pruned {len(removed)} stale frame file(s)")
+    except Exception as exc:
+        print(f"WARNING: frame pruning failed: {exc}")
+
+
+def _render_inertial(map_dir: Path) -> None:
+    """Load a fresh hourly window (the shading window is already freed by the time this
+    runs) and write the near-inertial decomposition. Owns its ``try/except``.
+
+    A separate hourly window feeds the near-inertial animation decomposition, sampling
+    the current at its own clock time. The deployment forecast API reads the field store
+    directly instead (whirls_cruise_map._api), so this window only serves this one
+    consumer here — see _currents.py."""
+    now = datetime.now(timezone.utc)
+    try:
         window = _field_store.load_window(
             t0=now - timedelta(hours=_currents.WINDOW_BACK_H),
             t1=now + timedelta(hours=_currents.WINDOW_FWD_H),
         )
     except Exception as exc:
         print(f"WARNING: field store window load failed, skipping inertial field: {exc}")
+        return
+    try:
+        # The decomposition relies on the window spanning under an inertial period (so
+        # the joint least-squares keeps mean vs NI separated — see _inertial.decompose).
+        # ``window`` is already sized to WINDOW_BACK_H/WINDOW_FWD_H (24 h) plus one
+        # bracket hour each end (_field_store.load_window brackets outside [t0, t1]);
+        # slice off the extra top-bracket hour so the decomposition gets exactly the
+        # 24 h + low-bracket span it was tuned against. Low edge unchanged, so
+        # t_ref-nearest-now is unchanged too.
+        span_h = _currents.WINDOW_BACK_H + _currents.WINDOW_FWD_H
+        hi = window["time"].values[0] + np.timedelta64(span_h + 1, "h")
+        narrow = window.sel(time=slice(None, hi))
+        decomp = _inertial.decompose(narrow)
+        _write_json(map_dir / "inertial_field.json", _inertial.to_inertial_field_json(decomp))
+        print(f"wrote inertial_field.json (valid {decomp.attrs['t_ref']})")
+    except Exception as exc:
+        print(f"WARNING: inertial field step failed: {exc}")
 
-    if window is not None:
-        try:
-            # The decomposition relies on the window spanning under an inertial
-            # period (so the joint least-squares keeps mean vs NI separated — see
-            # _inertial.decompose). ``window`` is already sized to WINDOW_BACK_H/
-            # WINDOW_FWD_H (24 h) plus one bracket hour each end
-            # (_field_store.load_window brackets outside [t0, t1]); slice off the
-            # extra top-bracket hour so the decomposition gets exactly the 24 h +
-            # low-bracket span it was tuned against. Low edge unchanged, so
-            # t_ref-nearest-now is unchanged too.
-            span_h = _currents.WINDOW_BACK_H + _currents.WINDOW_FWD_H
-            hi = window["time"].values[0] + np.timedelta64(span_h + 1, "h")
-            narrow = window.sel(time=slice(None, hi))
-            decomp = _inertial.decompose(narrow)
-            _write_json(map_dir / "inertial_field.json", _inertial.to_inertial_field_json(decomp))
-            print(f"wrote inertial_field.json (valid {decomp.attrs['t_ref']})")
-        except Exception as exc:
-            print(f"WARNING: inertial field step failed: {exc}")
+
+def _derive_slow(data_dir: Path, map_dir: Path, refetch_all: bool = False) -> None:
+    """CMEMS-derived overlays (needs a Copernicus login). A thin orchestrator: top up the
+    incremental per-day field store, render the shading overlays off one shared window
+    (released before the next step), then the near-inertial field. Each render is
+    independent — one failing leaves the others and the last-good file — so each owns its
+    own ``try/except`` in the helper it lives in."""
+    # Top up the field store first (fetch every missing or non-final day; see
+    # _field_store) so the window reads below are served entirely from disk — no CMEMS
+    # fetch on the render path. A killed run resumes here next time; --refetch-all forces
+    # a full re-pull.
+    try:
+        manifest = _field_store.update_store(refetch_all=refetch_all)
+        n_final = sum(1 for d in manifest["days"].values() if d["final"])
+        print(f"field store: {len(manifest['days'])} day(s) on disk, {n_final} final")
+    except Exception as exc:
+        print(f"WARNING: field store update failed: {exc}")
+
+    _render_shadings(map_dir, refetch_all)
+    # `_render_shadings`'s shading window (and its render locals) are unbound on its
+    # return, so a plain refcount frees them here — but the slow derive is OOM-sensitive
+    # (plans/045-slow-derive-oom.md) and the shading window is an xarray Dataset that can
+    # carry an internal reference cycle, which only a collection reclaims. One forced
+    # collection at the phase boundary guarantees the ~225 MB is gone before the inertial
+    # step loads its own window (the spike the old in-orchestrator `del`/`gc` was written
+    # against). The per-variable hand-management is gone; this is a single, documented
+    # phase-boundary release.
+    gc.collect()
+    _render_inertial(map_dir)
 
 
 def derive(data_dir: Path, map_dir: Path, tier: str = "all", refetch_all: bool = False) -> None:
