@@ -23,6 +23,17 @@ function resolveApi(path) {
   if (location.port === "8000")
     return `${location.protocol}//${location.hostname}:8001${path}`;
   const m = location.pathname.match(/^(.*\/)map\//);
+  // The deployed map always lives under a `.../map/` prefix, so a non-match means the
+  // site is mounted somewhere unexpected. The old silent fallback (`prefix = ""`)
+  // re-rooted the API at the origin root — the very "origin-root assumption" the design
+  // disclaims — so a mis-mount pointed the seed POST at the wrong place with no signal.
+  // Warn loudly instead of failing silently (FE-5).
+  if (!m)
+    console.warn(
+      `resolveApi: map path "${location.pathname}" is not under a ".../map/" prefix; ` +
+        `falling back to the origin-root "${path}". If the map is mounted at a non-map ` +
+        `subpath, the forecast API will mis-resolve.`,
+    );
   const prefix = m ? m[1].replace(/\/$/, "") : "";
   return `${prefix}${path}`;
 }
@@ -35,10 +46,28 @@ export const FORECAST_API = resolveApi("/api/forecast");
 // proactive over-cap check, letting the server's bounded request model reject the
 // POST instead (rendered by placeDeployment's error path via `apiErrorText`).
 let deployLimitsPromise = null;
+const LIMITS_TIMEOUT_MS = 10_000;
 export function getDeployLimits() {
-  deployLimitsPromise ??= fetch(resolveApi("/api/forecast/limits"))
-    .then((r) => (r.ok ? r.json() : null))
-    .catch(() => null);
+  // Bound the probe with an AbortController (FE-3): a backend that accepts the
+  // connection but never responds would otherwise leave this promise unsettled forever,
+  // and since it's memoised every later placement would await the same dead promise. On
+  // timeout/failure the promise settles to null (the client skips its proactive over-cap
+  // check; the server's bounded request model still enforces the cap) AND the memo is
+  // cleared, so a later call retries rather than being pinned to the failure.
+  deployLimitsPromise ??= (async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), LIMITS_TIMEOUT_MS);
+    try {
+      const r = await fetch(resolveApi("/api/forecast/limits"), { signal: controller.signal });
+      if (r.ok) return await r.json();
+    } catch {
+      /* network error / timeout-abort — fall through to reset + null */
+    } finally {
+      clearTimeout(timer);
+    }
+    deployLimitsPromise = null; // don't memoise a failure — let a later placement retry
+    return null;
+  })();
   return deployLimitsPromise;
 }
 
