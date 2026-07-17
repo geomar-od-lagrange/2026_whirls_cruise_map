@@ -31,7 +31,7 @@ import xarray as xr
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from whirls_cruise_map import _api, _field_store
+from whirls_cruise_map import _api, _field_store, _forecast
 
 # --- synthetic store builder ---------------------------------------------------
 
@@ -276,29 +276,105 @@ def test_run_entirely_outside_the_store_reach_skips_everything(store):
     assert out["features"] == []
 
 
-# --- wide seed-start spread does not thrash the streaming field's day cache --
+# --- seed-start spread: bounded for memory (SEC-1), sized so it doesn't thrash ---
 
 
-def test_wide_seed_start_spread_is_accepted(store):
-    """A wide seed-start spread runs normally — there is no per-request spread bound.
-    The real deployed drifters' last fixes span the whole cruise (deployments days/
-    weeks apart), so a single batch of drifter seeds must be allowed to cover that.
-    The field store is the finite cruise window, so the worst case is just holding its
-    whole span resident (its own size); the day cache is still sized to the batch's
-    spread, covered by ``test_field_store
-    .test_store_field_wide_seed_start_spread_does_not_thrash_the_day_cache``."""
-    wide = [
+def test_seed_start_spread_within_the_cap_is_accepted(store):
+    """A seed-start spread up to ``_MAX_START_SPREAD_DAYS`` runs normally — an active
+    cruise's in-water drifters report every few hours, so the observed-forecast batch's
+    last-fix spread is well inside the cap. The day cache is sized to the batch's actual
+    spread so it never thrashes (covered by ``test_field_store
+    .test_store_field_wide_seed_start_spread_does_not_thrash_the_day_cache``)."""
+    spread = [
         _api.Seed(lon=10.5, lat=-34.0, start="2026-07-01T00:00:00Z"),
-        _api.Seed(lon=10.5, lat=-34.0, start="2026-07-08T00:00:00Z"),  # 168 h spread
+        _api.Seed(lon=10.5, lat=-34.0, start="2026-07-08T00:00:00Z"),  # 7-day spread <= cap
     ]
-    out = _api._batch_run(wide, horizon_h=240.0, direction="forward")
+    out = _api._batch_run(spread, horizon_h=240.0, direction="forward")
     assert out["properties"]["tracks"] == 2
     assert out["properties"]["skipped"] == 0
+
+
+def test_seed_start_spread_beyond_the_cap_is_rejected(store):
+    """SEC-1: an in-window seed-start spread wider than ``_MAX_START_SPREAD_DAYS`` is
+    rejected (ValueError -> 422), because such a batch would pin that many distinct
+    calendar days of field resident at once (~50 MB/day) — a cheap request that could
+    OOM the pod under concurrency. Both seeds here stay alive (long horizon), so the
+    guard sees the full 10-day spread rather than skipping the far one."""
+    wide = [
+        _api.Seed(lon=10.5, lat=-34.0, start="2026-06-29T00:00:00Z"),
+        _api.Seed(lon=10.5, lat=-34.0, start="2026-07-09T00:00:00Z"),  # 10-day spread > cap
+    ]
+    with pytest.raises(ValueError, match="spread too wide"):
+        _api._batch_run(wide, horizon_h=500.0, direction="forward")
+
+
+def test_out_of_window_stragglers_do_not_count_toward_the_spread(store):
+    """The spread guard measures only *in-window* (alive) seeds: a far-future straggler
+    that is skipped-and-counted must not, by itself, trip the spread rejection, since it
+    never grows the day cache. The two in-window seeds span < the cap, so the run
+    succeeds and only the straggler is skipped."""
+    seeds = [
+        _api.Seed(lon=10.5, lat=-34.0, start="2026-07-01T00:00:00Z"),
+        _api.Seed(lon=10.5, lat=-34.0, start="2026-07-03T00:00:00Z"),
+        _api.Seed(lon=10.5, lat=-34.0, start="2099-01-01T00:00:00Z"),  # far outside, skipped
+    ]
+    out = _api._batch_run(seeds, horizon_h=72.0, direction="forward")
+    assert out["properties"]["tracks"] == 2
+    assert out["properties"]["skipped"] == 1
 
 
 def test_no_seeds_raises_value_error(store):
     with pytest.raises(ValueError, match="no seeds"):
         _api._batch_run([], horizon_h=24.0, direction="forward")
+
+
+def test_run_semaphore_bounds_concurrent_advection(store, monkeypatch):
+    """SEC-1: at most ``_MAX_CONCURRENCY`` runs may hold a field resident at once, so
+    concurrent memory-heavy requests can't stack past the pod limit. Deterministic (no
+    sleeps): each advection blocks on an Event inside the semaphore while a counter
+    records peak concurrency; once more threads than the cap are launched, the observed
+    peak must equal — never exceed — the cap."""
+    import threading
+
+    cap = _api._MAX_CONCURRENCY
+    lock = threading.Lock()
+    state = {"cur": 0, "peak": 0}
+    entered = threading.Semaphore(0)  # counts how many threads reached the gated region
+    release = threading.Event()
+    real_advect = _forecast._batch_advect
+
+    def gated(*args, **kwargs):
+        with lock:
+            state["cur"] += 1
+            state["peak"] = max(state["peak"], state["cur"])
+        entered.release()
+        assert release.wait(timeout=10), "release never signalled"
+        try:
+            return real_advect(*args, **kwargs)
+        finally:
+            with lock:
+                state["cur"] -= 1
+
+    monkeypatch.setattr(_forecast, "_batch_advect", gated)
+
+    seeds = [_api.Seed(lon=10.5, lat=-34.0, start="2026-07-03T00:00:00Z")]
+    threads = [
+        threading.Thread(target=_api._batch_run, args=(seeds, 24.0, "forward"), daemon=True)
+        for _ in range(cap + 2)
+    ]
+    for t in threads:
+        t.start()
+    # Wait until exactly `cap` threads have entered the gated region; the extra two must
+    # be blocked on the semaphore, unable to enter, so no further `entered` release comes.
+    for _ in range(cap):
+        assert entered.acquire(timeout=10), "a run failed to enter under the semaphore"
+    assert not entered.acquire(timeout=0.5), "more than the cap entered concurrently"
+    assert state["peak"] == cap
+
+    release.set()  # let them all finish
+    for t in threads:
+        t.join(timeout=10)
+        assert not t.is_alive()
 
 
 # --- limits v2 -----------------------------------------------------------------
@@ -308,6 +384,7 @@ def test_limits_v2_shape(store):
     out = _api.limits()
     assert out["max_seeds"] == _api._MAX_SEEDS
     assert out["max_seed_hours"] == _api._MAX_SEED_HOURS
+    assert out["max_start_spread_days"] == _api._MAX_START_SPREAD_DAYS
     assert out["window"] == [_STORE_LO, _STORE_HI]
     assert out["analysis_edge"].endswith("Z")
 
@@ -422,6 +499,7 @@ def test_limits_response_stays_uncompressed_below_minimum_size(store):
     assert resp.json() == {
         "max_seeds": _api._MAX_SEEDS,
         "max_seed_hours": _api._MAX_SEED_HOURS,
+        "max_start_spread_days": _api._MAX_START_SPREAD_DAYS,
         "window": [_STORE_LO, _STORE_HI],
         "analysis_edge": resp.json()["analysis_edge"],
     }

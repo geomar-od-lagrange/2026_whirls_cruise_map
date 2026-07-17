@@ -44,12 +44,19 @@ store's currently available contiguous span (rebuilt only when the manifest's
 mtime changes — one ``stat`` per request, same shape as the old single-file
 mtime dance); each request then opens a fresh
 :class:`whirls_cruise_map._field_store.StoreField` over just the span its run
-needs, so API memory stays flat regardless of how long the run or how wide the
-store, however many days it spans (the API pod's 3 Gi limit). A missing or
-empty store → 503; the static map still serves.
+needs, streaming day files through a bounded day cache so a run holds only a
+handful of days resident however long it runs. What it does *not* bound by
+itself is the seed-start *spread*: since :func:`_forecast._batch_advect` never
+resyncs seeds to a shared wall clock, seeds started on far-apart calendar days
+keep that many days resident at once. Two run-time guards cap that (SEC-1):
+:data:`_MAX_START_SPREAD_DAYS` rejects a run whose in-window starts span too many
+days, and :data:`_MAX_CONCURRENCY` gates how many runs hold a field at once, so
+peak memory stays inside the API pod's 4 Gi limit. A missing or empty store →
+503; the static map still serves.
 """
 from __future__ import annotations
 
+import math
 import threading
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -86,6 +93,51 @@ _MAX_SEEDS = 2000
 # and gzip). A request over budget gets a 422 naming the excess, not a slow 200 or a
 # gateway-killed request.
 _MAX_SEED_HOURS = 1_000_000
+
+# SEC-1 memory bound. The seeds x hours budget above caps *compute*, but not resident
+# *memory*: `_batch_advect` never resyncs seeds to a shared wall clock, so at every
+# step the still-active seeds' absolute times differ by exactly their original start
+# spread, and the streaming field must keep that many distinct calendar days resident
+# at once (~50 MB/day). A cheap request (small budget) that places seeds one-per-store
+# -day therefore pins the store's whole span in RAM and, run a few times concurrently,
+# OOM-kills the pod. Two constants below are the whole memory contract, tied together
+# by one budget. A run's field residency is capped not at the spread but at the LRU
+# cap `_field_store.day_cache_cap_for_starts` derives from it — spread + 2 bracketing
+# days, ceilinged at `_MAX_DAY_CACHE_CAP` (= `_MAX_START_SPREAD_DAYS` + 2 = 10). The
+# semaphore multiplies BOTH that field residency and the transient trajectory buffer
+# `_batch_advect` allocates (~180 MB at budget — the audit's FC-1, shrinks once that
+# lands) by `_MAX_CONCURRENCY`:
+#
+#     (_MAX_START_SPREAD_DAYS + 2) x ~50 MB/day x _MAX_CONCURRENCY   field days
+#   + ~180 MB trajectory buffer                 x _MAX_CONCURRENCY   (FC-1)
+#   + ~0.7 Gi base process
+#   = (8+2) x 50 MB x 3  +  180 MB x 3  +  0.7 Gi  ~=  1.5 + 0.5 + 0.7  ~=  2.7 Gi < 4 Gi
+#
+#   * `_MAX_START_SPREAD_DAYS` — reject (422) a run whose in-window seed starts span
+#     more than this many calendar days, so one run's field residency is bounded
+#     (~10 days x 50 MB ~= 500 MB, the +2 bracket included) regardless of how cheap
+#     its compute is. `_field_store._MAX_DAY_CACHE_CAP` is the matching hard backstop
+#     inside the cache itself, so even a request that somehow slips the guard can
+#     never pin more than the ceiling.
+#   * `_MAX_CONCURRENCY` — a semaphore around the memory-heavy advection so at most
+#     this many runs hold a field resident at once.
+#
+# WHY 8, AND HOW TO RAISE IT. A real *observation* forecast staggers water-entry over
+# hours, and an active cruise's drifters all report within a reporting cycle, so 8 days
+# never binds in normal use. It is deliberately the ONE knob to turn if the app is
+# repurposed for wider-spread *planning* runs — e.g. "here is a 20-day cruise track;
+# lay 200 drifters equidistant in time and forecast each," which needs a ~20-day start
+# spread. To support that: raise `_MAX_START_SPREAD_DAYS` to cover the widest planned
+# spread AND drop `_MAX_CONCURRENCY` so the budget above still clears the pod limit
+# (e.g. 20-day spread -> (20+2) x 50 MB x 2 + 180 MB x 2 + 0.7 Gi ~= 2.2 + 0.4 + 0.7
+# ~= 3.3 Gi < 4 Gi), then bump the pod's memory limit if you need both wide and
+# concurrent. Do not raise the spread alone.
+# The deeper fix that removes the trade-off entirely — resync seeds to a shared wall
+# clock in `_batch_advect` so residency tracks the *horizon window* not the start
+# spread — is out of scope here (see the review's SEC-1 / FC-1 notes).
+_MAX_START_SPREAD_DAYS = 8
+_MAX_CONCURRENCY = 3
+_run_semaphore = threading.BoundedSemaphore(_MAX_CONCURRENCY)
 
 _DEFAULT_HORIZON_H = 48.0
 
@@ -227,7 +279,10 @@ class ForecastRequest(BaseModel):
     (:data:`_MAX_SEED_HOURS`) bounds worst-case compute + serialization to stay well
     inside the edge router's ~60 s timeout even when neither knob alone would.
     ``allow_inf_nan`` rejects ``inf``/``nan``, and ``extra="forbid"`` rejects unknown
-    fields (422, not silently ignored)."""
+    fields (422, not silently ignored). Resident *memory* is bounded separately, at run
+    time: a run whose in-window seed starts span more than :data:`_MAX_START_SPREAD_DAYS`
+    calendar days is rejected (422) so no cheap request can pin the whole field store in
+    RAM (SEC-1)."""
 
     model_config = {"extra": "forbid"}
     seeds: list[Seed] = Field(max_length=_MAX_SEEDS)
@@ -318,57 +373,79 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
     # Size the streaming field's day cache to the advected seeds' actual start spread
     # (out-of-window stragglers are skipped-and-counted, never sampled, so they don't
     # grow it). _batch_advect never resyncs seeds to a shared wall clock, so far-apart
-    # starts keep that many days resident for the run — the cap tracks exactly that.
-    # The spread is otherwise unbounded on purpose: the field store *is* the finite
-    # cruise window, so the worst case is holding its whole span resident (~50 MB/day),
-    # which is just the store's own size — no separate per-request bound is needed.
+    # starts keep that many distinct calendar days resident for the whole run
+    # (~50 MB/day) — the cap tracks exactly that. Bound it (SEC-1): reject a run whose
+    # in-window starts span more than _MAX_START_SPREAD_DAYS, so one run can never pin
+    # more than that many days resident however cheap its compute; the semaphore below
+    # then bounds how many such runs hold a field at once. A real deployment staggers
+    # water-entry over hours, so this only ever fires on the pathological one-per-day
+    # placement the guard exists to stop.
     alive_starts = starts[alive0]
     if alive_starts.size:
+        spread_days = math.ceil(
+            (float(alive_starts.max()) - float(alive_starts.min())) / 86400.0
+        )
+        if spread_days > _MAX_START_SPREAD_DAYS:
+            raise ValueError(
+                f"seed-start spread too wide: in-window seeds span {spread_days} "
+                f"calendar days > {_MAX_START_SPREAD_DAYS} max (would pin that many "
+                f"days of field resident at once); stagger water-entry over a narrower "
+                f"window or split into separate deployments"
+            )
         day_cache_cap = _field_store.day_cache_cap_for_starts(
             float(alive_starts.min()), float(alive_starts.max())
         )
     else:
         day_cache_cap = _field_store._DEFAULT_DAY_CACHE_CAP
-    field = _field_store.StoreField(
-        None, _from_epoch(clipped_lo), _from_epoch(clipped_hi), day_cache_cap=day_cache_cap
-    )
+
+    seed_lon = np.array([s.lon for s in seeds], dtype=np.float64)
+    seed_lat = np.array([s.lat for s in seeds], dtype=np.float64)
     n_steps = np.where(
         alive0, np.round(horizon_i * 60.0 / _forecast.STEP_MIN).astype(int), 0
     )
-    seed_lon = np.array([s.lon for s in seeds], dtype=np.float64)
-    seed_lat = np.array([s.lat for s in seeds], dtype=np.float64)
-    positions, completed = _forecast._batch_advect(
-        field, seed_lon, seed_lat, starts, n_steps, direction=sign
-    )
 
-    nd = _forecast._COORD_NDIGITS
-    features: list[dict] = []
-    n_tracks = 0
-    n_skipped = 0
-    for i in range(len(seeds)):
-        if not alive0[i]:
-            n_skipped += 1
-            continue
-        cs = int(completed[i])
-        coords = [
-            [round(float(positions[i, s, 0]), nd), round(float(positions[i, s, 1]), nd)]
-            for s in range(0, cs + 1, vertex_every)
-        ]
-        if len(coords) < 2:
-            n_skipped += 1  # head on land / off the field (truncated at step 0)
-            continue
-        features.append({
-            "type": "Feature",
-            "geometry": {"type": "LineString", "coordinates": coords},
-            "properties": {
-                "role": "track",
-                "index": i,
-                "start": _iso(starts[i]),
-                "cadence_s": cadence_s,
-                "direction": direction,
-            },
-        })
-        n_tracks += 1
+    # Everything above is cheap validation/setup; only from here does a field get
+    # opened and the trajectory buffer materialised, so the concurrency gate wraps
+    # exactly the memory-heavy span (SEC-1). Cached responses never reach here — the
+    # lru_cache in `_cached_batch_run` short-circuits before `_batch_run` is called —
+    # so a page-load flood of the identical observed-forecast request doesn't queue on
+    # the semaphore.
+    with _run_semaphore:
+        field = _field_store.StoreField(
+            None, _from_epoch(clipped_lo), _from_epoch(clipped_hi), day_cache_cap=day_cache_cap
+        )
+        positions, completed = _forecast._batch_advect(
+            field, seed_lon, seed_lat, starts, n_steps, direction=sign
+        )
+
+        nd = _forecast._COORD_NDIGITS
+        features: list[dict] = []
+        n_tracks = 0
+        n_skipped = 0
+        for i in range(len(seeds)):
+            if not alive0[i]:
+                n_skipped += 1
+                continue
+            cs = int(completed[i])
+            coords = [
+                [round(float(positions[i, s, 0]), nd), round(float(positions[i, s, 1]), nd)]
+                for s in range(0, cs + 1, vertex_every)
+            ]
+            if len(coords) < 2:
+                n_skipped += 1  # head on land / off the field (truncated at step 0)
+                continue
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": coords},
+                "properties": {
+                    "role": "track",
+                    "index": i,
+                    "start": _iso(starts[i]),
+                    "cadence_s": cadence_s,
+                    "direction": direction,
+                },
+            })
+            n_tracks += 1
 
     return {
         "type": "FeatureCollection",
@@ -475,6 +552,7 @@ def limits() -> dict:
     return {
         "max_seeds": _MAX_SEEDS,
         "max_seed_hours": _MAX_SEED_HOURS,
+        "max_start_spread_days": _MAX_START_SPREAD_DAYS,
         "window": [_iso(_epoch(field_lo)), _iso(_epoch(field_hi))],
         "analysis_edge": now_iso,
     }

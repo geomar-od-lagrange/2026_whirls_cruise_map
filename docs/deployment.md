@@ -146,8 +146,28 @@ containing "now", its two edges probed for their actual first/last time steps �
 when the manifest's mtime changes. Every request then opens a fresh
 `_field_store.StoreField` scoped to just the span its own run needs (the run's anchor
 through its common end, clipped to what the store actually has loaded): a bounded LRU
-of day arrays, not the whole field, so API memory stays flat regardless of how long
-the run or how wide the store grows (the pod's 3 Gi limit).
+of day arrays, not the whole field, so a single run holds only a handful of days
+resident however long it runs. Peak *memory* is then bounded across requests by two
+run-time guards (SEC-1) rather than by run length alone: a run whose in-window seed
+starts span more than `_api._MAX_START_SPREAD_DAYS` calendar days is rejected (422),
+and a `_MAX_CONCURRENCY` semaphore caps how many runs hold a field at once, keeping
+peak resident memory inside the pod's 4 Gi limit.
+
+These two constants are the whole memory contract, tied by one budget. A run's field
+residency is `(_MAX_START_SPREAD_DAYS + 2) × ~50 MB/day` (the +2 is the LRU's bracketing
+pair, ceilinged at `_field_store._MAX_DAY_CACHE_CAP = 10`), and `_MAX_CONCURRENCY`
+multiplies both that and the ~180 MB transient trajectory buffer per run — at the shipped
+8 / 3 that is `(8+2)×50 MB×3 + 180 MB×3 + ~0.7 Gi base ≈ 2.7 Gi < 4 Gi`. The 8-day spread
+never binds an observation forecast (active drifters report within hours), so it is
+deliberately the **one knob to turn** for wider-spread *planning* runs — e.g. "here is a
+20-day cruise track; lay 200 drifters equidistant in time and forecast each," which needs
+a ~20-day start spread. To support that, raise `_MAX_START_SPREAD_DAYS` to cover the
+widest planned spread **and** lower `_MAX_CONCURRENCY` so the budget still clears the pod
+limit (e.g. `(20+2)×50 MB×2 + 180 MB×2 + 0.7 Gi ≈ 3.3 Gi`), or raise the pod's memory
+limit for both wide and concurrent. Raising the spread alone would reopen SEC-1. (The
+deeper fix that removes the trade-off — resync seeds to a shared clock in `_batch_advect`
+so residency tracks the horizon window, not the start spread — is noted in the audit's
+SEC-1/FC-1 but not yet done.)
 
 Because it holds no `cmems-creds` and makes no CMEMS request, the API pod needs **no
 credentials and no internet egress** — the field arrives entirely over the shared

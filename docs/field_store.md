@@ -156,7 +156,7 @@ drop-in. It is used where the span is inherently narrow:
 
 The deployment API's runs cover the **whole cruise span** ([deployment.md](deployment.md),
 API v2), where loading every touched day whole would put the entire field back in
-API RAM — exactly what the pod's 3 Gi limit forbids. `StoreField` is the
+API RAM — exactly what the pod's 4 Gi limit forbids. `StoreField` is the
 streaming alternative: a drop-in for `_forecast._Field` (same
 `lons`/`lats`/`times`/`u`/`v`/`velocity()` contract, so the scalar and vectorized
 RK4 run **unmodified** against it) whose `u`/`v` are not one big array but thin
@@ -169,10 +169,15 @@ by the same per-step `dt` from its own `start`, so the active seeds' absolute
 times differ by exactly their original start spread — a batch whose drops start on
 far-apart calendar days needs that many days resident *for the whole run*.
 `day_cache_cap_for_starts` sizes the LRU cap to the actual seed-start spread, so the
-cache never thrashes. There is no per-request bound on that spread: the store is the
-finite cruise window, so the worst case is holding its whole span resident — its own
-size — which is exactly what lets a single batch forecast every deployed drifter at
-once, their last fixes scattered across the cruise.
+cache never thrashes. That spread **is** bounded, at two levels (SEC-1): the API
+rejects (422) a run whose in-window seed starts span more than
+`_api._MAX_START_SPREAD_DAYS` calendar days, and `day_cache_cap_for_starts` clamps to
+`_MAX_DAY_CACHE_CAP` as a hard backstop, so no single run can pin more than ~10 days
+(~500 MB) resident — a wider spread degrades to bounded cache thrash, never an OOM.
+A real deployment staggers water-entry over hours, so the guard only fires on a
+pathological one-seed-per-store-day placement; a page-load batch forecasting every
+deployed drifter at once still fits, since those last fixes cluster near the store's
+recent edge rather than scattering one-per-day across the whole cruise.
 
 ### The API's field index
 
