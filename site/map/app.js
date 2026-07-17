@@ -234,6 +234,13 @@ function trackWeight(zoom, selected) {
   return selected ? base + 2.5 : base;
 }
 
+// The three zoom bands `trackWeight`'s `base` steps across. A zoomend that stays within
+// one band leaves every track's weight identical, so the full restyle sweep can be
+// skipped (#7).
+function weightBucket(zoom) {
+  return zoom >= MAX_ZOOM - 2 ? 2 : zoom >= MAX_ZOOM - 5 ? 1 : 0;
+}
+
 const stateFor = (key) =>
   key === selectedInstrument ? "selected" : selectedInstrument ? "dim" : "normal";
 
@@ -2610,8 +2617,12 @@ async function main() {
   // the new weight.
   trackZoom = map.getZoom();
   map.on("zoomend", () => {
+    const prevBucket = weightBucket(trackZoom);
     trackZoom = map.getZoom();
-    applySelection();
+    // Skip the ~100k-part restyle sweep when the zoom stayed within one weight band
+    // (#7): the weight is then identical, so re-styling every segment is pure waste.
+    // Most zoomends — the half-level steps (#42) — don't cross a band boundary.
+    if (weightBucket(trackZoom) !== prevBucket) applySelection();
   });
 
   const currentOverlays = {};
@@ -2750,9 +2761,18 @@ async function main() {
   // the flow overlay — one frame each per 12 h step across the covered span, the
   // shadings as lossless-WebP rasters on a frozen colour scale, the flow as pre-rendered
   // static streamline WebP (meta.flow_frames). All snap to the app clock together.
-  const meta = await fetchJSON(DATA.meta, { optional: true });
-  const vorticityMeta = await fetchJSON(DATA.vorticityMeta, { optional: true });
-  const inertialField = await fetchJSON(DATA.inertialField, { optional: true });
+  // Fire every optional fetch concurrently (#6): meta, vorticityMeta, inertialField,
+  // gliders, and awaiting are independent and none blocks fitBounds (only `latest`,
+  // above, does), so awaiting them serially added ~5x RTT to first interactivity on the
+  // at-sea VSAT link. Start the promises here; await each where it is consumed below.
+  const metaP = fetchJSON(DATA.meta, { optional: true });
+  const vorticityMetaP = fetchJSON(DATA.vorticityMeta, { optional: true });
+  const inertialFieldP = fetchJSON(DATA.inertialField, { optional: true });
+  const glidersP = fetchJSON(DATA.gliders, { optional: true });
+  const awaitingP = fetchJSON(DATA.awaiting, { optional: true });
+  const meta = await metaP;
+  const vorticityMeta = await vorticityMetaP;
+  const inertialField = await inertialFieldP;
 
   // Resolve a frame file under the data dir.
   const frameUrl = (file) => DATA.dataBase + file;
@@ -3061,7 +3081,7 @@ async function main() {
   // instruments in the same control as the drifter batches: their latest markers join
   // the instrument rows and their tracks ride the "Show tracks" master (keyed by
   // `type`). Optional so a missing file can't blank the map.
-  const gliders = await fetchJSON(DATA.gliders, { optional: true });
+  const gliders = await glidersP;  // started concurrently up top (#6)
   const gliderMarkerGroups = gliders ? buildGliderMarkerGroups(gliders) : {};
   const gliderTrackGroups = gliders ? buildGliderTrackGroups(gliders, gliderMarkerGroups) : {};
 
@@ -3085,7 +3105,7 @@ async function main() {
   }
 
   // Awaiting-first-fix sidebar.
-  renderAwaiting(await fetchJSON(DATA.awaiting, { optional: true }));
+  renderAwaiting(await awaitingP);  // started concurrently up top (#6)
 
   // Render the active shading's colour scale into the Currents dock legend (below
   // the radios), so only the on-map shading shows a scale and it sits with its
@@ -3255,7 +3275,11 @@ async function main() {
   let agulhasShown = false;
   async function loadAgulhas() {
     if (document.hidden) return;
-    const fixes = await fetchJSON(DATA.agulhas, { optional: true });
+    // Cache-buster (FE-4): this re-polls the static agulhas.json every SHIP.refreshMs so
+    // a rebuild's new fixes appear without a reload — but a static host with any positive
+    // freshness lifetime would keep serving the cached copy and the new fixes would never
+    // surface. Append `?cb=` like the live MD poll does so each re-poll bypasses the cache.
+    const fixes = await fetchJSON(`${DATA.agulhas}?cb=${Date.now()}`, { optional: true });
     if (!Array.isArray(fixes) || !fixes.length) {
       if (!agulhasShown) renderShipInfo(VESSELS.agulhas, null);
       return;
