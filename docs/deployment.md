@@ -156,8 +156,10 @@ peak resident memory inside the pod's 4 Gi limit.
 These two constants are the whole memory contract, tied by one budget. A run's field
 residency is `(_MAX_START_SPREAD_DAYS + 2) × ~50 MB/day` (the +2 is the LRU's bracketing
 pair, ceilinged at `_field_store._MAX_DAY_CACHE_CAP = 10`), and `_MAX_CONCURRENCY`
-multiplies both that and the ~180 MB transient trajectory buffer per run — at the shipped
-8 / 3 that is `(8+2)×50 MB×3 + 180 MB×3 + ~0.7 Gi base ≈ 2.7 Gi < 4 Gi`. The 8-day spread
+multiplies both that and the transient trajectory buffer per run. Since FC-1 landed the
+buffer holds only vertex-cadence rows (not every 5-min sub-step), a few tens of MB even
+at the budget — at the shipped 8 / 3 that is `(8+2)×50 MB×3 + ~0.1 Gi + ~0.7 Gi base ≈
+2.3 Gi < 4 Gi`. The 8-day spread
 never binds an observation forecast (active drifters report within hours), so it is
 deliberately the **one knob to turn** for wider-spread *planning* runs — e.g. "here is a
 20-day cruise track; lay 200 drifters equidistant in time and forecast each," which needs

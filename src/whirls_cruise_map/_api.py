@@ -105,13 +105,15 @@ _MAX_SEED_HOURS = 1_000_000
 # cap `_field_store.day_cache_cap_for_starts` derives from it — spread + 2 bracketing
 # days, ceilinged at `_MAX_DAY_CACHE_CAP` (= `_MAX_START_SPREAD_DAYS` + 2 = 10). The
 # semaphore multiplies BOTH that field residency and the transient trajectory buffer
-# `_batch_advect` allocates (~180 MB at budget — the audit's FC-1, shrinks once that
-# lands) by `_MAX_CONCURRENCY`:
+# `_batch_advect` allocates by `_MAX_CONCURRENCY`. Since FC-1 landed, that buffer holds
+# only vertex-cadence rows (not every 5-min sub-step), ~vertex_every-fold smaller — a
+# few tens of MB even at the budget, so it no longer meaningfully competes with the day
+# residency:
 #
 #     (_MAX_START_SPREAD_DAYS + 2) x ~50 MB/day x _MAX_CONCURRENCY   field days
-#   + ~180 MB trajectory buffer                 x _MAX_CONCURRENCY   (FC-1)
+#   + a few tens of MB trajectory buffer        x _MAX_CONCURRENCY   (vertex-cadence, FC-1)
 #   + ~0.7 Gi base process
-#   = (8+2) x 50 MB x 3  +  180 MB x 3  +  0.7 Gi  ~=  1.5 + 0.5 + 0.7  ~=  2.7 Gi < 4 Gi
+#   = (8+2) x 50 MB x 3  +  ~0.1 Gi  +  0.7 Gi  ~=  1.5 + 0.1 + 0.7  ~=  2.3 Gi < 4 Gi
 #
 #   * `_MAX_START_SPREAD_DAYS` — reject (422) a run whose in-window seed starts span
 #     more than this many calendar days, so one run's field residency is bounded
@@ -418,8 +420,12 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
         field = _field_store.StoreField(
             None, _time.from_epoch(clipped_lo), _time.from_epoch(clipped_hi), day_cache_cap=day_cache_cap
         )
+        # Advect at the fine sub-step but store only at the vertex cadence: the buffer
+        # is ~vertex_every-fold smaller than a full-substep one, and every stored row is
+        # a vertex the response emits (FC-1). `completed` comes back as a vertex index.
         positions, completed = _forecast._batch_advect(
-            field, seed_lon, seed_lat, starts, n_steps, direction=sign
+            field, seed_lon, seed_lat, starts, n_steps, direction=sign,
+            vertex_every=vertex_every,
         )
 
         nd = _forecast._COORD_NDIGITS
@@ -430,10 +436,10 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
             if not alive0[i]:
                 n_skipped += 1
                 continue
-            cs = int(completed[i])
+            cv = int(completed[i])  # last good vertex row for this seed
             coords = [
-                [round(float(positions[i, s, 0]), nd), round(float(positions[i, s, 1]), nd)]
-                for s in range(0, cs + 1, vertex_every)
+                [round(float(positions[i, v, 0]), nd), round(float(positions[i, v, 1]), nd)]
+                for v in range(0, cv + 1)
             ]
             if len(coords) < 2:
                 n_skipped += 1  # head on land / off the field (truncated at step 0)
