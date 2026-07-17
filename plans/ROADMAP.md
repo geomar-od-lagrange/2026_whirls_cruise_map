@@ -388,15 +388,18 @@ move to `done/` and gain a `docs/` counterpart.
     a durable **status-line clause** in the dock, both reading *"drag the clock to draw the
     drift"* (one shared `SCRUB_HINT`, direction-agnostic). **Done**
     ([docs/deployment.md](../docs/deployment.md), *A fresh deployment needs a scrub*).
-43. [Full-audit remediation](049-full-audit-remediation.md) — rollout of the
+43. [Full-audit remediation](done/049-full-audit-remediation.md) — rollout of the
     2026-07-17 full-repo review ([docs/reviews/2026-07-17-full-audit.md](../docs/reviews/2026-07-17-full-audit.md))
     as sequenced focused MRs merged straight to `main`, no staging branch: G1 SEC-1
     (urgent field-cache memory cap), G2 web-surface hardening, G3 shared
     `_geo.py`/`_time.py` primitives (before G4), G4 backend/forecast/ingest refactors,
-    G5 the `app.js` ES-module split (**carries a cross-repo DEPLOY note in its commit
-    body** — the frontend build's per-file copy allowlist must go recursive or the new
-    modules 404 in production), G6 frontend selection/clock refactors, G7 frontend
-    correctness. Only SEC-1 is operationally urgent. **Open.**
+    G5 the `app.js` ES-module split (**carried a cross-repo DEPLOY note in its commit
+    body** — the frontend build's per-file copy allowlist went recursive so the new
+    modules ship), G6 frontend selection/clock refactors, G7 frontend correctness. A
+    deploy-surfaced spread issue (#40) was then fixed at the root — `_batch_advect`
+    resyncs seeds to a shared wall clock, bounding forecast memory by the horizon
+    window and retiring the coarse spread cap. **Done** (all groups on `main`; SRC-2
+    skipped as a net-negative merge — see the plan's Rollout record).
 
 Deferred / not in these batches: **#16** (CMEMS rollover validation), **#17** (static
 streamlines), **#25** (re-enable flow/near-inertial overlays), **#31** (xspar/float

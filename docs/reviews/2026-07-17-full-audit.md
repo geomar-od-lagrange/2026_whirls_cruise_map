@@ -1,5 +1,11 @@
 # Full repository review — 2026-07-17
 
+> **Actioned (2026-07-18).** The findings below were rolled out as sequenced MRs
+> under [`plans/done/049-full-audit-remediation.md`](../../plans/done/049-full-audit-remediation.md),
+> which carries the per-group MR list. Every group landed on `main`; one finding
+> (SRC-2, a forced `_render_frames` merge) was deliberately skipped as a net
+> negative. This snapshot is kept as the historical record of *what was found*.
+
 Point-in-time audit of the whole `2026_whirls_cruise_map` codebase, focused on
 three packages plus a standalone security pass:
 

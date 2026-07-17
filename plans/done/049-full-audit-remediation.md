@@ -1,7 +1,12 @@
 # 049 — Full-audit remediation (2026-07-17 review rollout)
 
+> **Done (2026-07-18).** All groups landed on `main` as focused MRs; see the
+> **Rollout record** below for the per-group MR list. The audit itself —
+> [`docs/reviews/2026-07-17-full-audit.md`](../../docs/reviews/2026-07-17-full-audit.md) —
+> is marked actioned. One finding (SRC-2) was deliberately skipped, documented below.
+
 Implements the findings from
-[`docs/reviews/2026-07-17-full-audit.md`](../docs/reviews/2026-07-17-full-audit.md).
+[`docs/reviews/2026-07-17-full-audit.md`](../../docs/reviews/2026-07-17-full-audit.md).
 That doc is the source of truth for *what* each finding is and *why*; this plan is the
 *rollout* — grouping, ordering, and cross-session progress.
 
@@ -45,36 +50,32 @@ MIME/cache are otherwise fine: both nginx confs `include mime.types` and serve `
 `application/javascript`; no gateway conf sets `Cache-Control`, so multiple module files
 aren't cache-pinned.
 
-## Rollout status (2026-07-18)
+## Rollout record (completed 2026-07-18)
 
-Session progress, newest facts here so a resumed session has the full picture:
+Every group landed as a focused MR merged to `main`; the final state:
 
-- **Merged to `main`:** G1 (!33), G2 (!34), G3 (!35), G4a (!36), G4b (!37), G4c (!38),
-  G4d (!39), G4e SRC-1/3/4 (!42), G4f FC-2 (!43), G5a (!40), G5b (!44), G7 (!41).
-- **Open MRs awaiting the user's browser validation:**
-  - **!45 — G6** (branch `audit/g6-selection-clock`): FS-2 (selection → `core/selection.js`),
-    FS-3 (clock fan-out → `core/clock.js`), FS-4 (controls → `core/controls.js`), **plus a
-    perf follow-up** (makeSelection uses a plain property, not a getter — fixed a
-    select-all/first-paint stutter the user reported). Rebased on main; statically verified
-    (tsc 0 ref-errors, esbuild, node-check); needs the running map eyeballed.
-  - **!46 — SEC-1 principled fix ("#40")** (branch `audit/sec1-resync-spread-fix`):
-    wall-clock resync in `_batch_advect` bounds memory by the horizon window, removes
-    `_MAX_START_SPREAD_DAYS`; bit-identical, 179 tests pass. Backend-only; reviewed
-    line-by-line. Safe to merge on review; the user wanted it landed.
-- **Remaining, in order:**
-  1. **API-1** — fold into #46's area (`_get_field_index` → `(span, version)` one locked
-     result, drop `_field_version`'s out-of-lock assert). NOT started; note the reload test
-     `test_forecast_api.py:428` asserts `_get_field_index() is _index` → update to `[0]`.
-  2. **DER-3** — move `_currents` layer-neutral privates (`_quantize_unit`, `_slice_at`,
-     `frame_valid_time`, `frame_filename`, `N_BINS`) into a shared `_frames.py`; own MR off
-     clean main. Safe relocation.
-  3. **Wrap-up** — once G6 + #46 land: move this plan to `plans/done/`, mark the review doc
-     actioned. (SRC-2 deliberately skipped — verifier-down-graded, render-pixel risk.)
+- **G1** SEC-1 field-cache cap (!33) · **G2** web-surface hardening (!34) · **G3** shared
+  `_geo.py`/`_time.py` primitives (!35) · **G4a** vertex-cadence `_batch_advect` (!36) ·
+  **G4b** `_derive_slow` split (!37) · **G4c** point `NamedTuple` (!38) · **G4d** cache-reset
+  + batch idioms (!39) · **G4e** deferred backend SRC-1/3/4 (!42) · **G4f** FC-2 `_StoreArray`
+  validation (!43) · **G5a** ES-module system + leaf extractions (!40) · **G5b** deploy-tool
+  module (!44) · **G6** selection/clock refactors FS-2/3/4 + perf follow-up (!45) · **G7**
+  frontend correctness (!41) · **DER-3** shared `_frames.py` (!47).
+- **SEC-1 principled follow-up ("#40", deploy-reported):** wall-clock resync in
+  `_batch_advect` bounds forecast memory by the horizon window and removes
+  `_MAX_START_SPREAD_DAYS` entirely (!46) — the durable answer to the spread issue the test
+  deployment surfaced, superseding G1's coarse cap. **API-1** (`_get_field_index` →
+  `(span, version)` under one lock, `_field_version` gone) folded into the same MR.
+- **Deliberately skipped:** SRC-2 (a shared `_render_frames` helper) — the review verifier
+  down-graded it; the two renderers' loops differ enough that a forced merge risked a
+  render-pixel regression for negative structural gain. DER-3 (also verifier-LOW) *was* done
+  because it only relocates truly-shared primitives with no behaviour change.
 - **Dev tooling added (G5a):** `pixi run check-frontend` = `tsc --checkJs` (0 cross-module
-  reference errors is the split's blank-page guard) + `esbuild --bundle` for the import graph.
-- **DEPLOY note:** already carried by G5a's commit; the deploy repo makes the `site/map/` copy
-  recursive. New module files (config/format/api/features/deploy/core/*) ride that — no further
-  deploy change per MR.
+  reference errors is the ES-module split's blank-page guard) + `esbuild --bundle` for the
+  import graph — the standing verification loop for any future `site/map/` module change.
+- **Cross-repo DEPLOY note:** carried verbatim in G5a's commit body; the sibling deploy repo
+  made the `site/map/` copy recursive, so every later module file (config/format/api/
+  features/deploy/core/*) rides that one change with no further per-MR deploy edit.
 
 ## MR groups
 
