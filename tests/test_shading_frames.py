@@ -22,20 +22,22 @@ from whirls_cruise_map import _currents
 from whirls_cruise_map._currents import (
     FRAME_FINAL_MARGIN_H,
     FRAME_STEP_H,
-    N_BINS,
     SPEED_VMAX,
     existing_frame_times,
     first_pending_frame,
-    frame_filename,
     frame_manifest,
     frame_span,
-    frame_valid_time,
     nearest_valid_time,
-    parse_frame_filename,
     plan_render,
     prune_stale_frames,
     to_flowvis_frames,
     to_speed_frames,
+)
+from whirls_cruise_map._frames import (
+    N_BINS,
+    frame_filename,
+    frame_valid_time,
+    parse_frame_filename,
 )
 
 T0 = datetime(2026, 6, 28, 0, 0, tzinfo=timezone.utc)  # a 00Z frame anchor
