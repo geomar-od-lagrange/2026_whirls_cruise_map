@@ -26,7 +26,9 @@ Tabs:
   exports CSV without computing drift).
 - **Instruments** — one panel of marker toggles for *every* platform, in three
   families read top-to-bottom, each a two-column grid separated by a divider: the
-  **drifter batches** (`batch 1`…`batch 5` plus the staged `batch X`), the
+  **drifter batches** (`batch 1`, `batch 2`, … — one per deployment, the label
+  derived from the `deployment_N` key so a new batch reads correctly with no code
+  change — plus the staged `batch X`), the
   **glider-group platforms** (Glider, Float, XSPAR, Waveglider — diamond swatches),
   and the two **ships** (M. Dufresne, Agulhas II — the former separate Ships tab,
   folded in here). Each row toggles that platform's markers; a small **select all /

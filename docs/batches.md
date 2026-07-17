@@ -79,7 +79,8 @@ the **glider platforms** (Glider, Float, XSPAR, Waveglider; see
 [gliders.md](gliders.md)), and the two **ships** (M. Dufresne, Agulhas II — the
 former separate Ships tab, folded in here). Each row carries a colour swatch (round
 for drifter batches and ships, a diamond for gliders) and — for the instruments — the
-row's live marker count. Unchecking a box removes that instrument's markers;
+row's instrument count (the number of platforms in that group; the fixed deployment
+dot each instrument also carries is not counted). Unchecking a box removes that instrument's markers;
 rechecking restores them. Deployment batches and gliders start visible; the staging
 `pre_deploy` batch starts **hidden** (the drifters are still aboard, not in the water),
 so the map opens on the deployed drifters — recheck its row to show the staged ones.
