@@ -103,6 +103,35 @@ def test_batch_backward_matches_scalar_backward(horizon_h):
     assert truncated_any
 
 
+# --- vertex-cadence storage (FC-1) --------------------------------------------
+
+
+def test_batch_advect_vertex_cadence_matches_strided_full_storage():
+    """FC-1: storing only every ``vertex_every``-th sub-step yields exactly the coords a
+    full-substep run read at that stride, in a buffer ``vertex_every``-fold smaller. The
+    integration still steps at the fine cadence, so the stored vertices are identical to
+    the strided full trajectory — and ``completed`` comes back as a vertex index."""
+    field = _forecast._Field(_varying_window_with_land())
+    lon0, lat0, t0 = _guard_seeds(field, 40, seed=7)
+    n_steps = np.full(lon0.shape, 120, dtype=int)  # 120 fine sub-steps
+    ve = 3
+
+    p_full, c_full = _forecast._batch_advect(field, lon0, lat0, t0, n_steps, vertex_every=1)
+    p_vtx, c_vtx = _forecast._batch_advect(field, lon0, lat0, t0, n_steps, vertex_every=ve)
+
+    # The vertex buffer is ~ve-fold smaller along the step axis.
+    assert p_full.shape[1] == 121
+    assert p_vtx.shape[1] == (p_full.shape[1] - 1) // ve + 1  # 41
+    # `completed` is reported as a vertex index (the fine index floored by ve).
+    np.testing.assert_array_equal(c_vtx, c_full // ve)
+    # Every stored vertex equals the full run's position at that sub-step — bit-exact.
+    for v in range(p_vtx.shape[1]):
+        np.testing.assert_array_equal(p_vtx[:, v], p_full[:, v * ve])
+    # The land patch must actually truncate at least one seed, or the completed-index
+    # relationship above is vacuous (every seed running the full 120 steps).
+    assert (c_full < 120).any()
+
+
 # --- adaptive vertex cadence ---------------------------------------------------
 
 

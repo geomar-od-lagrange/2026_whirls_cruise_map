@@ -312,6 +312,7 @@ def _batch_advect(
     *,
     direction: int = 1,
     step_min: float = STEP_MIN,
+    vertex_every: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Vectorized RK4 for a whole batch of seeds, advanced in step-index lockstep,
     ``direction`` +1 forward or -1 backward (mirroring the scalar ``_integrate``'s
@@ -322,14 +323,22 @@ def _batch_advect(
     field walking its day files in reverse, or a fixed in-RAM window) supplies
     ``field`` already covering whichever direction the seeds travel.
 
-    Returns ``(P, completed)``: ``P`` is ``(N, Kmax+1, 2)`` full-precision positions
-    with ``P[:, 0]`` the heads and each later row a sub-step (``step_min`` apart,
-    signed by ``direction``); ``completed[i]`` is seed ``i``'s last good step index.
-    A seed freezes — its position held, its ``completed`` frozen — at its own
-    ``n_steps`` or the first step any RK4 stage samples land/edge/window (``NaN``),
-    i.e. exactly where the scalar :func:`_integrate` truncates with ``break``. The
-    caller reads coords/marks off ``P`` up to ``completed`` (rounding, vertex
-    cadence, mark steps) to build features.
+    Integration always advances at the fine ``step_min`` sub-step (RK4 accuracy), but
+    only every ``vertex_every``-th sub-step is *stored* — the sole consumer reads the
+    trajectory at that vertex cadence, so materialising every intermediate sub-step
+    would allocate a buffer up to ``vertex_every``x larger than anything read (FC-1).
+    The default ``vertex_every == 1`` stores every sub-step: the dense shape the scalar
+    bit-identity checks compare against.
+
+    Returns ``(P, completed)``: ``P`` is ``(N, V+1, 2)`` full-precision positions where
+    ``V = Kmax // vertex_every``, ``P[:, 0]`` the heads and ``P[:, v]`` the position at
+    sub-step ``v * vertex_every`` (``step_min`` apart, signed by ``direction``);
+    ``completed[i]`` is seed ``i``'s last good *stored-vertex* index (== its last good
+    sub-step index when ``vertex_every == 1``). A seed freezes — its position held, its
+    ``completed`` frozen — at its own ``n_steps`` or the first sub-step any RK4 stage
+    samples land/edge/window (``NaN``), i.e. exactly where the scalar :func:`_integrate`
+    truncates with ``break``. The caller reads coords off ``P`` up to ``completed`` (one
+    vertex per stored row) to build features.
 
     Each step samples the field for only the seeds still ``stepping`` (a boolean
     gather/scatter on the arrays, not a full-array recompute masked afterward) — a
@@ -349,8 +358,9 @@ def _batch_advect(
     dt = direction * step_min * 60.0
     alive0 = n_steps > 0
     k_max = int(n_steps.max()) if alive0.any() else 0
+    n_vertices = k_max // vertex_every  # stored rows after the head row
 
-    positions = np.empty((n, k_max + 1, 2), dtype=np.float64)
+    positions = np.empty((n, n_vertices + 1, 2), dtype=np.float64)
     positions[:, 0, 0] = lon0
     positions[:, 0, 1] = lat0
 
@@ -358,7 +368,7 @@ def _batch_advect(
     lat = lat0.astype(np.float64, copy=True)
     t = t0.astype(np.float64, copy=True)
     active = alive0.copy()
-    completed = np.zeros(n, dtype=int)
+    completed = np.zeros(n, dtype=int)  # last good SUB-STEP index (fine-grained)
 
     for step in range(1, k_max + 1):
         stepping = active & (step <= n_steps)
@@ -376,10 +386,14 @@ def _batch_advect(
         # its own horizon — mirroring the scalar path's break-and-stop.
         active[idx[~ok]] = False
         active[ok_idx[n_steps[ok_idx] == step]] = False
-        positions[:, step, 0] = lon
-        positions[:, step, 1] = lat
+        # Store only at the vertex cadence (every seed's current position, frozen ones
+        # held) — the intermediate sub-steps are integrated but never materialised.
+        if step % vertex_every == 0:
+            v = step // vertex_every
+            positions[:, v, 0] = lon
+            positions[:, v, 1] = lat
 
-    return positions, completed
+    return positions, completed // vertex_every
 
 
 # --- adaptive vertex cadence ---------------------------------------------------
