@@ -38,6 +38,7 @@ import {
 import { FORECAST_API, getDeployLimits, apiErrorText } from "./api.js";
 import { buildDeployTool } from "./features/deploy.js";
 import { makeSelection } from "./core/selection.js";
+import { registerClockTick, tickClock, CLOCK_PRIORITY } from "./core/clock.js";
 
 // The two cruise vessels share one ship renderer (makeShipLayer), differing only
 // in colour, sidebar panel, and the tooltip/readout rows a fix produces — so one
@@ -353,21 +354,36 @@ let deployTool = null;
 // moving heads walk their scrubber-cropped drift lines), the observed tracks (segments
 // clipped at the clock, heads moved — see clipTrack), and the single-fix heads
 // (updatePointHeads).
+// The six time-aware layers register their per-tick handler with the clock fan-out
+// (FS-3) at an explicit priority; `tickClock` runs them in that order. What used to be
+// six lines hand-wired inside updateClock's rAF — with a load-bearing "forecast last"
+// comment — is now this one declared table. A new time-aware layer registers itself at
+// build time instead of editing the callback.
+registerClockTick(CLOCK_PRIORITY.atTimeMarkers, (ms) => {
+  for (const entry of atTimeEntries) updateAtTimeMarker(entry, ms);
+});
+registerClockTick(CLOCK_PRIORITY.observedTracks, (ms) => {
+  for (const entry of trackClockEntries) clipTrack(entry, ms);
+});
+registerClockTick(CLOCK_PRIORITY.pointHeads, (ms) => updatePointHeads(ms));
+// Reveal each deployment dot once the clock passes its deploy time.
+registerClockTick(CLOCK_PRIORITY.deploymentDots, (ms) => updateDeploymentDots(ms));
+// Crop the virtual deployment drift lines to the clock (forward + backward runs).
+registerClockTick(CLOCK_PRIORITY.deployDrift, (ms) => {
+  if (deployTool) deployTool.clipAllDeployTracks(ms);
+});
+// Forecast last (priority 60): when the clock is past now a drifter's forecast overrides
+// its observed clip / point head and walks the marker along the violet forecast.
+registerClockTick(CLOCK_PRIORITY.forecast, (ms) => {
+  for (const entry of forecastClockEntries) clipForecast(entry, ms);
+});
+
 function updateClock(ms) {
   atTimeClockMs = ms;
   if (atTimeRaf) return;
   atTimeRaf = requestAnimationFrame(() => {
     atTimeRaf = 0;
-    for (const entry of atTimeEntries) updateAtTimeMarker(entry, atTimeClockMs);
-    for (const entry of trackClockEntries) clipTrack(entry, atTimeClockMs);
-    updatePointHeads(atTimeClockMs);
-    updateDeploymentDots(atTimeClockMs); // reveal each deployment dot once the clock passes its deploy time
-
-    // Crop the virtual deployment drift lines to the clock (forward + backward runs).
-    if (deployTool) deployTool.clipAllDeployTracks(atTimeClockMs);
-    // Last, so a drifter's forecast (when the clock is past now) overrides its observed
-    // clip / point head and walks the marker along the violet forecast.
-    for (const entry of forecastClockEntries) clipForecast(entry, atTimeClockMs);
+    tickClock(atTimeClockMs);
   });
 }
 
