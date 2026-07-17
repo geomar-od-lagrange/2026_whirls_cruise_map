@@ -120,11 +120,15 @@ literally the same integrator over the same field.
 the scalar `_integrate` per head. A deployment is up to a couple thousand drops, where
 that pure-Python per-seed loop dominates walltime (~23 ms/seed → ~46 s at the cap). So
 the API advects the whole batch through a **vectorized twin** of the same RK4
-(`_forecast._batch_advect`): all seeds advance together in step-index lockstep, each
-stage sampling the field for every still-active seed in one numpy gather. It is
-**bit-identical** to the scalar path — same corner-sum / time-lerp / RK4 arithmetic
-order, same land-`NaN`→stop and window-edge truncation — but ~40× faster (2000 drops in
-~1.2 s, from ~46 s), pinned to the scalar reference by a test. `direction` (`+1`
+(`_forecast._batch_advect`): every stage samples the field for all still-active seeds
+in one numpy gather. It is **bit-identical** to the scalar path — same corner-sum /
+time-lerp / RK4 arithmetic order, same land-`NaN`→stop and window-edge truncation — but
+~40× faster (2000 drops in ~1.2 s, from ~46 s), pinned to the scalar reference by a
+test. The seeds are scheduled on a **shared wall clock** (a later-starting drop begins
+stepping later) rather than in raw step-index lockstep, so a store-backed field's day
+cache stays bounded by the horizon window rather than the start spread (below) — a
+scheduling reorder that leaves each seed's own step sequence, and hence the output,
+unchanged. `direction` (`+1`
 forward, `-1` backward) mirrors the scalar integrator's `dt` negation exactly, so a
 backward run walks the same vectorized path in reverse. Pure numpy: no new
 dependency.
@@ -147,29 +151,25 @@ when the manifest's mtime changes. Every request then opens a fresh
 `_field_store.StoreField` scoped to just the span its own run needs (the run's anchor
 through its common end, clipped to what the store actually has loaded): a bounded LRU
 of day arrays, not the whole field, so a single run holds only a handful of days
-resident however long it runs. Peak *memory* is then bounded across requests by two
-run-time guards (SEC-1) rather than by run length alone: a run whose in-window seed
-starts span more than `_api._MAX_START_SPREAD_DAYS` calendar days is rejected (422),
-and a `_MAX_CONCURRENCY` semaphore caps how many runs hold a field at once, keeping
-peak resident memory inside the pod's 4 Gi limit.
+resident however long it runs. Because `_batch_advect` schedules seeds on a shared
+wall clock, that residency tracks the run's horizon **window** (the current day plus
+its bracketing neighbour, ~100 MB), not the seed-start **spread** — at any instant
+only the seeds on the current window day are being stepped, so a batch whose drops
+start on far-apart calendar days no longer pins that many days at once (SEC-1). Peak
+*memory* across requests is then bounded by a single `_MAX_CONCURRENCY` semaphore
+capping how many runs hold a field at once, keeping it inside the pod's 4 Gi limit.
 
-These two constants are the whole memory contract, tied by one budget. A run's field
-residency is `(_MAX_START_SPREAD_DAYS + 2) × ~50 MB/day` (the +2 is the LRU's bracketing
-pair, ceilinged at `_field_store._MAX_DAY_CACHE_CAP = 10`), and `_MAX_CONCURRENCY`
+That one constant is the whole memory contract. A run's field residency is
+`~2 × 50 MB/day` regardless of how it places its seeds, and `_MAX_CONCURRENCY`
 multiplies both that and the transient trajectory buffer per run. Since FC-1 landed the
 buffer holds only vertex-cadence rows (not every 5-min sub-step), a few tens of MB even
-at the budget — at the shipped 8 / 3 that is `(8+2)×50 MB×3 + ~0.1 Gi + ~0.7 Gi base ≈
-2.3 Gi < 4 Gi`. The 8-day spread
-never binds an observation forecast (active drifters report within hours), so it is
-deliberately the **one knob to turn** for wider-spread *planning* runs — e.g. "here is a
-20-day cruise track; lay 200 drifters equidistant in time and forecast each," which needs
-a ~20-day start spread. To support that, raise `_MAX_START_SPREAD_DAYS` to cover the
-widest planned spread **and** lower `_MAX_CONCURRENCY` so the budget still clears the pod
-limit (e.g. `(20+2)×50 MB×2 + 180 MB×2 + 0.7 Gi ≈ 3.3 Gi`), or raise the pod's memory
-limit for both wide and concurrent. Raising the spread alone would reopen SEC-1. (The
-deeper fix that removes the trade-off — resync seeds to a shared clock in `_batch_advect`
-so residency tracks the horizon window, not the start spread — is noted in the audit's
-SEC-1/FC-1 but not yet done.)
+at the budget — at the shipped concurrency 3 that is `~2×50 MB×3 + ~0.1 Gi + ~0.7 Gi
+base ≈ 1.3 Gi < 4 Gi`. Because residency no longer tracks the start spread, wide-spread
+*planning* runs — e.g. "here is a 20-day cruise track; lay 200 drifters equidistant in
+time and forecast each," a ~20-day start spread — are served like any other, with no
+spread cap to raise and no memory trade-off against concurrency. (The wall-clock resync
+in `_batch_advect` is what removed the earlier `_MAX_START_SPREAD_DAYS` rejection and
+its `day_cache_cap_for_starts` sizing; see the audit's SEC-1/FC-1.)
 
 Because it holds no `cmems-creds` and makes no CMEMS request, the API pod needs **no
 credentials and no internet egress** — the field arrives entirely over the shared

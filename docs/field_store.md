@@ -164,20 +164,22 @@ views over a **bounded LRU of opened day arrays**, loaded on demand and evicted
 behind the batch's monotone time cursor. A run spanning the whole store holds only
 a handful of day files at once (~200 MB at the default cap), however long the run.
 
-Because `_batch_advect` never resyncs seeds to a shared clock — each seed advances
-by the same per-step `dt` from its own `start`, so the active seeds' absolute
-times differ by exactly their original start spread — a batch whose drops start on
-far-apart calendar days needs that many days resident *for the whole run*.
-`day_cache_cap_for_starts` sizes the LRU cap to the actual seed-start spread, so the
-cache never thrashes. That spread **is** bounded, at two levels (SEC-1): the API
-rejects (422) a run whose in-window seed starts span more than
-`_api._MAX_START_SPREAD_DAYS` calendar days, and `day_cache_cap_for_starts` clamps to
-`_MAX_DAY_CACHE_CAP` as a hard backstop, so no single run can pin more than ~10 days
-(~500 MB) resident — a wider spread degrades to bounded cache thrash, never an OOM.
-A real deployment staggers water-entry over hours, so the guard only fires on a
-pathological one-seed-per-store-day placement; a page-load batch forecasting every
-deployed drifter at once still fits, since those last fixes cluster near the store's
-recent edge rather than scattering one-per-day across the whole cruise.
+Crucially, that residency tracks the run's horizon **window**, not the seed-start
+**spread**. `_batch_advect` releases seeds onto a **shared wall clock**: a seed that
+starts later begins stepping later, so at every moment the seeds being sampled sit
+within one sub-step of each other in absolute time whatever their original start
+spread (a pure scheduling reorder — each seed still steps its own sequence from its
+own `start`, so the output is bit-identical). The day cache therefore sweeps the
+horizon window monotonically, holding only the current day plus its bracketing
+neighbour, and a **fixed small cap** (`_DEFAULT_DAY_CACHE_CAP`) suffices for any seed
+placement. A batch whose drops start one-per-day across the whole cruise no longer
+pins that many days resident — it walks each day once as the window passes it (SEC-1).
+This is what lets wide-spread *planning* runs ("lay 200 drifters equidistant across a
+20-day cruise track and forecast each") be served like any other, with no start-spread
+cap and no memory trade-off against concurrency. (Before the resync, residency tracked
+the spread and a `day_cache_cap_for_starts` helper sized the LRU to it, backstopped by
+a hard ceiling and an API-level spread rejection; the resync removed all three — see
+git history.)
 
 ### The API's field index
 

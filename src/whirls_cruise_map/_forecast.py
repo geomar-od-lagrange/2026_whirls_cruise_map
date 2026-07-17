@@ -207,19 +207,27 @@ def _integrate(
 # per request, where the pure-Python per-seed loop dominates walltime (~23 ms/seed
 # → ~46 s at the 2000-seed cap, against a 60 s gateway timeout). The functions
 # below do the *same* RK4 over the *same* field for a whole batch at once, in
-# vectorized numpy: all seeds advance together in step-index lockstep, each stage
-# sampling the field for every still-active seed in one gather. This is ~40× faster
-# (n=2000 in ~1.2 s) and, by construction, **bit-identical** to the scalar path —
-# the arithmetic order (corner-sum, time-lerp, RK4 combine, cos(radians(lat))) and
-# the land/edge/window rules mirror ``_Field.velocity`` + ``_deriv`` exactly, so a
-# batch and a per-seed run agree to the last ULP (guarded by a test).
+# vectorized numpy: each stage samples the field for every still-active seed in one
+# gather. This is ~40× faster (n=2000 in ~1.2 s) and, by construction,
+# **bit-identical** to the scalar path — the arithmetic order (corner-sum,
+# time-lerp, RK4 combine, cos(radians(lat))) and the land/edge/window rules mirror
+# ``_Field.velocity`` + ``_deriv`` exactly, so a batch and a per-seed run agree to
+# the last ULP (guarded by a test).
+#
+# ``_batch_advect`` schedules the seeds on a shared **wall clock** rather than in
+# raw step-index lockstep: a seed released later starts stepping later, so at every
+# moment the seeds being sampled sit within one sub-step of each other in absolute
+# time whatever their start spread. That is a pure scheduling reorder — each seed
+# still performs its own steps from its own ``t0`` in the same arithmetic order, so
+# the output is unchanged — but it keeps a store-backed field's day-cache residency
+# bounded by the horizon *window*, not the start spread (see ``_batch_advect`` and
+# ``_field_store.StoreField``). The build's per-instrument hindcast still uses the
+# scalar path (unchanged, out of this stage's scope).
 #
 # ``direction`` (+1 forward, -1 backward) mirrors the scalar ``_integrate``'s ``dt``
 # negation exactly (same sign, same place in the arithmetic — ``dt = direction *
 # step_min * 60``): the interactive deployment API's backward runs walk the store
-# in reverse and hand the same signed ``dt`` through, no other change. The build's
-# per-instrument hindcast still uses the scalar path (unchanged, out of this
-# stage's scope).
+# in reverse and hand the same signed ``dt`` through, no other change.
 
 
 def _vec_deriv(
@@ -318,14 +326,29 @@ def _batch_advect(
     step_min: float = STEP_MIN,
     vertex_every: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Vectorized RK4 for a whole batch of seeds, advanced in step-index lockstep,
-    ``direction`` +1 forward or -1 backward (mirroring the scalar ``_integrate``'s
-    ``dt`` negation, ``_forecast.py`` ~line 191). ``lon0``/``lat0``/``t0`` (epoch
-    seconds) and ``n_steps`` are per-seed arrays; ``n_steps[i] == 0`` marks a seed
-    not to advect (out of window / no track). ``t0``'s clock runs forward for a
-    forward batch and backward for a backward one — the caller (a store-backed
-    field walking its day files in reverse, or a fixed in-RAM window) supplies
-    ``field`` already covering whichever direction the seeds travel.
+    """Vectorized RK4 for a whole batch of seeds, ``direction`` +1 forward or -1
+    backward (mirroring the scalar ``_integrate``'s ``dt`` negation). ``lon0``/
+    ``lat0``/``t0`` (epoch seconds) and ``n_steps`` are per-seed arrays; ``n_steps[i]
+    == 0`` marks a seed not to advect (out of window / no track). ``t0``'s clock runs
+    forward for a forward batch and backward for a backward one — the caller (a
+    store-backed field walking its day files in reverse, or a fixed in-RAM window)
+    supplies ``field`` already covering whichever direction the seeds travel.
+
+    **Shared wall-clock schedule (memory).** Rather than stepping every seed at the
+    same loop index (which would put seeds started on far-apart days on far-apart
+    calendar days at *every* step — forcing a store-backed field's day cache to hold
+    the whole start spread resident at once), each seed is *released* onto a shared
+    dt cadence: seed ``i`` runs its step ``k`` at global iteration ``g = release[i] +
+    k``, where ``release[i]`` rounds ``t0[i]`` onto that cadence relative to the
+    batch's earliest (forward) / latest (backward) start. The algebra then gives every
+    seed being stepped at iteration ``g`` an absolute time ``anchor + (g-1)*dt +
+    phase[i]`` with ``|phase[i]| <= |dt|/2`` — i.e. all live seeds sit within one
+    sub-step (5 min) of each other in wall clock, whatever their start spread. So the
+    day cache's working set is the horizon *window*'s bracketing pair, not the spread
+    (:class:`whirls_cruise_map._field_store.StoreField`). This changes only *which*
+    iteration a seed's step runs on; each seed still performs exactly its own
+    ``n_steps`` RK4 steps from its own ``t0`` in the same arithmetic order over the
+    same field, so the output is **bit-identical** to a raw-lockstep run.
 
     Integration always advances at the fine ``step_min`` sub-step (RK4 accuracy), but
     only every ``vertex_every``-th sub-step is *stored* — the sole consumer reads the
@@ -335,28 +358,23 @@ def _batch_advect(
     bit-identity checks compare against.
 
     Returns ``(P, completed)``: ``P`` is ``(N, V+1, 2)`` full-precision positions where
-    ``V = Kmax // vertex_every``, ``P[:, 0]`` the heads and ``P[:, v]`` the position at
-    sub-step ``v * vertex_every`` (``step_min`` apart, signed by ``direction``);
-    ``completed[i]`` is seed ``i``'s last good *stored-vertex* index (== its last good
-    sub-step index when ``vertex_every == 1``). A seed freezes — its position held, its
-    ``completed`` frozen — at its own ``n_steps`` or the first sub-step any RK4 stage
-    samples land/edge/window (``NaN``), i.e. exactly where the scalar :func:`_integrate`
-    truncates with ``break``. The caller reads coords off ``P`` up to ``completed`` (one
-    vertex per stored row) to build features.
+    ``V = Kmax // vertex_every``, ``P[:, 0]`` the heads and ``P[i, v]`` seed ``i``'s
+    position after ``v * vertex_every`` sub-steps (``step_min`` apart, signed by
+    ``direction``); ``completed[i]`` is seed ``i``'s last good *stored-vertex* index
+    (== its last good sub-step index when ``vertex_every == 1``). A seed freezes — its
+    position held, its ``completed`` frozen — at its own ``n_steps`` or the first
+    sub-step any RK4 stage samples land/edge/window (``NaN``), i.e. exactly where the
+    scalar :func:`_integrate` truncates with ``break``; rows past a seed's last good
+    vertex hold that frozen final position. The caller reads coords off ``P`` up to
+    ``completed`` (one vertex per stored row) to build features.
 
-    Each step samples the field for only the seeds still ``stepping`` (a boolean
-    gather/scatter on the arrays, not a full-array recompute masked afterward) — a
-    frozen seed's already-decided position never asks the field for its old time
-    again. For an in-RAM field this is just an avoided flop; for a store-backed
-    field (:class:`whirls_cruise_map._field_store.StoreField`) it matters more:
-    that field's day cache assumes the batch's live working set spans only the
-    couple of calendar days the still-advecting seeds are currently walking (see
-    ``_field_store._DayArrayCache``), an assumption a full-array recompute would
-    break the moment any seed freezes on a calendar day the rest have since moved
-    past — permanently pinning that stale day into every later step's gather and
-    thrashing a small cap. Batches over a store-backed field commonly run seeds to
-    truncation at scattered times (a coastline near a seed's start, or a seed
-    simply reaching its own horizon early), so this isn't a corner case.
+    Each iteration samples the field for only the seeds actually ``stepping`` (a
+    boolean gather/scatter, not a full-array recompute masked afterward) — a released
+    seed not yet stepping, a frozen one, or one past its horizon never asks the field
+    for a time it isn't at. Combined with the wall-clock schedule, that keeps every
+    gather confined to the current window's day file(s), so a store-backed field
+    (:class:`whirls_cruise_map._field_store.StoreField`) streams its day cache
+    monotonically through the horizon window however wide the seeds' start spread.
     """
     n = lon0.size
     dt = direction * step_min * 60.0
@@ -374,10 +392,22 @@ def _batch_advect(
     active = alive0.copy()
     completed = np.zeros(n, dtype=int)  # last good SUB-STEP index (fine-grained)
 
-    for step in range(1, k_max + 1):
-        stepping = active & (step <= n_steps)
+    if not alive0.any():
+        return positions, completed // vertex_every
+
+    # Release each seed onto the shared dt cadence anchored at the batch's earliest
+    # (forward) / latest (backward) start, so seed i runs its step k at global
+    # iteration g = release[i] + k. See the docstring for why this bounds a
+    # store-backed field's day-cache residency to the horizon window, bit-identically.
+    anchor = float(t0[alive0].min()) if direction > 0 else float(t0[alive0].max())
+    release = np.where(alive0, np.round((t0 - anchor) / dt).astype(int), 0)
+    g_max = int((release + n_steps)[alive0].max())
+
+    for g in range(1, g_max + 1):
+        step_k = g - release  # each seed's own step index at this global iteration
+        stepping = active & (step_k >= 1) & (step_k <= n_steps)
         if not stepping.any():
-            break  # every remaining seed has reached its horizon
+            continue  # no seed released-and-unfinished at this wall-clock instant
         idx = np.flatnonzero(stepping)
         lon_n, lat_n = _vec_rk4_step(field, lon[idx], lat[idx], t[idx], dt)
         ok = np.isfinite(lon_n) & np.isfinite(lat_n)
@@ -385,17 +415,30 @@ def _batch_advect(
         lon[ok_idx] = lon_n[ok]
         lat[ok_idx] = lat_n[ok]
         t[ok_idx] += dt
-        completed[ok_idx] = step
+        k_ok = step_k[ok_idx]  # the step number each advanced seed just completed
+        completed[ok_idx] = k_ok
         # Freeze a seed that failed this step (hit coast/edge/window) or just reached
         # its own horizon — mirroring the scalar path's break-and-stop.
         active[idx[~ok]] = False
-        active[ok_idx[n_steps[ok_idx] == step]] = False
-        # Store only at the vertex cadence (every seed's current position, frozen ones
-        # held) — the intermediate sub-steps are integrated but never materialised.
-        if step % vertex_every == 0:
-            v = step // vertex_every
-            positions[:, v, 0] = lon
-            positions[:, v, 1] = lat
+        active[ok_idx[n_steps[ok_idx] == k_ok]] = False
+        # Store at each seed's own vertex cadence: a seed crosses stored vertex v when
+        # its own step count hits v * vertex_every (different seeds cross at different
+        # g), so scatter per seed rather than writing a whole column.
+        at_vertex = k_ok % vertex_every == 0
+        store_idx = ok_idx[at_vertex]
+        v = k_ok[at_vertex] // vertex_every
+        positions[store_idx, v, 0] = lon[store_idx]
+        positions[store_idx, v, 1] = lat[store_idx]
+
+    # Hold each seed's frozen final position in every row past its last good vertex —
+    # the rows the consumer never reads for that seed, but which a full-``positions``
+    # comparison expects held (as a raw-lockstep run would leave them), not left as
+    # uninitialised buffer.
+    last_vertex = completed // vertex_every
+    rows = np.arange(n_vertices + 1)
+    beyond = rows[None, :] > last_vertex[:, None]
+    positions[:, :, 0] = np.where(beyond, lon[:, None], positions[:, :, 0])
+    positions[:, :, 1] = np.where(beyond, lat[:, None], positions[:, :, 1])
 
     return positions, completed // vertex_every
 

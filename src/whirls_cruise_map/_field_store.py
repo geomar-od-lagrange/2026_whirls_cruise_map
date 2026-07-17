@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import tempfile
 from collections import OrderedDict
@@ -512,60 +511,25 @@ def load_window(store_dir: Path | str | None = None, *, t0: datetime, t1: dateti
 # ``_forecast`` code samples a store-backed field exactly as it samples an
 # in-RAM one.
 
-_DEFAULT_DAY_CACHE_CAP = 4  # ~200 MB at ~50 MB/day file (see the module docstring)
-
-# Hard ceiling on the per-request day-cache cap, whatever start spread a caller
-# asks for. Each resident day is ~50 MB, so this bounds one run's field residency
-# at ~500 MB; with the API's concurrency gate (:data:`_api._MAX_CONCURRENCY`) that
-# keeps several concurrent forecast runs inside the pod's memory limit. It is the
-# memory backstop for SEC-1: even if a request's seed-start spread slipped past the
-# API's spread guard (:data:`_api._MAX_START_SPREAD_DAYS`), the cache can never pin
-# more than this many day files at once — a wider spread degrades to cache thrash
-# (bounded by the seeds x hours budget), never an OOM.
-_MAX_DAY_CACHE_CAP = 10
-
-
-def day_cache_cap_for_starts(
-    min_start_epoch: float,
-    max_start_epoch: float,
-    *,
-    default: int = _DEFAULT_DAY_CACHE_CAP,
-    max_cap: int = _MAX_DAY_CACHE_CAP,
-) -> int:
-    """The day-cache cap a batch needs so its currently-active seeds' distinct
-    calendar days all stay resident at once, given the earliest/latest seed
-    ``start`` (epoch seconds) in the batch.
-
-    ``_batch_advect`` never resyncs seeds to a shared wall clock: each seed's
-    own ``t`` advances by the same per-step ``dt`` from its own ``start``, so
-    at any step index the still-active seeds' absolute times differ by exactly
-    their original start spread — a batch whose seeds start on far-apart
-    calendar days needs that many days resident *for the whole run*, not just
-    at the start. ``_DEFAULT_DAY_CACHE_CAP`` alone only covers the common case
-    (seeds released close together); leaving it fixed regardless of the actual
-    start spread makes every step thrash the cache — evicting and reopening
-    day files it just evicted — the moment the spread exceeds the cap (see
-    :class:`_DayArrayCache`). ``+ 2`` covers the bracketing pair (``jt``,
-    ``jt+1``) at each end of the spread. The result is clamped to ``max_cap``
-    (:data:`_MAX_DAY_CACHE_CAP`) so no single run can pin an unbounded number of
-    day files resident — the SEC-1 memory backstop; the API rejects a spread wide
-    enough to hit the clamp before it gets here (see
-    :data:`_api._MAX_START_SPREAD_DAYS`), so in normal operation the clamp never
-    binds."""
-    spread_days = math.ceil(abs(max_start_epoch - min_start_epoch) / 86400.0)
-    return min(max_cap, max(default, spread_days + 2))
+# ~200 MB at ~50 MB/day file. A fixed small cap suffices because
+# :func:`_forecast._batch_advect` releases seeds onto a shared wall clock: at any
+# instant only the seeds on the current horizon-window day are being stepped, so the
+# cache's working set is that day plus its bracketing neighbour, whatever the batch's
+# seed-start spread. (Before that resync the working set tracked the spread, and this
+# cap had to be sized to it — see git history for the removed ``day_cache_cap_for_starts``
+# and its ``_MAX_DAY_CACHE_CAP`` ceiling.)
+_DEFAULT_DAY_CACHE_CAP = 4
 
 
 class _DayArrayCache:
     """Bounded LRU of opened per-day ``(uo, vo)`` arrays (each ``(24, lat,
     lon)``, lat/lon ascending — the same orientation :class:`_forecast._Field`
-    puts its own ``u``/``v`` in), keyed by an index into a fixed day list. A
-    batch whose seeds all start close together in time has a working set of at
-    most a couple of calendar days at once as its monotone cursor advances; a
-    batch whose seeds start on far-apart calendar days needs a cap sized to
-    that spread instead (see :func:`day_cache_cap_for_starts`) — the cap here
-    bounds memory explicitly either way, evicting the least-recently-used day
-    once ``cap`` is exceeded."""
+    puts its own ``u``/``v`` in), keyed by an index into a fixed day list. Because
+    :func:`_forecast._batch_advect` steps all live seeds within one sub-step of each
+    other in wall clock, the working set is at most a couple of calendar days at once
+    as the run's monotone cursor advances the horizon window — independent of how far
+    apart the seeds started. The cap bounds memory explicitly, evicting the
+    least-recently-used day once ``cap`` is exceeded."""
 
     def __init__(self, store: Path, days: list[date], days_meta: dict, cap: int):
         # Floor of 2, not 1: the sampler's bracketing pair (jt, jt+1) spans at

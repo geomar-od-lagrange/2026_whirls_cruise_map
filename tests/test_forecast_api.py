@@ -296,43 +296,29 @@ def test_run_entirely_outside_the_store_reach_skips_everything(store):
     assert out["features"] == []
 
 
-# --- seed-start spread: bounded for memory (SEC-1), sized so it doesn't thrash ---
+# --- seed-start spread: unbounded now that residency tracks the horizon window ---
 
 
-def test_seed_start_spread_within_the_cap_is_accepted(store):
-    """A seed-start spread up to ``_MAX_START_SPREAD_DAYS`` runs normally — an active
-    cruise's in-water drifters report every few hours, so the observed-forecast batch's
-    last-fix spread is well inside the cap. The day cache is sized to the batch's actual
-    spread so it never thrashes (covered by ``test_field_store
-    .test_store_field_wide_seed_start_spread_does_not_thrash_the_day_cache``)."""
-    spread = [
-        _api.Seed(lon=10.5, lat=-34.0, start="2026-07-01T00:00:00Z"),
-        _api.Seed(lon=10.5, lat=-34.0, start="2026-07-08T00:00:00Z"),  # 7-day spread <= cap
+def test_wide_seed_start_spread_runs_normally(store):
+    """Since `_batch_advect` resyncs seeds to a shared wall clock, a batch whose drops
+    start on far-apart calendar days no longer pins that many days resident and needs no
+    spread cap (SEC-1) — even a 10-day spread runs like any other. Both seeds stay alive
+    (long horizon), so the whole 10-day span is exercised, not skipped. The memory
+    property itself (a wide spread stays within a small day cache) is pinned in
+    ``test_field_store.test_store_field_wide_start_spread_stays_within_a_small_day_cache``."""
+    wide = [
+        _api.Seed(lon=10.5, lat=-34.0, start="2026-06-29T00:00:00Z"),
+        _api.Seed(lon=10.5, lat=-34.0, start="2026-07-09T00:00:00Z"),  # 10-day spread
     ]
-    out = _api._batch_run(spread, horizon_h=240.0, direction="forward")
+    out = _api._batch_run(wide, horizon_h=500.0, direction="forward")
     assert out["properties"]["tracks"] == 2
     assert out["properties"]["skipped"] == 0
 
 
-def test_seed_start_spread_beyond_the_cap_is_rejected(store):
-    """SEC-1: an in-window seed-start spread wider than ``_MAX_START_SPREAD_DAYS`` is
-    rejected (ValueError -> 422), because such a batch would pin that many distinct
-    calendar days of field resident at once (~50 MB/day) — a cheap request that could
-    OOM the pod under concurrency. Both seeds here stay alive (long horizon), so the
-    guard sees the full 10-day spread rather than skipping the far one."""
-    wide = [
-        _api.Seed(lon=10.5, lat=-34.0, start="2026-06-29T00:00:00Z"),
-        _api.Seed(lon=10.5, lat=-34.0, start="2026-07-09T00:00:00Z"),  # 10-day spread > cap
-    ]
-    with pytest.raises(ValueError, match="spread too wide"):
-        _api._batch_run(wide, horizon_h=500.0, direction="forward")
-
-
-def test_out_of_window_stragglers_do_not_count_toward_the_spread(store):
-    """The spread guard measures only *in-window* (alive) seeds: a far-future straggler
-    that is skipped-and-counted must not, by itself, trip the spread rejection, since it
-    never grows the day cache. The two in-window seeds span < the cap, so the run
-    succeeds and only the straggler is skipped."""
+def test_out_of_window_stragglers_are_skipped_not_advected(store):
+    """A far-future straggler outside the store's loaded span is skipped-and-counted
+    (never advected), while the in-window seeds run normally — independent of any spread
+    consideration now that residency tracks the horizon window, not the spread."""
     seeds = [
         _api.Seed(lon=10.5, lat=-34.0, start="2026-07-01T00:00:00Z"),
         _api.Seed(lon=10.5, lat=-34.0, start="2026-07-03T00:00:00Z"),
@@ -404,7 +390,6 @@ def test_limits_v2_shape(store):
     out = _api.limits()
     assert out["max_seeds"] == _api._MAX_SEEDS
     assert out["max_seed_hours"] == _api._MAX_SEED_HOURS
-    assert out["max_start_spread_days"] == _api._MAX_START_SPREAD_DAYS
     assert out["window"] == [_STORE_LO, _STORE_HI]
     assert out["analysis_edge"].endswith("Z")
 
@@ -625,7 +610,6 @@ def test_limits_response_stays_uncompressed_below_minimum_size(store):
     assert resp.json() == {
         "max_seeds": _api._MAX_SEEDS,
         "max_seed_hours": _api._MAX_SEED_HOURS,
-        "max_start_spread_days": _api._MAX_START_SPREAD_DAYS,
         "window": [_STORE_LO, _STORE_HI],
         "analysis_edge": resp.json()["analysis_edge"],
     }
