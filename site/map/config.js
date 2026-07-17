@@ -87,6 +87,13 @@ export const FALLBACK_ZOOM = 12;
 // line-weight ramp (see trackWeight); passed to L.map so the two stay in sync.
 export const MAX_ZOOM = 14;
 
+// The one "deployment mark" radius, shared so real and virtual deployment points read
+// at the same size: virtual-deployment drops (drawDrops), real drifter deployment dots
+// (addDeploymentDot), and the forecast now-ghost. A selected drop set enlarges by +3.
+// Lives here (not in the deploy module) because the observed-drifter layers in app.js
+// draw the same mark, so both sides import it rather than one reaching into the other.
+export const DEPLOY_DROP_RADIUS = 3.0;
+
 // R/V Marion Dufresne live track. Fetched client-side from the French
 // Oceanographic Fleet (Flotte Océanographique Française) localisation API — the
 // same source as the IPSL WHIRLS "platform positions" button. CORS-open, no
