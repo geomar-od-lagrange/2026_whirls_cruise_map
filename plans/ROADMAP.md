@@ -381,6 +381,13 @@ move to `done/` and gain a `docs/` counterpart.
     gets a white outline; virtual deployments cycle `deploy_1..3` with a Deploy-tab
     swatch; and all data layers render opaque so the colours read undiluted over the
     shadings. **Done** ([docs/palette.md](../docs/palette.md)).
+42. [Deploy scrub hint](done/048-deploy-scrub-hint.md) — a fresh virtual deployment's
+    drift is cropped at the app clock, which sits on the release edge at placement, so the
+    line is zero-length until the user scrubs (#38). Rather than change that, hint it at
+    both places the eye lands: a transient **finish tooltip** pinned at the last vertex and
+    a durable **status-line clause** in the dock, both reading *"drag the clock to draw the
+    drift"* (one shared `SCRUB_HINT`, direction-agnostic). **Done**
+    ([docs/deployment.md](../docs/deployment.md), *A fresh deployment needs a scrub*).
 
 Deferred / not in these batches: **#16** (CMEMS rollover validation), **#17** (static
 streamlines), **#25** (re-enable flow/near-inertial overlays), **#31** (xspar/float

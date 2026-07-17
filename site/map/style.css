@@ -1072,6 +1072,28 @@ body {
   cursor: crosshair;
 }
 
+/* The one-shot "now scrub the clock" hint pinned at a finished deployment's last
+   vertex (#38). A fresh drift line is cropped to zero length at the release edge, so
+   this points the eye — already on the map, at the double-click — down to the time
+   slider. More prominent than the preview label (a call to action, not a read-out):
+   the deploy green filled, a soft shadow, and its arrow kept so it reads as anchored
+   to the route's end. Non-interactive; auto-dismissed by the tool on a timer. */
+.leaflet-tooltip.deploy-finish-hint {
+  background: #0f7a37;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 8px;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.leaflet-tooltip.deploy-finish-hint.leaflet-tooltip-top::before {
+  border-top-color: #0f7a37;
+}
+
 /* Ship markers (Marion Dufresne, Agulhas II): a coloured disc with a white ring
    and a boat glyph, set apart from the small blue drifter circles. The inner
    .ship-disc carries the per-vessel fill (set inline); the crimson vs dark navy
