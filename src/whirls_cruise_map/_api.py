@@ -200,11 +200,13 @@ def _build_field_index(
     return _dt64_to_utc(lo_t), _dt64_to_utc(hi_t)
 
 
-def _get_field_index() -> tuple[datetime, datetime]:
-    """The store's currently available ``(lo, hi)`` span, rebuilt only when the
-    manifest's mtime changes (one ``stat`` per request, thread-safe) — the same
-    one-stat-per-request shape the v1 single-file mtime dance used, now against
-    the per-day store's manifest. Raises :class:`FileNotFoundError` when the
+def _get_field_index() -> tuple[tuple[datetime, datetime], float]:
+    """The store's currently available ``(lo, hi)`` span paired with its version
+    token (the manifest's mtime), both read under a single lock acquisition so the
+    version a caller memoizes against always matches the span it just fetched.
+    Rebuilt only when the mtime changes (one ``stat`` per request, thread-safe) —
+    the same one-stat-per-request shape the v1 single-file mtime dance used, now
+    against the per-day store's manifest. Raises :class:`FileNotFoundError` when the
     store has no manifest at all; :func:`_build_field_index` returning ``None``
     (a manifest with no day files on disk) raises the same, so both map to the
     503 the endpoints below give for "field unavailable"."""
@@ -220,7 +222,7 @@ def _get_field_index() -> tuple[datetime, datetime]:
                 raise FileNotFoundError(f"field store at {store} has no day files on disk")
             _index = idx
             _index_mtime = mtime
-        return _index
+        return _index, _index_mtime
 
 
 # The epoch/ISO/parse helpers this endpoint's bookkeeping uses (``to_epoch``,
@@ -309,7 +311,7 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
         raise ValueError("no seeds")
     sign = 1 if direction == "forward" else -1
 
-    field_lo, field_hi = _get_field_index()
+    (field_lo, field_hi), _ = _get_field_index()
     field_lo_e, field_hi_e = _time.to_epoch(field_lo), _time.to_epoch(field_hi)
     now_iso = _time.now_iso()
 
@@ -434,15 +436,6 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
 # wall-clock field) is not read by the client, so a frozen copy in a cached response is
 # harmless. lru_cache is thread-safe and does not cache exceptions, so a 422/503 recomputes.
 _FORECAST_CACHE_CAP = 32
-
-
-def _field_version() -> float:
-    """The field store's version token: the manifest mtime `_get_field_index` already stats
-    each request (bumped on every slow build write). Raises `FileNotFoundError` on an
-    empty/missing store, exactly as `_get_field_index` does (-> 503 upstream)."""
-    _get_field_index()  # refreshes `_index_mtime` if the manifest changed; may raise
-    assert _index_mtime is not None  # set by the call above on success
-    return _index_mtime
 
 
 @lru_cache(maxsize=_FORECAST_CACHE_CAP)
@@ -593,7 +586,8 @@ def forecast(req: ForecastRequest) -> dict:
     timeout."""
     try:
         seeds = tuple((s.lon, s.lat, s.start) for s in req.seeds)
-        return _cached_batch_run(_field_version(), req.direction, req.horizon_h, seeds)
+        _, version = _get_field_index()  # (span, version) under one lock; may raise -> 503
+        return _cached_batch_run(version, req.direction, req.horizon_h, seeds)
     except (FileNotFoundError, _field_store.FieldUnavailableError):
         # Store missing/empty/still-filling/gapped/corrupt — a transient operational
         # state, not a bug; the static map still serves. Fixed message: the exception can
@@ -615,7 +609,7 @@ def limits() -> dict:
     with an explicit message *before* POSTing. A plain GET, reached under the
     same CORS as the forecast POST (see the middleware note)."""
     try:
-        field_lo, field_hi = _get_field_index()
+        (field_lo, field_hi), _ = _get_field_index()
     except (FileNotFoundError, _field_store.FieldUnavailableError):
         # store missing/empty/corrupt — the static map still serves (SEC-2/SEC-7)
         raise HTTPException(status_code=503, detail=_FIELD_UNAVAILABLE_DETAIL)

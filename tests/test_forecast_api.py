@@ -423,9 +423,9 @@ def test_manifest_mtime_change_triggers_a_reload_of_the_field_index(tmp_path, mo
     monkeypatch.setenv("WHIRLS_FIELD_CACHE", str(tmp_path))
     _build_store(tmp_path, date(2026, 6, 28), date(2026, 7, 1))
 
-    lo1, hi1 = _api._get_field_index()
+    (lo1, hi1), _ = _api._get_field_index()
     assert hi1 == _utc(2026, 7, 1, 23)
-    assert _api._get_field_index() is _api._index  # cached, no rebuild yet
+    assert _api._get_field_index()[0] is _api._index  # span cached, no rebuild yet
 
     # A later build run extends the store's forward reach. Force a detectable
     # mtime bump (successive writes can otherwise land in the same filesystem
@@ -435,7 +435,7 @@ def test_manifest_mtime_change_triggers_a_reload_of_the_field_index(tmp_path, mo
     bumped = manifest_path.stat().st_mtime + 10
     os.utime(manifest_path, (bumped, bumped))
 
-    lo2, hi2 = _api._get_field_index()
+    (lo2, hi2), _ = _api._get_field_index()
     assert lo2 == lo1  # unchanged low edge
     assert hi2 == _utc(2026, 7, 5, 23)  # the new span is visible with no restart
 
