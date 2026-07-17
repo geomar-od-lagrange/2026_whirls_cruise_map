@@ -91,3 +91,21 @@ implemented: write a corresponding `docs/` file, move the plan to
 no frontmatter or structured metadata — `ROADMAP.md` and `BACKLOG.md` in
 `plans/` provide the index. Agents get context by reading `docs/*.md` (what
 is) + open `plans/*.md` (what's next).
+
+### Releases
+
+Tag releases with **date-based CalVer `YYYY.MM.DD.N`** — the UTC date plus a
+1-based sequence number `N` for the release within that day (the first tag of a
+day is `.1`, a second `.2`, and so on). No `v` prefix, zero-padded month and
+day: e.g. `2026.07.18.1`. This suits a research app with no semantic-version API
+contract — the tag says *when* a state shipped, and git history says what.
+
+Cut a release with an **annotated** tag whose message is a short changelog
+(what landed since the previous tag), then push the tag:
+
+```
+git tag -a 2026.07.18.1 -m "…summary…"   # on the commit to release (usually main)
+git push origin 2026.07.18.1
+```
+
+`git describe --tags` then names any commit relative to the last release.
