@@ -561,6 +561,19 @@ def test_store_field_lru_eviction_does_not_change_results(tmp_path):
         _field_store.StoreField(tmp_path, t_lo, t_hi, day_cache_cap=1)
 
 
+def test_store_array_rejects_unsupported_index_shapes(tmp_path):
+    """FC-2: _StoreArray implements exactly the two access patterns _forecast uses — a
+    scalar time index (a 2-D plane) and a 3-tuple corner gather — and rejects any other
+    index shape loudly at the boundary rather than mis-dispatching deep in a batch run."""
+    _build_sf_store(tmp_path, date(2026, 7, 1), date(2026, 7, 2))
+    field = _field_store.StoreField(tmp_path, _utc(2026, 7, 1), _utc(2026, 7, 2, 23))
+    assert field.u[0].ndim == 2  # the scalar-time plane pattern still works
+    with pytest.raises(TypeError, match="scalar time index or a 3-tuple"):
+        field.u[0:2]
+    with pytest.raises(TypeError, match="3-tuple gather"):
+        field.u[(0, 1)]
+
+
 def test_day_cache_cap_for_starts_scales_with_spread():
     """A batch whose seeds all start close together needs no more than the
     default cap; one whose seeds' starts spread across N calendar days needs

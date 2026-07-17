@@ -631,9 +631,25 @@ class _StoreArray:
         self._which = which  # 0 = uo, 1 = vo
 
     def __getitem__(self, key):
+        # Exactly the two access patterns `_forecast` uses against `_Field.u`/`.v`, and
+        # no others (FC-2): a scalar time index `[jt]` -> a 2-D plane, and a 3-tuple of
+        # parallel arrays `[jj, iy, ix]` -> a corner gather. Any other shape (a slice, a
+        # scalar 3-index, a bare 2-tuple) is a new access pattern the store never
+        # implemented — fail loudly at the boundary naming it, rather than silently
+        # mis-dispatching or raising deep inside a batch run.
         if isinstance(key, tuple):
+            if len(key) != 3:
+                raise TypeError(
+                    f"_StoreArray supports only a 3-tuple gather (jj, iy, ix), "
+                    f"got a {len(key)}-tuple"
+                )
             jj, iyc, ixc = key
             return self._gather(np.asarray(jj), np.asarray(iyc), np.asarray(ixc))
+        if isinstance(key, (slice, np.ndarray)):
+            raise TypeError(
+                f"_StoreArray supports only a scalar time index or a 3-tuple gather, "
+                f"not {type(key).__name__} indexing"
+            )
         return self._plane(int(key))
 
     def _plane(self, jt: int) -> np.ndarray:
