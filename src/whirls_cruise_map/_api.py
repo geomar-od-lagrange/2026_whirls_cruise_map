@@ -206,7 +206,7 @@ def _build_field_index(
 
     gaps = np.flatnonzero(np.diff(times) != np.timedelta64(1, "h"))
     bounds = [0, *(gaps + 1), times.size]
-    runs = [(times[bounds[i]], times[bounds[i + 1] - 1]) for i in range(len(bounds) - 1)]
+    runs = [(times[lo], times[hi - 1]) for lo, hi in zip(bounds, bounds[1:])]
 
     now = now if now is not None else datetime.now(timezone.utc)
     now64 = np.datetime64(now.astimezone(timezone.utc).replace(tzinfo=None), "s")
@@ -504,6 +504,18 @@ def _cached_batch_run(
         horizon_h,
         direction,
     )
+
+
+def _reset_caches() -> None:
+    """Clear every process-global cache the endpoint holds — the field index
+    (``_index``/``_index_mtime``) and the memoized-run ``lru_cache`` — in one call
+    (API-2). Tests reset between cases through this rather than poking the three
+    globals by name; it is also the seam any future hot-reload would use."""
+    global _index, _index_mtime
+    with _field_lock:
+        _index = None
+        _index_mtime = None
+    _cached_batch_run.cache_clear()
 
 
 # --- request-body size guard (SEC-4) -----------------------------------------

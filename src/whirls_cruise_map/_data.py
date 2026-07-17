@@ -38,7 +38,9 @@ from ._clean import PRE_DEPLOY_BATCH, load_deployments
 from ._gliders import Platform
 
 # Provenance strings recorded per file in manifest.json (the upstream a reader
-# can check the cleaning against). Imported lazily where a module owns the URL.
+# can check the cleaning against). These are eager module-level imports — each URL
+# lives in the module that owns that source — pulled in only for the four constant
+# strings (ING-6: the storage seam does not otherwise depend on those modules).
 from ._agulhas import CSV_URL as _AGULHAS_URL
 from ._fetch import SHARE_URL as _DRIFTER_URL
 from ._gliders import BASE as _GLIDER_URL

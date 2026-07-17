@@ -165,7 +165,7 @@ def ingest(data_dir: Path) -> None:
     entries.append(_data.write_raw_drifters(data_dir, concat))
     clean = _clean.clean(concat)
     tracks = _clean.tracks(clean)
-    awaiting = _clean.awaiting(clean)
+    awaiting = _clean.awaiting(clean, tracks)
     entries.append(_data.write_drifters(data_dir, tracks))
     print(
         f"drifters: {tracks['D_number'].nunique()} with fixes, "

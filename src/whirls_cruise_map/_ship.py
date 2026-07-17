@@ -52,7 +52,7 @@ def parse(text: str) -> list[tuple[datetime, float, float]]:
     vessel fixes; ``[]`` on a decode error or an unexpected shape."""
     try:
         raw = json.loads(text)
-    except Exception:
+    except json.JSONDecodeError:
         return []
     if not isinstance(raw, list):
         return []
