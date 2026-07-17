@@ -150,6 +150,30 @@ def test_forecast_request_rejects_resource_exhaustion_and_bad_inputs(kwargs):
         _api.ForecastRequest(**kwargs)
 
 
+@pytest.mark.parametrize(
+    "seed",
+    [
+        {"lon": 181.0, "lat": -34.0, "start": "2026-07-03T00:00:00Z"},    # lon > 180
+        {"lon": -181.0, "lat": -34.0, "start": "2026-07-03T00:00:00Z"},   # lon < -180
+        {"lon": 10.5, "lat": 91.0, "start": "2026-07-03T00:00:00Z"},      # lat > 90
+        {"lon": 10.5, "lat": -91.0, "start": "2026-07-03T00:00:00Z"},     # lat < -90
+        {"lon": float("nan"), "lat": -34.0, "start": "2026-07-03T00:00:00Z"},
+        {"lon": 10.5, "lat": float("inf"), "start": "2026-07-03T00:00:00Z"},
+    ],
+)
+def test_seed_rejects_out_of_range_or_non_finite_coords(seed):
+    """SEC-5: an unauthenticated endpoint must not accept a coordinate that could only
+    be malformed or an attack — out-of-range lon/lat and inf/nan are 422 up front, not
+    silently sampled off-field."""
+    with pytest.raises(ValidationError):
+        _api.ForecastRequest(seeds=[seed])
+
+
+def test_seed_accepts_the_coordinate_extremes():
+    _api.ForecastRequest(seeds=[{"lon": 180.0, "lat": 90.0, "start": "2026-07-03T00:00:00Z"}])
+    _api.ForecastRequest(seeds=[{"lon": -180.0, "lat": -90.0, "start": "2026-07-03T00:00:00Z"}])
+
+
 def test_forecast_request_budget_accepts_right_at_the_limit():
     n = 500
     horizon_h = _api._MAX_SEED_HOURS / n  # 2000 h, within the horizon_h le=2400 bound
@@ -444,18 +468,124 @@ def test_get_field_index_raises_when_the_store_has_no_manifest(tmp_path, monkeyp
         _api._get_field_index()
 
 
-def test_forecast_endpoint_503s_when_the_store_is_empty(tmp_path, monkeypatch):
+def test_forecast_endpoint_503s_with_a_fixed_message_that_does_not_leak_the_store_path(
+    tmp_path, monkeypatch
+):
+    """SEC-2/SEC-7: an empty store 503s with a *fixed* detail — never the exception's
+    text, which names the absolute store dir (WHIRLS_FIELD_CACHE / PVC path)."""
     monkeypatch.setenv("WHIRLS_FIELD_CACHE", str(tmp_path))
     client = TestClient(_api.app)
     resp = client.post("/api/forecast", json={"seeds": _ONE_SEED})
     assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    assert detail == _api._FIELD_UNAVAILABLE_DETAIL
+    assert str(tmp_path) not in detail  # no filesystem path in the public body
 
 
-def test_limits_endpoint_503s_when_the_store_is_empty(tmp_path, monkeypatch):
+def test_limits_endpoint_503s_with_a_fixed_message(tmp_path, monkeypatch):
     monkeypatch.setenv("WHIRLS_FIELD_CACHE", str(tmp_path))
     client = TestClient(_api.app)
     resp = client.get("/api/forecast/limits")
     assert resp.status_code == 503
+    assert resp.json()["detail"] == _api._FIELD_UNAVAILABLE_DETAIL
+    assert str(tmp_path) not in resp.json()["detail"]
+
+
+def test_forecast_503s_with_a_fixed_message_on_a_corrupt_manifest(store):
+    """SEC-2/SEC-7: a truncated/corrupt manifest is a store-state fault (a JSONDecodeError,
+    which is a ValueError subclass) — it must map to a fixed 503, not a 422 or an
+    internals-leaking 500. `_load_manifest` raises FieldUnavailableError, caught before the
+    422 branch."""
+    (store / "field_manifest.json").write_text("{ this is not valid json ")
+    client = TestClient(_api.app)
+    resp = client.post("/api/forecast", json={"seeds": _ONE_SEED, "horizon_h": 48.0})
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == _api._FIELD_UNAVAILABLE_DETAIL
+
+
+def test_limits_503s_on_a_corrupt_manifest(store):
+    """Same store-state fault must be a 503 on `limits()` too (which previously would have
+    500'd on the uncaught JSONDecodeError) — one consistent status for one fault."""
+    (store / "field_manifest.json").write_text("nonsense")
+    client = TestClient(_api.app)
+    resp = client.get("/api/forecast/limits")
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == _api._FIELD_UNAVAILABLE_DETAIL
+
+
+def test_413_carries_cors_headers_for_a_cross_origin_caller(store):
+    """The body-size 413 sits inside CORSMiddleware, so a cross-origin caller (the
+    two-port dev flow) sees the real 413 with CORS headers, not an opaque CORS error."""
+    client = TestClient(_api.app)
+    oversized = '{"seeds": [], "_pad": "' + "x" * (_api._MAX_BODY_BYTES + 1) + '"}'
+    resp = client.post(
+        "/api/forecast",
+        content=oversized,
+        headers={"Content-Type": "application/json", "Origin": "http://localhost:8000"},
+    )
+    assert resp.status_code == 413
+    assert resp.headers.get("access-control-allow-origin") == "http://localhost:8000"
+
+
+def test_a_real_bug_surfaces_as_500_not_a_masked_503(store, monkeypatch):
+    """SEC-2: the catch-all → 503 masked genuine 500-class defects. A non-"field
+    missing" exception in the run must now surface as a real 500 (logged server-side),
+    not a transient "field unavailable" 503."""
+    def boom(*args, **kwargs):
+        raise RuntimeError("a genuine bug in the advection path")
+
+    monkeypatch.setattr(_api, "_batch_run", boom)
+    client = TestClient(_api.app, raise_server_exceptions=False)
+    resp = client.post("/api/forecast", json={"seeds": _ONE_SEED, "horizon_h": 48.0})
+    assert resp.status_code == 500
+
+
+def test_oversized_request_body_is_413ed_before_parsing(tmp_path, monkeypatch):
+    """SEC-4: a body over `_MAX_BODY_BYTES` is rejected with 413 before Starlette
+    buffers and JSON-parses it — the app no longer relies on the out-of-repo nginx cap.
+    The store is empty here on purpose: a 413 must fire before any field access, so the
+    guard, not a 503/422, is what the client sees."""
+    monkeypatch.setenv("WHIRLS_FIELD_CACHE", str(tmp_path))
+    client = TestClient(_api.app)
+    # A syntactically-valid but oversized JSON body: pad with a huge ignored string so
+    # the raw bytes exceed the cap well before the seed cap or `extra=forbid` would bite.
+    oversized = '{"seeds": [], "_pad": "' + "x" * (_api._MAX_BODY_BYTES + 1) + '"}'
+    resp = client.post(
+        "/api/forecast",
+        content=oversized,
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 413
+
+
+def test_body_at_the_limit_is_not_413ed(store):
+    """A normal-sized body passes the guard untouched (the 413 only fires past the cap)."""
+    client = TestClient(_api.app)
+    resp = client.post("/api/forecast", json={"seeds": _ONE_SEED, "horizon_h": 48.0})
+    assert resp.status_code == 200
+
+
+def test_oversized_chunked_body_without_content_length_is_413ed(tmp_path, monkeypatch):
+    """SEC-4: a chunked body with no declared Content-Length can't be caught by the
+    up-front header check, so the middleware's streamed-byte tally must catch it and
+    still emit a clean 413 (the 413 is sent by the middleware, which sits inside
+    Starlette's ServerErrorMiddleware, so it wins the response before any 500 is sent)."""
+    monkeypatch.setenv("WHIRLS_FIELD_CACHE", str(tmp_path))
+    client = TestClient(_api.app)
+
+    def chunks():
+        yield b'{"seeds": [], "_pad": "'
+        sent = 0
+        while sent <= _api._MAX_BODY_BYTES:
+            block = b"x" * 64_000
+            yield block
+            sent += len(block)
+        yield b'"}'
+
+    resp = client.post(
+        "/api/forecast", content=chunks(), headers={"Content-Type": "application/json"}
+    )
+    assert resp.status_code == 413
 
 
 # --- gzip on the wire ---------------------------------------------------------

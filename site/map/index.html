@@ -3,6 +3,38 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!--
+    Content Security Policy (SEC-3) — defence-in-depth behind the per-sink escaping in
+    app.js (see escapeHtml). Everything the app loads is same-origin and vendored, so the
+    policy is tight:
+      script-src 'self'      — only vendored Leaflet + app.js; no inline script, no eval,
+                               so a reflected/DOM-injected <script> can never execute.
+      style-src  … 'unsafe-inline' — required: the marker divIcons set their identity
+                               colour via an inline style="background:…" attribute (from
+                               the trusted palette, not third-party data).
+      img-src    'self' data: — the WebP basemap/shadings and Leaflet's marker images are
+                               same-origin; data: covers any inline icon.
+      connect-src            — same-origin data/*.json + the forecast API (same-origin in
+                               the deploy, so 'self'), the localhost dev API in the
+                               two-port flow, and the one third-party host the client
+                               polls: the ship localisation API.
+      object-src 'none'; base-uri 'self'; form-action 'self' — remove legacy sinks.
+    No slippy-tile basemap exists (a static WebP mask replaced it), so no tile host is
+    listed. connect-src keeps the localhost dev origins so `pixi run serve` + `serve-api`
+    still works; they are inert in production.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self';
+    style-src 'self' 'unsafe-inline';
+    img-src 'self' data:;
+    connect-src 'self' https://localisation.flotteoceanographique.fr http://localhost:8001 http://127.0.0.1:8001;
+    object-src 'none';
+    base-uri 'self';
+    form-action 'self';
+  " />
+
   <title>2026 Whirls Cruise — drifter map</title>
 
   <!-- Leaflet 1.9.4 (vendored — served same-origin for offline / flaky ship internet) -->

@@ -575,6 +575,24 @@ def test_day_cache_cap_for_starts_scales_with_spread():
     assert _field_store.day_cache_cap_for_starts(7 * 86400.0, 0.0) == week_spread
 
 
+def test_field_unavailable_error_is_a_value_error_subclass():
+    """FieldUnavailableError must subclass ValueError so every existing `except
+    ValueError` caller keeps working, while the API can catch it specifically for a 503
+    (SEC-2/SEC-7)."""
+    assert issubclass(_field_store.FieldUnavailableError, ValueError)
+
+
+def test_load_window_on_an_empty_store_raises_field_unavailable(tmp_path):
+    """An empty store (no day files) is a store-state condition, so `load_window` raises
+    FieldUnavailableError — which the forecast/parcels endpoints map to a 503, not a 422."""
+    with pytest.raises(_field_store.FieldUnavailableError):
+        _field_store.load_window(
+            tmp_path,
+            t0=datetime(2026, 7, 1, tzinfo=timezone.utc),
+            t1=datetime(2026, 7, 2, tzinfo=timezone.utc),
+        )
+
+
 def test_day_cache_cap_for_starts_is_clamped_to_the_ceiling():
     """SEC-1 backstop: however wide the start spread, the cap can never exceed
     ``_MAX_DAY_CACHE_CAP`` — so no single run can pin an unbounded number of day

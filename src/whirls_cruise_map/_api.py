@@ -139,6 +139,20 @@ _MAX_START_SPREAD_DAYS = 8
 _MAX_CONCURRENCY = 3
 _run_semaphore = threading.BoundedSemaphore(_MAX_CONCURRENCY)
 
+# In-app request-body ceiling (SEC-4). `seeds: Field(max_length=_MAX_SEEDS)` rejects an
+# oversized array only *after* Starlette has buffered and JSON-parsed the whole body,
+# so a multi-hundred-MB payload materialises GBs of transient objects before the 422.
+# The largest legitimate body is ~_MAX_SEEDS seeds x ~90 bytes each ~= 180 KB; 512 KB
+# leaves generous headroom while 413-ing anything that could only be an attack, before
+# a byte is parsed. This is an in-app guard so the dev flow and any deployment shape are
+# covered without relying on the out-of-repo nginx `client_max_body_size` default.
+_MAX_BODY_BYTES = 512 * 1024
+
+# Fixed 503 detail for a missing/empty/not-yet-built store (SEC-2/SEC-7). Never
+# interpolate the exception: `FileNotFoundError` names the absolute store dir
+# (WHIRLS_FIELD_CACHE / PVC path), which must not reach a public body.
+_FIELD_UNAVAILABLE_DETAIL = "forecast field unavailable"
+
 _DEFAULT_HORIZON_H = 48.0
 
 # --- field store: resolve, index, and reload on manifest change --------------
@@ -259,10 +273,16 @@ def _parse_start(start: str) -> float:
 class Seed(BaseModel):
     """One drifter drop the client asks a run for: a position and its
     **absolute** water-entry time (the client bakes the ship-speed stagger into
-    ``start``, so the API needs no ship speed)."""
+    ``start``, so the API needs no ship speed).
 
-    lon: float
-    lat: float
+    ``lon``/``lat`` are bounded to the valid coordinate ranges and reject
+    ``inf``/``nan`` (SEC-5): the endpoint is unauthenticated, and a non-finite or
+    absurd coordinate is never a real deployment — it samples off-field, freezes
+    the seed at step 0, and is silently skipped, so bounding it up front turns a
+    latent unenforced invariant into an explicit 422."""
+
+    lon: float = Field(ge=-180, le=180, allow_inf_nan=False)
+    lat: float = Field(ge=-90, le=90, allow_inf_nan=False)
     start: str  # ISO-8601 water-entry time
 
 
@@ -272,14 +292,15 @@ class ForecastRequest(BaseModel):
     the latest for a backward one; every seed integrates to
     ``anchor + direction * horizon_h``.
 
-    The endpoint is public and unauthenticated, so every field is bounded: ``seeds``
-    caps the vectorized RK4 advection's per-request CPU and the transient trajectory
-    array it materialises; ``horizon_h`` is bounded to the widest a run could ever
-    need (100 days); and the combined ``len(seeds) * horizon_h`` budget
-    (:data:`_MAX_SEED_HOURS`) bounds worst-case compute + serialization to stay well
-    inside the edge router's ~60 s timeout even when neither knob alone would.
-    ``allow_inf_nan`` rejects ``inf``/``nan``, and ``extra="forbid"`` rejects unknown
-    fields (422, not silently ignored). Resident *memory* is bounded separately, at run
+    The endpoint is public and unauthenticated, so every field is bounded: each
+    :class:`Seed`'s ``lon``/``lat`` is range-checked and ``inf``/``nan``-rejected;
+    ``seeds`` caps the vectorized RK4 advection's per-request CPU and the transient
+    trajectory array it materialises; ``horizon_h`` is bounded to the widest a run
+    could ever need (100 days) and rejects ``inf``/``nan``; and the combined
+    ``len(seeds) * horizon_h`` budget (:data:`_MAX_SEED_HOURS`) bounds worst-case
+    compute + serialization to stay well inside the edge router's ~60 s timeout even
+    when neither knob alone would. ``extra="forbid"`` rejects unknown fields (422, not
+    silently ignored). Resident *memory* is bounded separately, at run
     time: a run whose in-window seed starts span more than :data:`_MAX_START_SPREAD_DAYS`
     calendar days is rejected (422) so no cheap request can pin the whole field store in
     RAM (SEC-1)."""
@@ -496,6 +517,85 @@ def _cached_batch_run(
     )
 
 
+# --- request-body size guard (SEC-4) -----------------------------------------
+
+
+class _BodySizeLimitMiddleware:
+    """Pure-ASGI middleware that 413s a request body over ``max_bytes`` *before* the app
+    parses it (SEC-4). Rejects on ``Content-Length`` up front when the header is present
+    (the common case — browsers/httpx/curl always send it for a sized body); otherwise it
+    buffers the body itself, capped at the limit, so a chunked body with no declared
+    length gets the same clean 413 and still never materialises past the cap. Buffering
+    then replaying is affordable precisely because the cap is tiny (a full seed-cap
+    request is ~180 KB), and it keeps the rejection uniform — a raise mid-read would be
+    caught by FastAPI's body-parse guard and surface as a generic 400 instead."""
+
+    def __init__(self, app, max_bytes: int):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        for name, value in scope.get("headers", []):
+            if name == b"content-length":
+                try:
+                    if int(value) > self.max_bytes:
+                        return await self._send_413(send)
+                except ValueError:
+                    pass
+                break
+
+        # Buffer the body (capped) so a length-less/chunked overflow is caught too, then
+        # replay it to the app. `trailer` forwards a non-body message (e.g. a mid-stream
+        # http.disconnect) untouched.
+        chunks: list[bytes] = []
+        trailer: dict | None = None
+        seen = 0
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                trailer = message
+                break
+            chunks.append(message.get("body", b""))
+            seen += len(chunks[-1])
+            if seen > self.max_bytes:
+                return await self._send_413(send)
+            if not message.get("more_body", False):
+                break
+
+        replay = [
+            {"type": "http.request", "body": b"".join(chunks), "more_body": False},
+            trailer if trailer is not None else {"type": "http.disconnect"},
+        ]
+        idx = 0
+
+        async def buffered_receive():
+            nonlocal idx
+            if idx < len(replay):
+                message = replay[idx]
+                idx += 1
+                return message
+            return {"type": "http.disconnect"}
+
+        await self.app(scope, buffered_receive, send)
+
+    async def _send_413(self, send) -> None:
+        import json
+
+        body = json.dumps({"detail": "request body too large"}).encode()
+        await send({
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+
 # --- app ---------------------------------------------------------------------
 
 app = FastAPI(title="WHIRLS deployment forecast")
@@ -512,6 +612,14 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 # two methods the client uses (the forecast POST + its Content-Type, and the GET the
 # limits probe sends), not the wildcard a public endpoint shouldn't advertise.
 _DEV_ORIGINS = ["http://localhost:8000", "http://127.0.0.1:8000"]
+# The body-size guard sits *inside* CORS (added before it) so the 413 it emits still
+# flows back out through CORSMiddleware and carries the CORS headers — otherwise a
+# cross-origin caller (the two-port dev flow) would see the 413 as an opaque CORS error
+# instead of the status/body. It is still outside GZip and the route, so it rejects an
+# oversized body before anything parses it (SEC-4).
+app.add_middleware(_BodySizeLimitMiddleware, max_bytes=_MAX_BODY_BYTES)
+# Added last -> outermost, so every response (including the body-size 413) gets CORS
+# headers.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_DEV_ORIGINS,
@@ -532,10 +640,18 @@ def forecast(req: ForecastRequest) -> dict:
     try:
         seeds = tuple((s.lon, s.lat, s.start) for s in req.seeds)
         return _cached_batch_run(_field_version(), req.direction, req.horizon_h, seeds)
-    except ValueError as exc:  # no seeds / unparseable start time
+    except (FileNotFoundError, _field_store.FieldUnavailableError):
+        # Store missing/empty/still-filling/gapped/corrupt — a transient operational
+        # state, not a bug; the static map still serves. Fixed message: the exception can
+        # name the store path (SEC-2/SEC-7). Caught *before* the ValueError branch below
+        # because FieldUnavailableError subclasses ValueError. Any *other* exception is a
+        # real 500, left to surface (and be logged) rather than masked as a 503.
+        raise HTTPException(status_code=503, detail=_FIELD_UNAVAILABLE_DETAIL)
+    except ValueError as exc:
+        # Client input only: no seeds / unparseable start / seed-start spread too wide.
+        # These messages echo the caller's own input (timestamps, counts), never
+        # internal state, so they are safe to return.
         raise HTTPException(status_code=422, detail=str(exc))
-    except Exception as exc:  # store missing/empty — the static map still serves
-        raise HTTPException(status_code=503, detail=f"forecast field unavailable: {exc}")
 
 
 @app.get("/api/forecast/limits")
@@ -546,8 +662,9 @@ def limits() -> dict:
     same CORS as the forecast POST (see the middleware note)."""
     try:
         field_lo, field_hi = _get_field_index()
-    except Exception as exc:  # store missing/empty — the static map still serves
-        raise HTTPException(status_code=503, detail=f"forecast field unavailable: {exc}")
+    except (FileNotFoundError, _field_store.FieldUnavailableError):
+        # store missing/empty/corrupt — the static map still serves (SEC-2/SEC-7)
+        raise HTTPException(status_code=503, detail=_FIELD_UNAVAILABLE_DETAIL)
     now_iso = _iso(_epoch(datetime.now(timezone.utc)))
     return {
         "max_seeds": _MAX_SEEDS,

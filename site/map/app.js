@@ -284,13 +284,32 @@ function formatLatLon(lat, lon) {
   return `${hemi(lat, "N", "S")}, ${hemi(lonWrapped, "E", "W")}`;
 }
 
+// Escape a value before it is interpolated into an HTML-string sink (innerHTML, a
+// Leaflet popup/tooltip's HTML content). The acute case (SEC-3) is the ship met
+// fields — `truewindspeed`, `seatemp`, … — which come straight from the live,
+// browser-polled third-party localisation API that is explicitly outside the trust
+// boundary; a compromised source returning `"<img src=x onerror=…>"` in any field would
+// otherwise run script on the map origin (the same origin as `/api`). The instrument
+// popups interpolate build-baked third-party strings (`D_number`, `batteryState`,
+// glider `id`) the same way, so they are escaped too. `String(value)` coerces first so a
+// number/null renders as text, never as markup. The CSP in `index.html` is the backstop;
+// escaping at the sink is the actual fix.
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function popupHtml(props, latlng) {
   const p = props || {};
   return `
     <div class="popup">
-      <strong>${p.D_number ?? "—"}</strong><br/>
+      <strong>${escapeHtml(p.D_number ?? "—")}</strong><br/>
       <span class="popup-label">Last fix:</span> ${formatFixTime(p.date_UTC)}<br/>
-      <span class="popup-label">Battery:</span> ${p.batteryState ?? "—"}<br/>
+      <span class="popup-label">Battery:</span> ${escapeHtml(p.batteryState ?? "—")}<br/>
       <span class="popup-label">Speed (derived):</span> ${fmtSpeedMps(p.derived_speed_mps)}<br/>
       <span class="popup-label">Heading (derived):</span> ${fmtDir(p.derived_heading_deg)}<br/>
       <span class="popup-label">Speed (reported):</span> ${fmtSpeedMps(p.U_speed_mps)}<br/>
@@ -3337,7 +3356,7 @@ function gliderPopupHtml(props, latlng) {
   const p = props || {};
   return `
     <div class="popup">
-      <strong>${p.id ?? "—"}</strong> <span class="popup-label">${gliderStyle(p.type).label}</span><br/>
+      <strong>${escapeHtml(p.id ?? "—")}</strong> <span class="popup-label">${escapeHtml(gliderStyle(p.type).label)}</span><br/>
       <span class="popup-label">Last fix:</span> ${formatFixTime(p.date_UTC)}<br/>
       <span class="popup-label">Speed (derived):</span> ${fmtSpeedMps(p.derived_speed_mps)}<br/>
       <span class="popup-label">Heading (derived):</span> ${fmtDir(p.derived_heading_deg)}<br/>
@@ -3658,9 +3677,9 @@ function agulhasRows(p) {
 function shipPopupHtml(vessel, p, prev) {
   const rows = vessel
     .rows(p, prev)
-    .map(([k, v]) => `<span class="popup-label">${k}:</span> ${v}<br/>`)
+    .map(([k, v]) => `<span class="popup-label">${escapeHtml(k)}:</span> ${escapeHtml(v)}<br/>`)
     .join("");
-  return `<div class="popup"><strong>${vessel.name}</strong><br/>${rows}</div>`;
+  return `<div class="popup"><strong>${escapeHtml(vessel.name)}</strong><br/>${rows}</div>`;
 }
 
 // A fix is usable only with finite coordinates and a timestamp. The API can emit
@@ -3857,7 +3876,7 @@ function renderShipInfo(vessel, p, prev) {
       .filter(([k]) => k !== "Last fix")
       .map(
         ([k, v]) =>
-          `<div class="ship-row"><span class="popup-label">${k}</span><span>${v}</span></div>`
+          `<div class="ship-row"><span class="popup-label">${escapeHtml(k)}</span><span>${escapeHtml(v)}</span></div>`
       )
       .join("");
 }

@@ -229,15 +229,25 @@ def _point_forecast(lat: float, lon: float, start: str | None = None) -> dict | 
 # --- app (the legacy single-point GET oracle; ._api is now a batch POST) ------
 
 app = FastAPI(title="WHIRLS interactive forecast — parcels engine (PoC)")
+# SEC-6: this oracle is a **local dev-only comparison tool — never deployed** and never
+# fronted by the public gateway (only `._api`'s batch POST is). It serves only
+# already-public forecast data and does bounded single-particle compute. Even so, keep
+# it hardened app-side: scope CORS to the same localhost dev origins as `._api` (not the
+# `*` wildcard a public endpoint shouldn't advertise) and bound the coordinate query
+# params below, so nothing here diverges from the production endpoint's posture should it
+# ever be exposed by accident.
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"]
+    CORSMiddleware,
+    allow_origins=_api._DEV_ORIGINS,
+    allow_methods=["GET"],
+    allow_headers=["Content-Type"],
 )
 
 
 @app.get("/api/forecast")
 def forecast(
-    lat: float = Query(..., description="deployment latitude, decimal degrees"),
-    lon: float = Query(..., description="deployment longitude, decimal degrees"),
+    lat: float = Query(..., ge=-90, le=90, description="deployment latitude, decimal degrees"),
+    lon: float = Query(..., ge=-180, le=180, description="deployment longitude, decimal degrees"),
     start: str | None = Query(
         None, description="ISO-8601 start time (default: window time nearest now)"
     ),
@@ -245,13 +255,18 @@ def forecast(
     """+12 h current-advection forecast (GeoJSON ``Feature``, ``kind`` =
     ``poc-forecast-parcels``) from a clicked position, advected with OceanParcels v4.
     The single-point GET contract the RK4 service once exposed (now a batch POST in
-    :mod:`._api`); kept as the engine-comparison oracle over the same field."""
+    :mod:`._api`); kept as the engine-comparison oracle over the same field. ``lat``/
+    ``lon`` are range-checked (SEC-6)."""
     try:
         feature = _point_forecast(lat, lon, start)
-    except ValueError as exc:  # unparseable / out-of-window start time
+    except (FileNotFoundError, _field_store.FieldUnavailableError):
+        # Store missing/empty/gapped — `load_window` raises FieldUnavailableError here,
+        # so catch it (before the ValueError branch it subclasses) and answer a fixed 503
+        # (SEC-7). Any other failure is a real 500, left to surface and be logged rather
+        # than masked as a transient 503 with internals interpolated in.
+        raise HTTPException(status_code=503, detail=_api._FIELD_UNAVAILABLE_DETAIL)
+    except ValueError as exc:  # unparseable / out-of-window start (timestamps only, safe)
         raise HTTPException(status_code=422, detail=str(exc))
-    except Exception as exc:  # field fetch/login/build failure — the static map still serves
-        raise HTTPException(status_code=503, detail=f"forecast field unavailable: {exc}")
     if feature is None:
         raise HTTPException(
             status_code=422, detail="no forecast: start point is on land or off the field"

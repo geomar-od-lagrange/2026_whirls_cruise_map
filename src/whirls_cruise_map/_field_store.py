@@ -55,6 +55,17 @@ from ._retry import with_retry
 
 _log = logging.getLogger(__name__)
 
+
+class FieldUnavailableError(ValueError):
+    """The store cannot currently serve a requested span: it is missing, empty, still
+    filling, or internally gapped/inconsistent. A ``ValueError`` subclass so every
+    existing ``except ValueError`` caller (and test) keeps working unchanged, but the
+    forecast API catches it *specifically* — before its generic ``ValueError`` handler —
+    to answer 503 "field unavailable" (an operational/transient state) rather than 422
+    (bad client input). A genuinely malformed *request* still raises plain ``ValueError``
+    and stays a 422; a config error (e.g. an invalid day-cache cap) also stays plain."""
+
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_STORE_DIR = _REPO_ROOT / "cache" / "field"
 _MANIFEST_NAME = "field_manifest.json"
@@ -98,7 +109,14 @@ def _load_manifest(store: Path) -> dict:
             "days": {},
         }
     with path.open() as f:
-        return json.load(f)
+        try:
+            return json.load(f)
+        except json.JSONDecodeError as exc:
+            # A half-written / corrupt manifest is a store-state fault, not bad client
+            # input — map it to a 503 like any other "field unavailable" (see
+            # FieldUnavailableError). Writes are atomic, so this should never happen in
+            # practice; catching it keeps a truncated file from surfacing as a 422/500.
+            raise FieldUnavailableError("field store manifest is unreadable") from exc
 
 
 def _write_manifest(store: Path, manifest: dict) -> None:
@@ -389,24 +407,24 @@ def update_store(
 # --- load_window (read side) --------------------------------------------------
 
 def _check_hourly_continuity(times: np.ndarray, t0: datetime, t1: datetime) -> None:
-    """Raise :class:`ValueError` naming the missing range unless ``times``
-    (sorted, deduplicated) covers ``[t0, t1]`` with no gap wider than an
-    hour."""
+    """Raise :class:`FieldUnavailableError` naming the missing range unless ``times``
+    (sorted, deduplicated) covers ``[t0, t1]`` with no gap wider than an hour — a store
+    -coverage condition, so the API maps it to a 503 (see :class:`FieldUnavailableError`)."""
     t0v, t1v = _to_dt64(t0), _to_dt64(t1)
     if times[0] > t0v:
-        raise ValueError(
+        raise FieldUnavailableError(
             f"field store has no data before {np.datetime_as_string(times[0], unit='s')}Z "
             f"(need from {t0.isoformat()})"
         )
     if times[-1] < t1v:
-        raise ValueError(
+        raise FieldUnavailableError(
             f"field store has no data after {np.datetime_as_string(times[-1], unit='s')}Z "
             f"(need through {t1.isoformat()})"
         )
     gaps = np.where(np.diff(times) != np.timedelta64(1, "h"))[0]
     if gaps.size:
         i = int(gaps[0])
-        raise ValueError(
+        raise FieldUnavailableError(
             f"field store gap between {np.datetime_as_string(times[i], unit='s')}Z and "
             f"{np.datetime_as_string(times[i + 1], unit='s')}Z"
         )
@@ -457,7 +475,7 @@ def load_window(store_dir: Path | str | None = None, *, t0: datetime, t1: dateti
         for _day, entry in _day_entries_in_span(store, days_meta, lo_day, hi_day):
             opened.append(xr.open_dataset(store / entry["file"]))
         if not opened:
-            raise ValueError(
+            raise FieldUnavailableError(
                 f"field store has no day files covering [{t0.isoformat()}, {t1.isoformat()}]"
             )
         combined = xr.concat(opened, dim="time").drop_duplicates("time").sortby("time")
@@ -679,7 +697,7 @@ class StoreField(_forecast._Field):
         hi_day = (t_hi + timedelta(hours=1)).date()
         entries = _day_entries_in_span(store, days_meta, lo_day, hi_day)
         if not entries:
-            raise ValueError(
+            raise FieldUnavailableError(
                 f"field store has no day files covering [{t_lo.isoformat()}, {t_hi.isoformat()}]"
             )
 
@@ -699,7 +717,7 @@ class StoreField(_forecast._Field):
             day_start = _to_dt64(datetime(day.year, day.month, day.day, tzinfo=timezone.utc))
             hours = np.round((times - day_start) / np.timedelta64(1, "h")).astype(int)
             if np.any((hours < 0) | (hours > 23)):
-                raise ValueError(
+                raise FieldUnavailableError(
                     f"field store day file for {day.isoformat()} has a time step "
                     "outside its own UTC day"
                 )
