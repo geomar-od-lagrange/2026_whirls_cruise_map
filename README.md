@@ -39,10 +39,11 @@ auto-targets the API on `:8001` (see `resolveApi` in `site/map/app.js`).
 
 ## Deployment
 
-The static site publishes to **GitLab Pages** on `git.geomar.de` via
-`.gitlab-ci.yml` (see [`docs/deploy.md`](docs/deploy.md)). Production is the
-OpenShift "whirlsview" stack — the gateway, OpenShift manifests, PVC/cron wiring,
-and forecast-API pod live in the sibling repo
-**[`oc_gateway`](https://git.geomar.de/2026-whirlscruise-lagrange/oc_gateway)**;
-[`docs/deployment.md`](docs/deployment.md) describes the streaming field-store
-shape both sides share.
+Production is the OpenShift "whirlsview" stack — the build CronJobs, gateway,
+OpenShift manifests, PVC wiring, and forecast-API pod live in the sibling repo
+**[`oc_gateway`](https://git.geomar.de/2026-whirlscruise-lagrange/oc_gateway)**.
+This repo builds the static bundle + cleaned data (`pixi run build`) and describes
+the shared streaming field-store shape in
+[`docs/deployment.md`](docs/deployment.md). Its own CI (`.gitlab-ci.yml`) no longer
+deploys — it only type-checks the frontend (GitLab Pages is retired). See
+[`docs/deploy.md`](docs/deploy.md).

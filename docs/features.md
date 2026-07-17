@@ -1,6 +1,6 @@
 # features
 
-- a map rendered as static HTML on GitLab Pages
+- a map rendered as static HTML (served by the OpenShift gateway, see deploy.md)
 - an unofficial / work-in-progress caution banner pinned above the header
 - a sidebar "data freshness" panel: the UTC build time and a live UTC clock
 - showing all drifter locations

@@ -1,30 +1,26 @@
-# GitLab CI — build the static cruise map and publish it to GitLab Pages.
+# GitLab CI — type-check the static map's ES modules.
 #
-# The site serves the map at /map/ and the cleaned dataset downloads at /data/,
-# with the root redirecting to the map via a relative meta-refresh in
-# site/index.html (no _redirects: its target is domain-absolute and breaks under
-# the namespace subpath the site is served at). The build regenerates both
-# git-ignored trees from live sources each run — site/data/ (ingest: cleaned +
-# raw CSVs) and site/map/data/ (derive: the map's GeoJSON/PNG) — so the build
-# MUST run in CI; a plain file copy would publish a dataless map.
+# This repo NO LONGER deploys from CI. The site (and the forecast API) are built on a
+# cadence and served by the OpenShift "whirlsview" stack in the sibling `oc_gateway`
+# repo (see README.md / docs/deploy.md); GitLab Pages is retired.
 #
-# GitLab Pages serves the `public/` directory produced by a job named `pages`, so
-# the job builds into site/ then copies the whole tree to public/.
-#
-# CMEMS currents/speed/forecast need a copernicusmarine login, supplied as masked
-# CI/CD variables COPERNICUSMARINE_SERVICE_USERNAME / COPERNICUSMARINE_SERVICE_PASSWORD
-# (Settings → CI/CD → Variables). Without them the build degrades to positions and
-# tracks (the drifter share is public).
-#
-# Cadence: add a scheduled pipeline under Settings → CI/CD → Pipeline schedules
-# (GitLab schedules are configured in the UI, not this file, and are not subject
-# to GitHub's high-frequency-cron dropping).
+# What remains is a guard: `pixi run check-frontend` (tsc --checkJs over site/map) fails
+# the pipeline on ANY TypeScript error — the ReferenceError-blank-page risk of the
+# no-bundler ES-module split (see tsconfig.json). tsc exits non-zero on any error, so a
+# green pipeline means a clean type check.
 
-pages:
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+check-frontend:
   image: debian:bookworm-slim
   variables:
-    PIXI_HOME: "$CI_PROJECT_DIR/.pixi-home"     # pixi binary (on PATH below)
-    PIXI_CACHE_DIR: "$CI_PROJECT_DIR/.pixi-cache" # package cache, kept in-project so it can be cached
+    PIXI_HOME: "$CI_PROJECT_DIR/.pixi-home"       # pixi binary (on PATH below)
+    PIXI_CACHE_DIR: "$CI_PROJECT_DIR/.pixi-cache"  # package cache, kept in-project so it can be cached
   cache:
     key: "pixi-$CI_COMMIT_REF_SLUG"
     paths:
@@ -34,23 +30,9 @@ pages:
     - curl -fsSL https://pixi.sh/install.sh | bash
     - export PATH="$PIXI_HOME/bin:$PATH"
   script:
-    - pixi run build
-    - rm -rf public && cp -r site public
-  artifacts:
-    paths:
-      - public
-    # 10-min crons produce a lot of these; keep only a few hours of history for
-    # post-mortem inspection. The latest successful run is retained regardless
-    # (project setting "Keep artifacts from most recent successful pipelines"),
-    # so the live deployment's artifact is never expired by this.
-    expire_in: 6 hours
-  rules:
-    # Publish only from the default branch. Push, scheduled, and manual ("web")
-    # pipelines all run on the default branch and so match; merge-request
-    # pipelines (no CI_COMMIT_BRANCH) do not deploy.
-    - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+    - pixi run check-frontend
 
-# Faster alternative, if the runner can reach ghcr.io: use the official pixi
-# image and drop the install. Replace the `image` and `before_script` above with:
+# Faster alternative, if the runner can reach ghcr.io: use the official pixi image and
+# drop the install. Replace the `image` and `before_script` above with:
 #   image: ghcr.io/prefix-dev/pixi:latest
 #   before_script: []
