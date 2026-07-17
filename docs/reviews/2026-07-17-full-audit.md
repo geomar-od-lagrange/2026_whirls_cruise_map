@@ -422,17 +422,59 @@ file. This is the headline frontend concern the review was asked to surface. Not
 severity below is **structural/maintainability**, not an operational bug like SEC-1 —
 the app runs correctly today.
 
-### [FS-1] (HIGH, structural) Split `app.js` into ES modules along the existing banners
+### [FS-1] (HIGH, structural) Split `app.js` into ES modules — along a concern spine, not the banners verbatim
 `site/map/app.js:0` (whole file)
 
-The 19 `// --- section ---` banners already trace clean seams. Switch the tag to
-`<script type=module>` (the browser resolves the graph natively and offline — no
-bundler, matching the vendored/same-origin constraint) and split into, e.g.:
-`config.js` (17–206: `DATA`/`PALETTES`/`SHIP`/`VESSELS`/`BATCH_STYLES`),
-`format.js` (206–303 helpers), `selection.js` (the unified highlight subsystem — FS-2),
-`tracks.js` (521–1030), `controls.js` (1097–1546, the dock/UI-chrome builders — FS-4),
-`deploy.js` (1548–2910 — FS-5), `inertial.js`, `gliders.js`, `currents.js`, `ships.js`,
-and `main.js` (3865–4557) as the wiring entry point.
+The move is: switch the tag to `<script type=module>` (the browser resolves the graph
+natively and offline — no bundler, matching the vendored/same-origin constraint) and
+split the file. The 19 `// --- section ---` banners are a good *map* of where the seams
+are, but **do not lift them one-banner-one-module** — that reproduces a structural flaw
+already latent in the banners.
+
+**Why not the banner-derived list.** The obvious cut (`config.js`, `format.js`,
+`selection.js`, `tracks.js`, `controls.js`, `deploy.js`, `inertial.js`, `gliders.js`,
+`currents.js`, `ships.js`, `main.js`) silently mixes **two decomposition axes** — some
+modules are *by concern* (`selection`, `tracks`, `controls`), others are *by
+feature/instrument* (`gliders`, `ships`, `deploy`). The tell is the asymmetry: it gives
+gliders and ships their own modules but **no `drifters.js`**. That is not principled — it
+is an artifact of the file's history. Drifters are the *core, first* data type, so their
+rendering became the "generic" machinery (`buildBatchGroups:1031`, `displayTrack:885`,
+`addTrackSegments:901`, plus the instrument palette / batch styling / click-to-highlight /
+at-time markers), while gliders (`buildGliderMarkerGroups:3353`, `gliderIcon`,
+`gliderPopupHtml`) and ships were added later as **self-contained sections that mirror**
+that machinery. So a `gliders.js`-without-`drifters.js` split would carve off the
+late add-ons and leave the core type smeared across `tracks`/`selection`/`controls` —
+baking in the exact coupling FS-1 exists to remove.
+
+**Recommended shape: a concern spine + thin per-instrument adapters.** Because the render
+/ selection / clock / controls machinery is already shared across instrument types, make
+*concern* the backbone and express each instrument family as a small adapter implementing
+a common `{icon, popup, markerGroups, trackGroups}` contract:
+
+```
+core/
+  render.js       generic track/marker rendering (displayTrack, addTrackSegments, marker groups)
+  selection.js    the one unified Selection helper (FS-2)
+  clock.js        register()/tick() fan-out (FS-3)
+  controls.js     dock / time slider / cursor readout (1097–1546, FS-4)
+instruments/      each implements the same contract, plugged into core/
+  drifters.js     ← buildBatchGroups + drifter marker/popup, pulled OUT of the generic soup
+  gliders.js      ← already this shape (3295–3436)
+  ships.js        ← already this shape (3514 onward: ship tracks + course/speed)
+features/         genuinely self-contained subsystems
+  deploy.js       the PoC deploy tool (~1360 lines, cleanest first extract — FS-5)
+  inertial.js
+  currents.js
+config.js (17–206), format.js (206–303), main.js (3865–4557, wiring entry point)
+```
+
+The evidence that this is the right axis: `buildBatchGroups` (drifter) and
+`buildGliderMarkerGroups` (glider) are near-parallel today — making drifters an
+`instruments/drifters.js` sibling of `gliders.js` turns that accidental parallel into an
+explicit shared contract, and is a natural candidate to unify the two later. Treat the
+filename list as a sketch to rework around this spine, not a spec. Start with
+`features/deploy.js` (FS-5): it is the most self-contained third of the file and proves
+the `type=module` switch at low risk.
 
 ### [FS-2] (MED) Four near-identical selection state machines should collapse into one
 `site/map/app.js:361`
