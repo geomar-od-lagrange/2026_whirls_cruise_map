@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from whirls_cruise_map import _inertial
+from whirls_cruise_map import _geo, _inertial
 
 T0 = np.datetime64("2026-07-03T00:00:00", "s")
 N_TIME = 25  # hourly steps, ~1.2 inertial periods at lat ~ -37 (T_f ~ 19.9 h)
@@ -41,7 +41,7 @@ def _synthetic_window() -> tuple[xr.Dataset, dict]:
     amp = rng.uniform(0.05, 0.25, (N_LAT, N_LON))
     phase = rng.uniform(-np.pi, np.pi, (N_LAT, N_LON))
 
-    f = 2.0 * _inertial.OMEGA * np.sin(np.radians(lats))  # (lat,); < 0 here
+    f = 2.0 * _geo.OMEGA * np.sin(np.radians(lats))  # (lat,); < 0 here
     g = np.exp(-1j * np.outer(_epoch(times) - t_ref, f))  # (time, lat)
     w = (u0 + 1j * v0)[None] + (amp * np.exp(1j * phase))[None] * g[:, :, None]
 
@@ -71,7 +71,7 @@ def test_southern_hemisphere_inertial_rotation_is_ccw():
     SH-anticyclonic inertial sense. The cross product of consecutive NI
     velocity samples must stay positive (hourly steps rotate well under pi, so
     the sign is unambiguous). Guards the sign convention."""
-    f = 2.0 * _inertial.OMEGA * np.sin(np.radians(-37.0))
+    f = 2.0 * _geo.OMEGA * np.sin(np.radians(-37.0))
     assert f < 0
     w = 0.1 * np.exp(-1j * f * 3600.0 * np.arange(N_TIME))  # pure NI component
     u, v = w.real, w.imag
@@ -140,7 +140,7 @@ def test_to_inertial_field_json_header_geometry():
     assert header["dx"] == pytest.approx(0.25)
     assert header["dy"] == pytest.approx(0.25)
     assert header["t_ref"] == d.attrs["t_ref"]
-    assert header["omega"] == _inertial.OMEGA
+    assert header["omega"] == _geo.OMEGA
     assert header["units"] == "m.s-1"
 
 

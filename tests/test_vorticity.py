@@ -13,10 +13,10 @@ import xarray as xr
 from PIL import Image
 
 from whirls_cruise_map._currents import N_BINS, frame_span, frame_valid_time
+from whirls_cruise_map._geo import EARTH_RADIUS_M as _EARTH_RADIUS_M
+from whirls_cruise_map._geo import OMEGA
 from whirls_cruise_map._vorticity import (
-    OMEGA,
     VORT_CLIP,
-    _EARTH_RADIUS_M,
     to_vorticity_frames,
     zeta_over_f,
 )

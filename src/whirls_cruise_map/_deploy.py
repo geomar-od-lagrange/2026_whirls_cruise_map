@@ -26,9 +26,10 @@ drift).
 from __future__ import annotations
 
 import bisect
-import math
 
 import pandas as pd
+
+from . import _geo
 
 # Within this distance a drifter is treated as still attached to the vessel (on
 # deck / alongside). Comfortably above GPS + ship-length scatter (~0.1 km seen on
@@ -40,18 +41,12 @@ NEAR_SHIP_KM = 1.0
 # interpolation scatter seen while a drifter is aboard, and matched to the
 # separation a genuinely deployed drifter reaches (5+ km).
 DETACHED_KM = 5.0
-_EARTH_RADIUS_KM = 6371.0
+_EARTH_RADIUS_KM = _geo.EARTH_RADIUS_M / 1000.0  # single source: the shared radius, in km
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    rlat1, rlat2 = math.radians(lat1), math.radians(lat2)
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(rlat1) * math.cos(rlat2) * math.sin(dlon / 2) ** 2
-    )
-    return 2 * _EARTH_RADIUS_KM * math.asin(math.sqrt(a))
+    """Great-circle distance in km — the shared metre haversine over 1000."""
+    return _geo.haversine_m(lat1, lon1, lat2, lon2) / 1000.0
 
 
 class _ShipTrack:

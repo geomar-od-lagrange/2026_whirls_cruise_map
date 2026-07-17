@@ -70,7 +70,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field, model_validator
 
-from . import _field_store, _forecast
+from . import _field_store, _forecast, _time
 
 # --- config ------------------------------------------------------------------
 
@@ -242,29 +242,12 @@ def _get_field_index() -> tuple[datetime, datetime]:
         return _index
 
 
-def _epoch(dt: datetime) -> float:
-    """Timezone-aware or naive-UTC ``dt`` -> epoch seconds, the clock convention
-    :mod:`_forecast`/:mod:`_field_store` share."""
-    dt = dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
-    return float(np.datetime64(dt.astimezone(timezone.utc).replace(tzinfo=None), "s").astype(np.float64))
-
-
-def _from_epoch(epoch_s: float) -> datetime:
-    return datetime.fromtimestamp(epoch_s, tz=timezone.utc)
-
-
-def _iso(epoch_s: float) -> str:
-    """Epoch seconds -> ISO-8601 UTC (``Z``)."""
-    return np.datetime_as_string(np.datetime64(int(round(epoch_s)), "s"), unit="s") + "Z"
-
-
-def _parse_start(start: str) -> float:
-    """Parse an ISO-8601 start time (``Z`` or offset) to epoch seconds — the clock
-    convention :attr:`._forecast._Field.times` uses (naive-UTC seconds since 1970).
-    Raises :class:`ValueError` on an unparseable string."""
-    dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-    dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return float(np.datetime64(dt, "s").astype(np.float64))
+# The epoch/ISO/parse helpers this endpoint's bookkeeping uses (``to_epoch``,
+# ``from_epoch``, ``iso_z_from_epoch``, ``parse_iso_to_epoch``, ``now_iso``) live in the
+# shared :mod:`._time` module — one home for the whole codebase's UTC clock convention
+# (audit IDIOM-2 / API-3), so the parcels oracle no longer imports them from here either
+# (API-4). ``_dt64_to_utc`` above stays: it is a numpy-datetime64 -> datetime helper
+# specific to the field-index build, not part of that shared surface.
 
 
 # --- request models ----------------------------------------------------------
@@ -346,11 +329,11 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
     sign = 1 if direction == "forward" else -1
 
     field_lo, field_hi = _get_field_index()
-    field_lo_e, field_hi_e = _epoch(field_lo), _epoch(field_hi)
-    now_iso = _iso(_epoch(datetime.now(timezone.utc)))
+    field_lo_e, field_hi_e = _time.to_epoch(field_lo), _time.to_epoch(field_hi)
+    now_iso = _time.now_iso()
 
     starts = np.array(
-        [_parse_start(s.start) for s in seeds], dtype=np.float64  # ValueError -> 422
+        [_time.parse_iso_to_epoch(s.start) for s in seeds], dtype=np.float64  # ValueError -> 422
     )
     anchor = float(starts.max()) if sign < 0 else float(starts.min())
     common_end = anchor + sign * horizon_h * 3600.0
@@ -364,7 +347,7 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
     clipped_hi = min(needed_hi, field_hi_e)
 
     base_properties = {
-        "run_start": _iso(anchor),
+        "run_start": _time.iso_z_from_epoch(anchor),
         "direction": direction,
         "horizon_h": horizon_h,
         "cadence_s": cadence_s,
@@ -383,7 +366,7 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
                 **base_properties,
                 "tracks": 0,
                 "skipped": len(seeds),
-                "window": [_iso(field_lo_e), _iso(field_hi_e)],
+                "window": [_time.iso_z_from_epoch(field_lo_e), _time.iso_z_from_epoch(field_hi_e)],
             },
         }
 
@@ -433,7 +416,7 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
     # the semaphore.
     with _run_semaphore:
         field = _field_store.StoreField(
-            None, _from_epoch(clipped_lo), _from_epoch(clipped_hi), day_cache_cap=day_cache_cap
+            None, _time.from_epoch(clipped_lo), _time.from_epoch(clipped_hi), day_cache_cap=day_cache_cap
         )
         positions, completed = _forecast._batch_advect(
             field, seed_lon, seed_lat, starts, n_steps, direction=sign
@@ -461,7 +444,7 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
                 "properties": {
                     "role": "track",
                     "index": i,
-                    "start": _iso(starts[i]),
+                    "start": _time.iso_z_from_epoch(starts[i]),
                     "cadence_s": cadence_s,
                     "direction": direction,
                 },
@@ -475,7 +458,7 @@ def _batch_run(seeds: list[Seed], horizon_h: float, direction: Literal["forward"
             **base_properties,
             "tracks": n_tracks,
             "skipped": n_skipped,
-            "window": [_iso(clipped_lo), _iso(clipped_hi)],
+            "window": [_time.iso_z_from_epoch(clipped_lo), _time.iso_z_from_epoch(clipped_hi)],
         },
     }
 
@@ -665,12 +648,12 @@ def limits() -> dict:
     except (FileNotFoundError, _field_store.FieldUnavailableError):
         # store missing/empty/corrupt — the static map still serves (SEC-2/SEC-7)
         raise HTTPException(status_code=503, detail=_FIELD_UNAVAILABLE_DETAIL)
-    now_iso = _iso(_epoch(datetime.now(timezone.utc)))
+    now_iso = _time.now_iso()
     return {
         "max_seeds": _MAX_SEEDS,
         "max_seed_hours": _MAX_SEED_HOURS,
         "max_start_spread_days": _MAX_START_SPREAD_DAYS,
-        "window": [_iso(_epoch(field_lo)), _iso(_epoch(field_hi))],
+        "window": [_time.iso_z_from_epoch(_time.to_epoch(field_lo)), _time.iso_z_from_epoch(_time.to_epoch(field_hi))],
         "analysis_edge": now_iso,
     }
 

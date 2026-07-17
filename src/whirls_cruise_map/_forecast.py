@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 import numpy as np
 import xarray as xr
 
-_EARTH_RADIUS_M = 6_371_000.0
+from . import _geo, _time
 
 # Integrate this far forward, with this RK4 sub-step and this polyline-vertex
 # spacing (minutes). The marks (hours) and vertex spacing must divide the step
@@ -124,9 +124,7 @@ def _deriv(
     if vel is None:
         return None
     u, v = vel
-    dlat = v / _EARTH_RADIUS_M * (180.0 / math.pi)
-    dlon = u / (_EARTH_RADIUS_M * math.cos(math.radians(lat))) * (180.0 / math.pi)
-    return dlon, dlat
+    return _geo.uv_to_deg_per_s(u, v, lat)
 
 
 def _rk4_step(
@@ -285,8 +283,7 @@ def _vec_deriv(
     u = _sample(field.u)
     v = _sample(field.v)
     bad = ~valid | ~np.isfinite(u) | ~np.isfinite(v)
-    dlat = v / _EARTH_RADIUS_M * (180.0 / math.pi)
-    dlon = u / (_EARTH_RADIUS_M * np.cos(np.radians(lat_s))) * (180.0 / math.pi)
+    dlon, dlat = _geo.uv_to_deg_per_s(u, v, lat_s)
     return np.where(bad, np.nan, dlon), np.where(bad, np.nan, dlat)
 
 
@@ -431,5 +428,5 @@ def _anchor_t0(sampler: _Field, t0: float | None = None) -> tuple[float, str]:
             datetime.now(timezone.utc).replace(tzinfo=None), "s"
         ).astype(np.float64)
         t0 = float(sampler.times[int(np.argmin(np.abs(sampler.times - now)))])
-    valid = np.datetime_as_string(np.datetime64(int(round(t0)), "s"), unit="s") + "Z"
+    valid = _time.iso_z_from_epoch(t0)
     return t0, valid

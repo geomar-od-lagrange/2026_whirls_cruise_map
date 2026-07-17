@@ -67,7 +67,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import parcels
 
-from . import _api, _field_store, _forecast
+from . import _api, _field_store, _forecast, _time
 
 # --- config (mirrors ._api; only the engine and port differ) -----------------
 
@@ -212,12 +212,12 @@ def _point_forecast(lat: float, lon: float, start: str | None = None) -> dict | 
     fieldset, times_epoch = _get_fieldset()
     t0_epoch = None
     if start:
-        t0_epoch = _api._parse_start(start)  # ValueError -> 422 in the endpoint
+        t0_epoch = _time.parse_iso_to_epoch(start)  # ValueError -> 422 in the endpoint
         lo, hi = float(times_epoch[0]), float(times_epoch[-1])
         if not (lo <= t0_epoch <= hi):
             raise ValueError(
                 f"start {start} is outside the field window "
-                f"[{_api._iso(lo)} .. {_api._iso(hi)}]"
+                f"[{_time.iso_z_from_epoch(lo)} .. {_time.iso_z_from_epoch(hi)}]"
             )
     # Reuse the RK4 anchor helper: it only needs a `.times` array of epoch seconds.
     from types import SimpleNamespace
