@@ -10,12 +10,23 @@ from datetime import datetime, timedelta, timezone
 
 from whirls_cruise_map._geojson import (
     GLIDER_TRANSIT_MPS,
+    Point,
     _drop_leading_transit,
+    _glider_point,
     gliders_geojson,
 )
 from whirls_cruise_map._gliders import Platform
 
 BASE = datetime(2026, 7, 1, tzinfo=timezone.utc)
+
+
+def test_glider_point_maps_the_time_lat_lon_ordering():
+    """The single boundary where a glider ``(time, lat, lon)`` fix becomes the internal
+    ``Point(lat, lon, time)`` — pin the mapping so a future field swap is caught here
+    (DER-1: everything else goes through this helper, never raw indices)."""
+    p = _glider_point((BASE, -37.5, 12.25))  # (time, lat, lon)
+    assert isinstance(p, Point)
+    assert (p.lat, p.lon, p.time) == (-37.5, 12.25, BASE)
 
 
 def _fix(minutes: float, lon: float, lat: float = -37.0):

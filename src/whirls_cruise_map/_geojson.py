@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 import math
+from typing import NamedTuple
 
 import pandas as pd
 
 from . import _geo
 from ._clean import PRE_DEPLOY_BATCH
 from ._forecast import _COORD_NDIGITS
+
+
+class Point(NamedTuple):
+    """One track fix as ``(lat, lon, time)`` — the single internal ordering the motion
+    helpers (:func:`_segment_motion`, :func:`_bearing_deg`) and coordinate emitter
+    consume. Built at every boundary — drifter rows via :func:`_point`, glider fix
+    tuples via :func:`_glider_point` — so no call site hand-permutes raw tuple indices,
+    where a transposed index would silently yield wrong speeds/headings or a
+    lon/lat-swapped geometry (DER-1 / IDIOM-4)."""
+
+    lat: float
+    lon: float
+    time: pd.Timestamp
 
 # A glider track's leading fixes can be the launch vessel carrying it out to the
 # deployment site. A Seaglider's own horizontal speed is ~0.25 m/s (0.1–0.4 m/s
@@ -30,9 +44,18 @@ def _coord(lon, lat) -> list[float]:
     return [round(float(lon), _COORD_NDIGITS), round(float(lat), _COORD_NDIGITS)]
 
 
-def _point(row) -> tuple[float, float, pd.Timestamp]:
-    """(Latitude, Longitude, time) for an ``itertuples`` row."""
-    return (row.Latitude, row.Longitude, row.date_UTC)
+def _point(row) -> Point:
+    """A :class:`Point` for a drifter ``itertuples`` row (named columns, no ordering
+    ambiguity)."""
+    return Point(row.Latitude, row.Longitude, row.date_UTC)
+
+
+def _glider_point(fix: tuple) -> Point:
+    """A :class:`Point` from a glider ``(time, lat, lon)`` fix tuple (the shape
+    :attr:`._gliders.Platform.fixes` holds) — the **one** place that ordering is
+    named, so every glider call site goes through it instead of re-indexing
+    ``fix[1]``/``fix[2]``/``fix[0]`` by hand."""
+    return Point(fix[1], fix[2], fix[0])
 
 
 def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -45,18 +68,18 @@ def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return (math.degrees(math.atan2(y, x)) + 360) % 360
 
 
-def _segment_motion(prev_pt, cur_pt) -> tuple[float | None, float | None]:
+def _segment_motion(prev_pt: Point | None, cur_pt: Point) -> tuple[float | None, float | None]:
     """Mean speed (m/s) and initial heading (deg true) over ``prev_pt`` ->
-    ``cur_pt``. ``prev_pt`` is ``None`` at a track's first fix; heading is
-    ``None`` when the two fixes coincide (bearing undefined)."""
+    ``cur_pt`` (both :class:`Point`). ``prev_pt`` is ``None`` at a track's first fix;
+    heading is ``None`` when the two fixes coincide (bearing undefined)."""
     if prev_pt is None:
         return None, None
-    dt = (cur_pt[2] - prev_pt[2]).total_seconds()
+    dt = (cur_pt.time - prev_pt.time).total_seconds()
     if dt <= 0:
         return None, None
-    dist = _geo.haversine_m(prev_pt[0], prev_pt[1], cur_pt[0], cur_pt[1])
+    dist = _geo.haversine_m(prev_pt.lat, prev_pt.lon, cur_pt.lat, cur_pt.lon)
     heading = (
-        _bearing_deg(prev_pt[0], prev_pt[1], cur_pt[0], cur_pt[1]) if dist > 0 else None
+        _bearing_deg(prev_pt.lat, prev_pt.lon, cur_pt.lat, cur_pt.lon) if dist > 0 else None
     )
     return dist / dt, heading
 
@@ -88,15 +111,15 @@ def _fix_record(row, prev_pt) -> dict:
     }
 
 
-def _glider_fix_record(pt, prev_pt) -> dict:
+def _glider_fix_record(pt: Point, prev_pt: Point | None) -> dict:
     """One glider fix's popup payload: time plus the velocity *derived* from the
     ``prev_pt`` -> this-fix segment. Gliders carry no reported velocity or
     battery, so — unlike :func:`_fix_record` — only the derived pair is emitted;
-    the client shows a dash for the fields a glider lacks. ``pt`` is
-    ``(time, lat, lon)``."""
-    speed, heading = _segment_motion(prev_pt, (pt[1], pt[2], pt[0]))
+    the client shows a dash for the fields a glider lacks. ``pt``/``prev_pt`` are
+    :class:`Point`."""
+    speed, heading = _segment_motion(prev_pt, pt)
     return {
-        "date_UTC": pt[0].isoformat(),
+        "date_UTC": pt.time.isoformat(),
         "derived_speed_mps": _round(speed, 4),
         "derived_heading_deg": _round(heading, 1),
     }
@@ -125,10 +148,7 @@ def _drop_leading_transit(
     """
     last_transit = 0
     for i in range(1, len(fixes)):
-        speed, _ = _segment_motion(
-            (fixes[i - 1][1], fixes[i - 1][2], fixes[i - 1][0]),
-            (fixes[i][1], fixes[i][2], fixes[i][0]),
-        )
+        speed, _ = _segment_motion(_glider_point(fixes[i - 1]), _glider_point(fixes[i]))
         if speed is not None and speed > threshold:
             last_transit = i
         else:
@@ -158,12 +178,12 @@ def gliders_geojson(platforms: list) -> dict:
     features = []
     for p in platforms:
         raw = p.fixes
-        last = raw[-1]
-        prev = (raw[-2][1], raw[-2][2], raw[-2][0]) if len(raw) >= 2 else None
+        last = _glider_point(raw[-1])
+        prev = _glider_point(raw[-2]) if len(raw) >= 2 else None
         features.append(
             {
                 "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": _coord(last[2], last[1])},
+                "geometry": {"type": "Point", "coordinates": _coord(last.lon, last.lat)},
                 "properties": {
                     "id": p.id,
                     "type": p.type,
@@ -176,9 +196,10 @@ def gliders_geojson(platforms: list) -> dict:
             continue
         coords, fix_recs, prev_pt = [], [], None
         for f in fixes:
-            coords.append(_coord(f[2], f[1]))
-            fix_recs.append(_glider_fix_record(f, prev_pt))
-            prev_pt = (f[1], f[2], f[0])
+            pt = _glider_point(f)
+            coords.append(_coord(pt.lon, pt.lat))
+            fix_recs.append(_glider_fix_record(pt, prev_pt))
+            prev_pt = pt
         features.append(
             {
                 "type": "Feature",
