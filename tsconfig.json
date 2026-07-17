@@ -1,0 +1,17 @@
+{
+  "//": "Dev-only type-checking of the static map's plain-JS ES modules (site/map). NOT a build step — `noEmit`, nothing compiles, the .js ships verbatim (the site is no-bundler). `checkJs` surfaces `Cannot find name` for any cross-module reference that isn't imported/declared — the ReferenceError-blank-page risk of the ES-module split. Run: `pixi run check-frontend`.",
+  "compilerOptions": {
+    "checkJs": true,
+    "allowJs": true,
+    "noEmit": true,
+    "noImplicitAny": false,
+    "strict": false,
+    "target": "es2020",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["dom", "es2020"],
+    "skipLibCheck": true
+  },
+  "include": ["site/map/**/*.js", "frontend-globals.d.ts"],
+  "exclude": ["site/map/vendor"]
+}

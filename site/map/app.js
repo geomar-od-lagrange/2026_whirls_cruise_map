@@ -14,102 +14,27 @@
  *   build.json                     -> sidebar "data freshness" build time
  */
 
-const DATA = {
-  latest: "./data/latest.geojson",
-  tracks: "./data/tracks.geojson",
-  awaiting: "./data/awaiting.json",
-  // Shading + flow rasters are per-frame files named in the metas' `frames` /
-  // `flow_frames` manifests (speed_<t>Z.webp / vorticity_<t>Z.webp /
-  // flowvis_<t>Z.webp), resolved under this base.
-  dataBase: "./data/",
-  meta: "./data/currents_meta.json",
-  vorticityMeta: "./data/vorticity_meta.json",
-  inertialField: "./data/inertial_field.json",
-  build: "./data/build.json",
-  gliders: "./data/gliders.geojson",
-  agulhas: "./data/agulhas.json",
-};
-
-// --- instrument palette (#35) -----------------------------------------------
-// Every per-class identity colour funnels through one named palette, selectable
-// at load via ?palette=<name> for side-by-side review. A palette maps each
-// instrument CLASS to one identity colour; the drifter marker's darker stroke is
-// derived from its fill, so a palette carries only one colour per class. Classes:
-// drifter batches (deployment_N, ORDINAL) + the staged pre_deploy; the virtual
-// deployments (deploy_N, also ordinal — a run can grow to 2-3); the glider-group
-// types; and the two ships. The two ordinal ramps sit on opposite warm/cool ends
-// so each stays legible over BOTH surface shadings (speed=green, vorticity=blue↔
-// magenta) — the hard constraint (see tmp_palettes/ for the clash analysis).
-// Default is `ember` (warm drifters / cool virtual — the chosen scheme, #35);
-// `?palette=azure|vivid|current` still switches for review (`current` = pre-#35).
-const PALETTES = {
-  current: {
-    deployment_1: "#3a8ddb", deployment_2: "#17b3a3", deployment_3: "#e8791f",
-    deployment_4: "#9b6fd4", deployment_5: "#d6339c", deployment_6: "#eab308",
-    deployment_7: "#64748b", deployment_8: "#0ea5e9",
-    deploy_1: "#16a34a", deploy_2: "#16a34a", deploy_3: "#16a34a",
-    pre_deploy: "#a8a8a8", seaglider: "#38bdf8", waveglider: "#ec4899",
-    xspar: "#f59e0b", float: "#a855f7", ship_md: "#1e40af", ship_ag: "#9b1c31",
-  },
-  ember: {
-    deployment_1: "#fbb43e", deployment_2: "#f89f24", deployment_3: "#f68221",
-    deployment_4: "#f3661f", deployment_5: "#df4a23", deployment_6: "#cb2e27",
-    deployment_7: "#af2121", deployment_8: "#901919",
-    deploy_1: "#60abfa", deploy_2: "#2c76e6", deploy_3: "#1c46a9",
-    pre_deploy: "#8a94a3", seaglider: "#7c4dff", waveglider: "#e6299a",
-    xspar: "#111827", float: "#00d68f", ship_md: "#12408f", ship_ag: "#8a1030",
-  },
-  azure: {
-    deployment_1: "#64b3ec", deployment_2: "#449be5", deployment_3: "#3185dd",
-    deployment_4: "#1f6ed5", deployment_5: "#1b5cbd", deployment_6: "#184aa5",
-    deployment_7: "#133b8b", deployment_8: "#0e2d6f",
-    deploy_1: "#faa339", deploy_2: "#e87713", deploy_3: "#b94203",
-    pre_deploy: "#8a94a3", seaglider: "#7c4dff", waveglider: "#e6299a",
-    xspar: "#111827", float: "#00d68f", ship_md: "#12408f", ship_ag: "#8a1030",
-  },
-  vivid: {
-    deployment_1: "#e6194b", deployment_2: "#f58231", deployment_3: "#ffca3a",
-    deployment_4: "#12d6a0", deployment_5: "#3fc5f0", deployment_6: "#4363d8",
-    deployment_7: "#a034d0", deployment_8: "#ff5ec2",
-    deploy_1: "#ff9ad5", deploy_2: "#e83fae", deploy_3: "#8e1a6d",
-    pre_deploy: "#8a94a3", seaglider: "#7c4dff", waveglider: "#e6299a",
-    xspar: "#111827", float: "#00d68f", ship_md: "#12408f", ship_ag: "#8a1030",
-  },
-};
-const PALETTE =
-  PALETTES[new URLSearchParams(location.search).get("palette")] ?? PALETTES.ember;
-
-// Darken an identity fill to the drifter circle's thin outline stroke.
-function paletteStroke(hex, f = 0.72) {
-  const n = parseInt(hex.slice(1), 16);
-  const r = Math.round(((n >> 16) & 255) * f);
-  const g = Math.round(((n >> 8) & 255) * f);
-  const b = Math.round((n & 255) * f);
-  return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
-}
-
-// Fallback view if no valid positions are present (cruise staging, Table Bay).
-const FALLBACK_CENTER = [-33.9, 18.43];
-const FALLBACK_ZOOM = 12;
-// Deepest zoom (bounded — past the CMEMS 1/12° raster resolution there's no more
-// detail, only enlarged pixels, so this is a legibility cap not a data one; #27
-// lifts it a little to read dense drops/tracks). Also the top of the track
-// line-weight ramp (see trackWeight); passed to L.map so the two stay in sync.
-const MAX_ZOOM = 14;
-
-// R/V Marion Dufresne live track. Fetched client-side from the French
-// Oceanographic Fleet (Flotte Océanographique Française) localisation API — the
-// same source as the IPSL WHIRLS "platform positions" button. CORS-open, no
-// auth. Unlike the other layers this is not a build artifact: it polls live so
-// the marker tracks the ship between rebuilds. See docs/ship.md.
-const SHIP = {
-  positions:
-    "https://localisation.flotteoceanographique.fr/api/v2/vessels/MD/positions",
-  // Start of the data period: the MD track is cropped here so it doesn't run back
-  // through the pre-cruise transit. endDate is now.
-  cruiseStart: "2026-06-28T00:00:00.000Z",
-  refreshMs: 5 * 60 * 1000, // API reports ~every 10 min; poll at 5.
-};
+import {
+  DATA,
+  PALETTES,
+  PALETTE,
+  paletteStroke,
+  FALLBACK_CENTER,
+  FALLBACK_ZOOM,
+  MAX_ZOOM,
+  SHIP,
+} from "./config.js";
+import {
+  formatFixTime,
+  compassPoint,
+  MS_TO_KN,
+  speedBoth,
+  fmtSpeedMps,
+  fmtDir,
+  formatLatLon,
+  escapeHtml,
+} from "./format.js";
+import { FORECAST_API, getDeployLimits, apiErrorText } from "./api.js";
 
 // The two cruise vessels share one ship renderer (makeShipLayer), differing only
 // in colour, sidebar panel, and the tooltip/readout rows a fix produces — so one
@@ -224,12 +149,6 @@ async function fetchJSON(url, { optional = false } = {}) {
   }
 }
 
-function formatFixTime(iso) {
-  if (!iso) return "unknown";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z");
-}
 
 // Data-freshness panel. Build time is static (from build.json, written once per
 // build); current time is a live UTC clock so the two read on the same scale and
@@ -250,58 +169,6 @@ function startClock() {
   setInterval(tick, 1000);
 }
 
-// 16-point compass label for a bearing in degrees true. Shared by the drifter
-// tooltips and the ship readout.
-const COMPASS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-                 "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
-const compassPoint = (deg) => COMPASS[Math.round(deg / 22.5) % 16];
-
-const MS_TO_KN = 1.943844;
-// Every speed reads in both units (knots and m/s) so the ship (nautical, knots)
-// and the drifters (oceanographic, m/s) are directly comparable. Input is m/s.
-const speedBoth = (mps) => `${(mps * MS_TO_KN).toFixed(1)} kn / ${mps.toFixed(2)} m/s`;
-
-// Drifter velocity formatters. Direction in degrees(+compass); a dash marks a
-// value that is absent (no reported field) or underived (a track's first fix, or
-// a zero-length step).
-const fmtSpeedMps = (v) => (v != null ? speedBoth(v) : "—");
-const fmtDir = (deg) => {
-  if (deg == null) return "—";
-  const d = ((deg % 360) + 360) % 360; // reported direction can be negative
-  return `${Math.round(d) % 360}° ${compassPoint(d)}`;
-};
-
-// Single source of truth for how a coordinate is written for humans, shared by
-// every popup, the ship readouts, and the cursor readout so all locations match.
-// Latitude first, then longitude — the geographic/nautical convention (charts,
-// GPS, Google Maps all lead with latitude) — with N/S and E/W hemisphere letters
-// instead of signed degrees, at 4-decimal precision (~11 m). Longitude is wrapped
-// to (-180, 180] so a pan across the antimeridian still reads as a normal
-// coordinate rather than an accumulating one.
-function formatLatLon(lat, lon) {
-  const hemi = (v, pos, neg) => `${Math.abs(v).toFixed(4)}° ${v >= 0 ? pos : neg}`;
-  const lonWrapped = L.Util.wrapNum(lon, [-180, 180], true);
-  return `${hemi(lat, "N", "S")}, ${hemi(lonWrapped, "E", "W")}`;
-}
-
-// Escape a value before it is interpolated into an HTML-string sink (innerHTML, a
-// Leaflet popup/tooltip's HTML content). The acute case (SEC-3) is the ship met
-// fields — `truewindspeed`, `seatemp`, … — which come straight from the live,
-// browser-polled third-party localisation API that is explicitly outside the trust
-// boundary; a compromised source returning `"<img src=x onerror=…>"` in any field would
-// otherwise run script on the map origin (the same origin as `/api`). The instrument
-// popups interpolate build-baked third-party strings (`D_number`, `batteryState`,
-// glider `id`) the same way, so they are escaped too. `String(value)` coerces first so a
-// number/null renders as text, never as markup. The CSP in `index.html` is the backstop;
-// escaping at the sink is the actual fix.
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
 
 function popupHtml(props, latlng) {
   const p = props || {};
@@ -1564,54 +1431,7 @@ function buildCursorReadout(map) {
 // head; #35, see docs/palette.md). Kept as a safe default for an identity-less track.
 const TRACK_COLOR = "#e07b39";
 
-// --- interactive deploy endpoint (PoC) --------------------------------------
-// One dynamic endpoint backs the deploy tool: `POST /api/forecast` takes a
-// sequence of (lon, lat, start) seeds — the equally-spaced drops the client lays
-// along a clicked path, each with its staggered water-entry time — and advects
-// every one through the CMEMS window server-side (one GeoJSON LineString per seed).
-// The map and this API are separate endpoints served under one
-// origin (the plan-017 gateway: /map and /api as sibling backends), so the base is
-// resolved (not hardcoded) by two same-origin rules — no client-controlled override,
-// so a crafted `?api=` link can't retarget the seed POST at a hostile host:
-//   - in the two-port dev flow (static on :8000), auto-target the API on :8001, so
-//     `pixi run serve` + `pixi run serve-api` needs no configuration;
-//   - else same-origin, relative to where the map is served. A gateway may mount
-//     the instance under a subpath (…/live-test/map/ → …/live-test/api/), so strip
-//     the trailing "map/…" and re-root the API alongside it — no origin-root
-//     assumption, still crafted-`?api`-proof.
-function resolveApi(path) {
-  if (location.port === "8000")
-    return `${location.protocol}//${location.hostname}:8001${path}`;
-  const m = location.pathname.match(/^(.*\/)map\//);
-  const prefix = m ? m[1].replace(/\/$/, "") : "";
-  return `${prefix}${path}`;
-}
-const FORECAST_API = resolveApi("/api/forecast");
-
-// The per-request seed cap lives server-side (the /api/forecast request model). The
-// client asks the API for it — GET /api/forecast/limits — rather than hardcoding a
-// copy, so the cap has one source of truth. Memoised: fetched once, lazily, on the
-// first forecasting placement. Any failure resolves to null and the client skips its
-// proactive over-cap check, letting the server's bounded request model reject the
-// POST instead (rendered by placeDeployment's error path via `apiErrorText`).
-let deployLimitsPromise = null;
-function getDeployLimits() {
-  deployLimitsPromise ??= fetch(resolveApi("/api/forecast/limits"))
-    .then((r) => (r.ok ? r.json() : null))
-    .catch(() => null);
-  return deployLimitsPromise;
-}
-
-// Render a failed /api/forecast response as one status string. Our own HTTPExceptions
-// carry a string `detail`; FastAPI's request-validation 422 (e.g. an over-cap seed
-// list that slips past the client check) carries an *array* of {loc, msg, …} error
-// objects — interpolated raw that reads as the useless "[object Object]", so join
-// their messages instead.
-function apiErrorText(data, status) {
-  const d = data.detail;
-  if (Array.isArray(d)) return d.map((e) => e.msg || JSON.stringify(e)).join("; ");
-  return d || data.error || `error ${status}`;
-}
+// --- deploy tool (PoC): geometry, placement, manager, highlights, CSV -------
 
 // Virtual deployments cycle through the palette's three virtual-deployment colours
 // (deploy_1..3) by placement order, wrapping after three, so successive runs placed in
