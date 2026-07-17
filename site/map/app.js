@@ -504,7 +504,7 @@ const forecastClockEntries = [];
 // trajectories, exactly as it drops that batch's markers and observed tracks. Defaults to
 // "all visible" until the panel wires it. The drifter's marker (its head) is already
 // governed by the batch's marker group, so this gates only the forecast LINE.
-let forecastBatchVisible = () => true;
+let forecastBatchVisible = (_batch) => true;
 
 // Head keys that a track-clip entry drives (registerTrackClock / the ship's
 // syncClock add here). A single-fix instrument never gets one, so the point-head
@@ -1926,7 +1926,7 @@ function shipUrl(sinceISO) {
   );
   u.searchParams.set("startDate", new Date(sinceISO).toISOString());
   u.searchParams.set("endDate", endOfDay.toISOString());
-  u.searchParams.set("cb", Date.now()); // cache-buster
+  u.searchParams.set("cb", String(Date.now())); // cache-buster
   return u.toString();
 }
 
@@ -2608,7 +2608,7 @@ async function main() {
   // heads, drops, and at-time markers alone. `setInstrumentTracks` is wired when the
   // Instruments tab renders; `shipLayers` fills as vessels report. Re-runs the clock so
   // freshly loaded (lazy) track clips place themselves at the displayed instant.
-  let setInstrumentTracks = () => {};
+  let setInstrumentTracks = (_on) => {};
   const shipLayers = [];
   // Eventual consistency (#18): the checkbox must flip instantly, never blocking on the
   // heavy line add/remove + re-clip it triggers. So the handler only records the desired
