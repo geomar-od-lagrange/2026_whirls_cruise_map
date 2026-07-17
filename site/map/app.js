@@ -171,23 +171,29 @@ function styleForBatch(batch) {
   };
 }
 
-// Pretty labels for known batch keys; unknown keys (e.g. a future deployment_6)
-// fall back to the raw value, so new batches surface readably with no code change.
-const BATCH_LABELS = {
-  pre_deploy: "batch X",
-  deployment_1: "batch 1",
-  deployment_2: "batch 2",
-  deployment_3: "batch 3",
-  deployment_4: "batch 4",
-  deployment_5: "batch 5",
+// Pretty label for a batch/instrument row key. Drifter batches read "batch N",
+// DERIVED from the `deployment_N` key so any future deployment surfaces correctly
+// with no code change (the whole ordinal ramp, not just 1..5); the staged
+// pre-deployment pool reads the catch-all "batch X", sitting alongside the numbered
+// batches. Glider-group types (xspar/seaglider/waveglider/float) aren't batches —
+// they fall through to their GLIDER_STYLES label so they read "XSPAR buoy" /
+// "Glider" / "Wave gliders" / "Floats" in the same compartment. Anything else falls
+// back to the raw key.
+const batchLabel = (batch) => {
+  if (batch === "pre_deploy") return "batch X";
+  const m = /^deployment_(\d+)$/.exec(batch);
+  if (m) return `batch ${m[1]}`;
+  return GLIDER_STYLES[batch]?.label ?? batch;
 };
-// Instrument rows share this control: drifter batches use BATCH_LABELS; glider-
-// group types (xspar/seaglider/waveglider/float) fall back to their GLIDER_STYLES
-// label so they read as "XSPAR buoy" / "Glider" / "Wave gliders" / "Floats"
-// in the same compartment. The pre-deployment (staged) drifters read as the
-// catch-all "batch X" row, sitting alongside the numbered deployment batches.
-const batchLabel = (batch) =>
-  BATCH_LABELS[batch] ?? GLIDER_STYLES[batch]?.label ?? batch;
+
+// How many instruments a marker group holds, for the row count "(N)". A group holds
+// one HEAD marker per instrument PLUS one clock-gated deployment dot per instrument
+// (addDeploymentDot, tagged `_deploymentDot`), so a raw getLayers().length reads
+// double once the dots exist. Gliders build their tracks — and thus their dots —
+// synchronously before the dock, so their rows would double; drifters load tracks
+// later, so only timing spared them. Counting heads only fixes it for both.
+const instrumentCount = (group) =>
+  group.getLayers().filter((l) => !l._deploymentDot).length;
 
 // Instrument row order: alphabetical by key, except the Floats row is pinned to
 // the bottom of the list rather than sorting into the middle on its "f" key.
@@ -944,6 +950,10 @@ function addDeploymentDot(markerGroup, lng, lat, color, depTimeMs) {
     fillOpacity: shown ? 1 : 0, // hidden until the clock reaches the deployment time
     interactive: false,
   }).addTo(markerGroup);
+  // Flag so the Instruments-row count (instrumentCount) can tell this fixed dot apart
+  // from the platform's head marker: a marker group holds one head PLUS one dot per
+  // instrument, so an unfiltered layer count would read double (see instrumentCount).
+  marker._deploymentDot = true;
   deploymentDots.push({ marker, t, shown });
 }
 
@@ -1176,7 +1186,7 @@ function buildInstrumentRows(div, map, markerGroups, tracksOverlay, vessels = []
       checked: batchOn[batch],
       color: GLIDER_STYLES[batch]?.color ?? styleForBatch(batch).fillColor,
       diamond: isGlider,
-      label: `${batchLabel(batch)} (${group.getLayers().length})`,
+      label: `${batchLabel(batch)} (${instrumentCount(group)})`,
       onChange: (on) => { batchOn[batch] = on; sync(); },
     });
   }
