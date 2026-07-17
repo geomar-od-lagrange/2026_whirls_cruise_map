@@ -131,8 +131,8 @@ by derive. The Marion Dufresne is the deliberate exception — it is fetched
 **live in `app.js`**, not baked at build time.
 
 The reason is freshness under the intended hosting. The site is a static bundle
-destined for a scheduled-rebuild GitLab Pages deploy, which has no server at view
-time. A baked position would therefore freeze the vessel between rebuilds, which
+served by a scheduled-rebuild deploy with no application server at view time (just
+static files). A baked position would therefore freeze the vessel between rebuilds, which
 defeats the point of a "where is the ship now" layer. Fetching live keeps the
 marker current to the API's ~10-minute cadence regardless of build schedule, and
 the open CORS policy exists precisely to allow this (the IPSL map does the same).
