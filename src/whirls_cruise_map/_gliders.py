@@ -33,8 +33,9 @@ import csv
 import math
 import os
 import re
-import urllib.request
 from datetime import datetime, timezone
+
+from . import _portal, _time
 from typing import NamedTuple
 
 # WHIRLS observations portal — the operational centre's own data host.
@@ -64,21 +65,6 @@ class Platform(NamedTuple):
     fixes: list[tuple[datetime, float, float]]
 
 
-# The portal's Apache rejects requests without an ``Accept`` header (403), which
-# urllib omits by default; a descriptive ``User-Agent`` is courtesy, not required.
-_HEADERS = {"User-Agent": "whirls-cruise-map ingest", "Accept": "*/*"}
-
-
-def _get_bytes(url: str) -> bytes:
-    req = urllib.request.Request(url, headers=_HEADERS)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read()
-
-
-def _get(url: str) -> str:
-    return _get_bytes(url).decode("utf-8", "replace")
-
-
 def _csv_datasets(index_html: str, dir_url: str) -> list[tuple[str, str]]:
     """``(id, csv_url)`` for every ``.csv`` linked from a folder's Apache
     autoindex. ``id`` is the filename without a trailing ``_track.csv`` or
@@ -95,44 +81,6 @@ def _csv_datasets(index_html: str, dir_url: str) -> list[tuple[str, str]]:
         pid = re.sub(r"(_track)?\.csv$", "", name, flags=re.IGNORECASE)
         out.append((pid, dir_url + name))
     return out
-
-
-def _parse_time(raw: str) -> datetime | None:
-    """Parse a fix time to tz-aware UTC; ``None`` if unparseable.
-
-    The WHIRLS feeds mix four time encodings, and the format no longer tracks
-    the platform *type* — even the seagliders differ — so we detect it per
-    value instead of keying on the type:
-
-    - Unix epoch seconds, e.g. ``1783078052.0`` (a Seaglider emits this);
-    - ISO ``YYYY-MM-DD HH:MM:SS`` with no offset, read as UTC (a Seaglider);
-    - ISO with an explicit offset, e.g. ``2026-07-02 00:00:00+00:00`` (XSPAR);
-    - day-first ``DD/MM/YYYY HH:MM:SS`` (the SeaExplorer glider), read as UTC.
-    """
-    raw = raw.strip()
-    if not raw:
-        return None
-    # A bare number is Unix epoch seconds; an ISO string fails float() and falls
-    # through to the parsers below.
-    try:
-        epoch = float(raw)
-    except ValueError:
-        pass
-    else:
-        try:
-            return datetime.fromtimestamp(epoch, tz=timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            return None
-    try:
-        dt = datetime.fromisoformat(raw)
-    except ValueError:
-        # SeaExplorer exports day-first ``DD/MM/YYYY HH:MM:SS`` (no offset, UTC).
-        try:
-            dt = datetime.strptime(raw, "%d/%m/%Y %H:%M:%S")
-        except ValueError:
-            return None
-    # Naive timestamps are UTC; offset-aware ones are normalised to UTC.
-    return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def _delimiter(line: str) -> str:
@@ -183,7 +131,7 @@ def _parse_csv(text: str) -> list[tuple[datetime, float, float]]:
     for row in reader:
         if len(row) <= max(ti, lai, loi):
             continue
-        t = _parse_time(row[ti])
+        t = _time.parse_fix_time(row[ti])
         try:
             lat, lon = float(row[lai]), float(row[loi])
         except ValueError:
@@ -218,12 +166,12 @@ def fetch_sources() -> list[Source]:
     sources = []
     for gtype, dir_url in _GROUPS:
         try:
-            datasets = _csv_datasets(_get(dir_url), dir_url)
+            datasets = _csv_datasets(_portal.get(dir_url), dir_url)
         except Exception:
             continue
         for pid, csv_url in datasets:
             try:
-                text = _get(csv_url)
+                text = _portal.get(csv_url)
             except Exception:
                 continue
             sources.append(Source(pid, gtype, text))
@@ -288,7 +236,7 @@ def fetch_float_sources() -> list[Source]:
     listing and each CSV is fetched independently so one dead file can't suppress
     the rest."""
     try:
-        datasets = _csv_datasets(_get(FLOATS_DIR), FLOATS_DIR)
+        datasets = _csv_datasets(_portal.get(FLOATS_DIR), FLOATS_DIR)
     except Exception:
         return []
     sources = []
@@ -297,7 +245,7 @@ def fetch_float_sources() -> list[Source]:
         if name == _FLOATS_AGGREGATE:
             continue
         try:
-            text = _get(csv_url)
+            text = _portal.get(csv_url)
         except Exception:
             continue
         sources.append(Source(name.removesuffix(".csv"), "float", text))
@@ -346,7 +294,7 @@ def parse_float_source(src: Source) -> list[Platform]:
             raw_id = row[fi].split("_", 1)[0].strip().lower()
             if not raw_id:
                 continue
-        t = _parse_time(row[ti])
+        t = _time.parse_fix_time(row[ti])
         try:
             lat, lon = float(row[lai]), float(row[loi])
         except ValueError:
@@ -406,13 +354,13 @@ def fetch_waveglider_nc_sources() -> list[tuple[str, bytes]]:
     re-fetched here. Each listing and each file is fetched independently so one
     dead file can't suppress the rest."""
     try:
-        datasets = _nc_datasets(_get(WAVEGLIDERS_DIR), WAVEGLIDERS_DIR)
+        datasets = _nc_datasets(_portal.get(WAVEGLIDERS_DIR), WAVEGLIDERS_DIR)
     except Exception:
         return []
     sources = []
     for name, nc_url in datasets:
         try:
-            data = _get_bytes(nc_url)
+            data = _portal.get_bytes(nc_url)
         except Exception:
             continue
         sources.append((name, data))

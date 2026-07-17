@@ -22,30 +22,13 @@ artifact. A total failure returns ``[]`` and the map simply omits the vessel.
 from __future__ import annotations
 
 import csv
-import urllib.request
-from datetime import datetime, timezone
+
+from . import _portal, _time
 
 CSV_URL = (
     "https://observations.ipsl.fr/aeris/whirls/data/observations/SHIPS/"
     "agulhas_positions.csv"
 )
-
-# The portal's Apache 403s requests without an ``Accept`` header (urllib omits it
-# by default); a descriptive ``User-Agent`` is courtesy, not required.
-_HEADERS = {"User-Agent": "whirls-cruise-map ingest", "Accept": "*/*"}
-
-
-def _parse_time(raw: str) -> datetime | None:
-    """Parse the CSV's ``reported_at`` (``YYYY-MM-DD HH:MM``, no zone) as UTC;
-    ``None`` if unparseable. The column carries no timezone, but the file's own
-    ``scraped_at_utc`` is UTC and the whole app is UTC, so UTC is assumed."""
-    try:
-        return datetime.strptime(raw.strip(), "%Y-%m-%d %H:%M").replace(
-            tzinfo=timezone.utc
-        )
-    except (ValueError, AttributeError):
-        return None
-
 
 def _float_or_none(raw: str | None) -> float | None:
     """``float(raw)`` or ``None`` for an empty/missing/unparseable cell
@@ -63,9 +46,7 @@ def fetch_raw() -> str | None:
     (``data/raw/agulhas_ii.csv``) before parsing it.
     """
     try:
-        req = urllib.request.Request(CSV_URL, headers=_HEADERS)
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.read().decode("utf-8", "replace")
+        return _portal.get(CSV_URL)
     except Exception:
         return None
 
@@ -81,7 +62,7 @@ def parse(text: str) -> list[dict]:
     """
     fixes = []
     for row in csv.DictReader(text.splitlines()):
-        t = _parse_time(row.get("reported_at", ""))
+        t = _time.parse_fix_time(row.get("reported_at", ""))
         lat, lon = _float_or_none(row.get("lat")), _float_or_none(row.get("lon"))
         if t is None or lat is None or lon is None:
             continue
