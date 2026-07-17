@@ -13,32 +13,36 @@
  * background-click handler then clears every subsystem by iterating the instances.
  */
 export function makeSelection(apply) {
-  let selected = null;
-  return {
+  // `selected` is a plain data property, NOT a getter. It is read once per registered
+  // track part inside the restyle sweep (via the caller's `apply` / its `stateFor`) —
+  // ~100k reads on a select-all or first paint — and a getter call in that hot loop
+  // deoptimises in V8 (megamorphic getters are far slower than a property read), which
+  // showed up as a visible stutter. A data property is the fast path; the methods below
+  // are the only writers, so the read-anywhere / write-through-methods contract holds.
+  const self = {
     /** The currently-selected key, or null. */
-    get selected() {
-      return selected;
-    },
+    selected: null,
     /** Set the selection without re-applying — for external teardown (e.g. deleting the
      *  selected deployment) where the elements are being removed/re-rendered anyway. */
     set(key) {
-      selected = key;
+      self.selected = key;
     },
     /** Click a key: selecting the current one clears it, another replaces it; re-applies. */
     toggle(key) {
-      selected = key === selected ? null : key;
-      apply(selected);
+      self.selected = key === self.selected ? null : key;
+      apply(self.selected);
     },
     /** Clear the selection (no-op if already clear); re-applies only when it changes. */
     clear() {
-      if (selected == null) return;
-      selected = null;
-      apply(selected);
+      if (self.selected == null) return;
+      self.selected = null;
+      apply(self.selected);
     },
     /** Re-run the restyle pass without changing the selection (a new part registered, a
      *  zoom-weight change) — the old standalone `applyXSelection()` call. */
     refresh() {
-      apply(selected);
+      apply(self.selected);
     },
   };
+  return self;
 }
