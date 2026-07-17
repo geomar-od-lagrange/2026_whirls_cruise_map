@@ -59,8 +59,16 @@ m/s) by assignment (a handful included with a last fix ~1 h old — an irregular
 reporting gap, not a behavioural one; and five later additions still opening up —
 D-492 and D-505 at ~8 km, then D-487, D-514 and D-524 caught mid-separation and
 already 11–12 km out — each on ~30–40 min of clean ~1.2 m/s free drift that had
-opened from <0.2 km an hour earlier). Drifters that merely reported the same day while stationary on
-deck, or that showed only brief ship-transit motion, stayed `pre_deploy`.
+opened from <0.2 km an hour earlier); **Deployment 6** — eight drifters (D-535,
+D-548, D-558, D-561, D-563, D-579, D-584, D-605) laid along the ship's track
+through 2026-07-16 (reported water entry 08:36–20:00 UTC), each confirmed
+separated from the vessel and drifting steadily at surface-current speed
+(~0.3–0.75 m/s) for 11–22 h by assignment. The algorithmic free-drift detachment
+(see [deploy.md](deploy.md)) landed within +5 to +47 min of each reported entry,
+and the drifters are now 38–167 km astern — furthest for the earliest-laid, the
+ship having steamed on down its track between drops. Drifters that merely reported
+the same day while stationary on deck, or that showed only brief ship-transit
+motion, stayed `pre_deploy`.
 
 ## GUI: the instrument filter
 
