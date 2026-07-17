@@ -80,7 +80,10 @@ a click adds a path vertex, a double-click finishes, and right-click / Esc cance
 The placed deployment draws its **drift lines** (one line per drop in the
 deployment's own colour, always shown, growing up to the app clock as you scrub),
 the **drops** (water-entry discs), and a **moving at-time marker** per drift that
-walks the line to the clock's instant. Successive deployments cycle through the
+walks the line to the clock's instant. Since the clock sits on the release time at
+placement, a fresh line starts zero-length, so a **finish tooltip** (pinned at the
+last vertex) and a **status-line clause** both prompt *drag the clock to draw the
+drift* — see [deployment.md](deployment.md). Successive deployments cycle through the
 palette's three virtual-deployment colours (see [palette.md](palette.md)).
 The lines carry no analysed-vs-forecast dash split and nothing ahead of the clock,
 and there is no vessel route drawn between the drops.
@@ -126,14 +129,11 @@ value (last-write-wins).
 
 Below the range, a tick lane marks each 00Z day boundary with sparse `Jul 14`-style
 labels (the end labels anchored inward so they stay inside the box). The wall-clock
-**now** is a two-part affordance: a small blue dot sits on the scrub line itself (on
-the line rather than in the tick lane, so it cannot collide with the date labels) with
-a slow pulsing ring so the present reads at a glance, and — since the dot is
-deliberately non-interactive so it never blocks grabbing a thumb parked near it — a
-small **"now" chip** beside the clock readout carries the click, snapping the scrubber
-back to the now hour through the same path a drag uses and dimming to a quiet outline
-once the thumb already sits on now. Both appear only when now falls inside the covered
-span. When there is no currents field (hence no scrubber), the master falls back to a
+**now** is a small blue dot sitting in the band just above the scrub track (above it
+rather than down in the tick lane, so it cannot collide with the date labels), so the
+present reads at a glance. The dot **doubles as the jump-to-now control** (#36): clicking it snaps the
+scrubber to the now hour through the same input→onChange path a drag uses — there is no
+separate "now" chip. It appears only when now falls inside the covered span. When there is no currents field (hence no scrubber), the master falls back to a
 standalone chip in the same spot (also eventually consistent). Its
 `z-index` sits above the map panes and popups but **below** Leaflet's controls, so
 an expanded dock overlapping it on a short window draws on top rather than hiding

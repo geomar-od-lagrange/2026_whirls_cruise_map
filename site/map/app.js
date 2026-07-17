@@ -1809,6 +1809,34 @@ function buildDeployTool(deployLayer, getStartTime, getSpanHours) {
     previewLayer.clearLayers();
   };
 
+  // A one-shot "now scrub the clock" tooltip pinned at the finishing double-click (#38):
+  // a fresh deployment's drift is cropped at the clock, which sits on the release edge
+  // at placement, so the line is zero-length until the user scrubs. Anchored to the map
+  // point the eye is already on (the route's end), map-anchored so it survives pan/zoom
+  // and works on touch. Auto-dismisses on a timer and is cleared the moment the user does
+  // anything else (new path, abort, disarm, Clear) so it never lingers over fresh work.
+  let finishTip = null;
+  let finishTipTimer = null;
+  const clearFinishHint = () => {
+    if (finishTipTimer) { clearTimeout(finishTipTimer); finishTipTimer = null; }
+    if (finishTip) { finishTip.remove(); finishTip = null; }
+  };
+  const showFinishHint = (latlng) => {
+    if (!mapRef) return;
+    clearFinishHint();
+    finishTip = L.tooltip({
+      permanent: true,
+      direction: "top",
+      offset: [0, -6],
+      className: "deploy-finish-hint",
+      interactive: false,
+    })
+      .setLatLng(latlng)
+      .setContent(`drops placed · ${SCRUB_HINT}`)
+      .addTo(mapRef);
+    finishTipTimer = setTimeout(clearFinishHint, 5000);
+  };
+
   // Two clicked vertices are "the same" (a dblclick's duplicate) when within a few
   // screen pixels — so finishing on a double-click doesn't add a spurious vertex.
   const isDuplicate = (a, b) =>
@@ -1816,6 +1844,7 @@ function buildDeployTool(deployLayer, getStartTime, getSpanHours) {
     mapRef.latLngToContainerPoint(a).distanceTo(mapRef.latLngToContainerPoint(b)) < 8;
 
   const handleClick = (latlng) => {
+    clearFinishHint(); // a new path supersedes the last finish's hint
     state.vertices.push(latlng);
     drawDeployPreview(previewLayer, state.vertices, null, state);
     setStatus(`${state.vertices.length} point(s) — double-click to finish`);
@@ -1834,6 +1863,7 @@ function buildDeployTool(deployLayer, getStartTime, getSpanHours) {
     resetPath();
     if (!path.length) return;
     placeDeployment(path, deployLayer, setStatus, startTime, state);
+    showFinishHint(latlng); // pin the "now scrub" nudge at the route's end (#38)
   };
 
   // Abort an in-progress path (right-click / Escape): discard the clicked vertices and
@@ -1841,6 +1871,7 @@ function buildDeployTool(deployLayer, getStartTime, getSpanHours) {
   // Returns whether a path was actually in progress, so the caller only swallows the
   // event (browser context menu) when it consumed one.
   const handleAbort = () => {
+    clearFinishHint();
     if (!state.on || !state.vertices.length) return false;
     resetPath();
     setStatus("cancelled — click a path · double-click to finish");
@@ -2102,6 +2133,7 @@ function buildDeployTool(deployLayer, getStartTime, getSpanHours) {
       state.on = !state.on;
       if (!state.on) {
         resetPath();
+        clearFinishHint();
         setStatus("");
       }
       paint();
@@ -2113,6 +2145,7 @@ function buildDeployTool(deployLayer, getStartTime, getSpanHours) {
     clear.addEventListener("click", () => {
       clearAllDeployments(deployLayer);
       resetPath();
+      clearFinishHint();
       renderManager();
       setStatus("");
     });
@@ -2282,6 +2315,13 @@ function validatePlacement(limits, nSeeds, durationH, direction, releaseIso) {
   return null;
 }
 
+// The scrub-me nudge for a fresh deployment (#38): its drift is cropped at the app
+// clock, which sits on the release edge at placement, so the line is zero-length until
+// the clock moves. Direction-agnostic on purpose — either way reveals the drift, and a
+// run can go both ways. Shared by the dock status clause and the map finish tooltip so
+// they read identically.
+const SCRUB_HINT = "drag the clock to draw the drift";
+
 // Stagger each drop's water-entry time by the ship speed, draw the drops into this
 // deployment's own map group, POST the seeds to /api/forecast, and draw the returned
 // per-drop drift lines + at-time markers. Shared by the clicked path and the CSV/paste
@@ -2357,6 +2397,7 @@ async function commitDeployment(drops, totalKm, deployLayer, setStatus, startTim
   // at the seed cap (vectorized RK4), well inside the gateway's 60 s timeout.
   const limits = await getDeployLimits();
   const notes = [];
+  const drew = []; // directions that actually produced a track — drive the scrub hint (#38)
   for (const direction of directions) {
     const invalid = validatePlacement(limits, drops.length, opts.horizonH, direction, startTime);
     if (invalid) { notes.push(`${direction}: ${invalid}`); continue; }
@@ -2379,12 +2420,18 @@ async function commitDeployment(drops, totalKm, deployLayer, setStatus, startTim
       } else {
         const skipped = p.skipped ? `, ${p.skipped} skipped` : "";
         notes.push(`${direction}: ${p.tracks}/${p.n_seeds}${skipped}`);
+        if (p.tracks > 0) drew.push(direction);
       }
     } catch (err) {
       notes.push(`${direction}: request failed — is \`pixi run serve-api\` running?`);
     }
   }
-  done(`${geom} · ${notes.join(" · ")}`);
+  // The drift is cropped at the clock and the clock sits on the release edge at
+  // placement, so a fresh line is zero-length until the user scrubs (#38). When a run
+  // drew a track, prompt the scrub — the durable dock-side twin of the finish tooltip.
+  // Self-clears on the next status write.
+  const hint = drew.length ? ` · ${SCRUB_HINT}` : "";
+  done(`${geom} · ${notes.join(" · ")}${hint}`);
 }
 
 // Each placed deployment gets its own id (deployCounter), namespacing its drop set,

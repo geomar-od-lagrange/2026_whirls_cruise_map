@@ -298,7 +298,10 @@ crosshair. While armed:
   cos-lat tangent-plane / equal-arc-length math) into drops, computes each drop's
   `start` from the release time plus its ship-speed offset (`seedTime`), draws the
   drops into **this deployment's own Leaflet group** (so the manager can toggle
-  or delete it wholesale), and POSTs the seeds. The elements sit in stacked panes:
+  or delete it wholesale), and POSTs the seeds. A one-shot tooltip is pinned at the
+  finish point — *"drops placed · drag the clock to draw the drift"* — nudging the
+  user to scrub (see *A fresh deployment needs a scrub* below); it auto-dismisses and
+  clears the moment the tool is used again. The elements sit in stacked panes:
   the drift geometry stays **below every real marker** (`deployTracks` for the drift
   lines at z-index 430, `deployDrops` for the drop discs at 440 — see the pane stack
   in [trajectories.md](trajectories.md)), while `atTime` (the position-at-clock
@@ -348,7 +351,23 @@ orange observed tracks.
 **Status line.** Reports the geometry (`N drops · X km · ~Y h transit`, or
 `… · instant release` under instantaneous timing) then the result
 (`tracks/n_seeds drift`, a `· K skipped` tail when the API skipped out-of-window seeds,
-a pre-validation message, or the API's message on an error / no field).
+a pre-validation message, or the API's message on an error / no field). When a run
+actually drew a track it also appends the scrub nudge below.
+
+**A fresh deployment needs a scrub.** Because the drift is cropped at the app clock and
+the clock sits on the **release edge** at placement (release is read-only and locked to
+the displayed field instant), a just-placed run draws its drop discs but a *zero-length*
+line and no at-time head — the drift only unfurls once the clock moves off release. This
+is deliberate (it is what lets a scrub animate the drift), so rather than change it the
+app **hints** it, at both places the eye lands: a transient **finish tooltip** pinned at
+the last vertex on the map, and a durable **status-line clause** in the dock — both
+reading *"drag the clock to draw the drift"*. The wording is deliberately
+direction-agnostic (either scrub reveals the drift, and a run can go both ways) and both
+draw it from one `SCRUB_HINT` constant so they read identically. Neither needs a runtime
+check — release == clock holds at every commit; the status clause appears only when a run
+actually drew a track, while the tooltip shows on every finish. The tooltip is
+one-shot: a timer dismisses it, and starting a new path, aborting, disarming, or
+**Clear** clears it at once so it never lingers over fresh work.
 
 ## The deployment manager
 
