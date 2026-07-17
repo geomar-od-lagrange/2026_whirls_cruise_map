@@ -117,9 +117,13 @@
     </aside>
   </div>
 
-  <!-- Leaflet 1.9.4 (vendored) -->
+  <!-- Leaflet 1.9.4 (vendored) — a classic script, so the `L` global is defined
+       before the deferred app module below runs. -->
   <script src="./vendor/leaflet-1.9.4/leaflet.js"></script>
 
-  <script src="./app.js"></script>
+  <!-- The app is an ES module (no bundler): the browser resolves the import graph
+       (config.js, features/…) natively and same-origin. A module script is deferred,
+       so it executes after the Leaflet script above. -->
+  <script type="module" src="./app.js"></script>
 </body>
 </html>

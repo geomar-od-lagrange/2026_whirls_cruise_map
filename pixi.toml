@@ -51,6 +51,8 @@ uvicorn = "*"
 pytest = "*"
 ruff = ">=0.15.12,<0.16"
 pytest-timeout = ">=2.4.0,<3"
+esbuild = ">=0.28.1,<0.29"
+typescript = ">=6.0.2,<7"
 
 # OceanParcels v4 (unreleased): built from the GitHub `main` branch as a pypi git
 # dependency. It is a mature Lagrangian integrator we advect the same CMEMS window
@@ -74,6 +76,10 @@ serve-api = "python -m whirls_cruise_map._api"
 # window; parcels keeps the legacy single-point GET, serve-api is now a batch POST.
 serve-parcels = "python -m whirls_cruise_map._api_parcels"
 test = "pytest -q tests"
+# Dev-only type-check of the static map's plain-JS ES modules (no build step; the .js
+# ships verbatim). `checkJs` surfaces cross-module reference errors — the blank-page risk
+# of the module split. See tsconfig.json.
+check-frontend = "tsc -p tsconfig.json"
 
 [tasks.dev]
 depends-on = ["build"]

@@ -80,9 +80,21 @@ aren't cache-pinned.
       `_parse_time`, timeout/retry), `DER-2` (vectorize Mercator warp), `DER-3` (move
       `_currents` privates to a shared `_frames`/`_raster`). Tracked here for a later pass.
 
-- [ ] **G5 — FS-1: split `app.js` into ES modules** (L) · *see cross-repo coupling above*
+- [~] **G5 — FS-1: split `app.js` into ES modules** (L) · *see cross-repo coupling above*
       Split along a concern spine, `type=module`, no bundler; start with the
       self-contained deploy tool. **Commit body must carry the DEPLOY note above.**
+      **G5a landed (MR pending user browser-validation): the module system + the safe
+      leaf/utility extractions.** `index.html` → `type=module`; extracted `config.js`
+      (DATA/palette/fallback/SHIP), `format.js` (pure formatters), `api.js` (forecast
+      endpoint helpers). Dev-only verification added — `tsconfig.json` +
+      `frontend-globals.d.ts` + `pixi run check-frontend` (`tsc --checkJs`, no build
+      step, catches cross-module reference errors), plus `esbuild --bundle` for the
+      import graph. **G5b remaining (the behavior-sensitive part, wants in-browser
+      validation):** extract `features/deploy.js` (`buildDeployTool(deps)`), which the
+      dependency map shows is interleaved with 3 observed-drifter functions in the same
+      banner span and has `updateClock`/background-click back-references (replace with
+      exposed `clipAllDeployTracks(ms)`/`clearSelections()`); then the `core/` concern
+      spine (render/selection/clock/controls) that **G6** (FS-2/3/4) builds on.
 
 - [ ] **G6 — Frontend selection/clock refactors** (M) · *after G5*
       `FS-2` collapse four selection state machines into one parameterized `Selection` ·
