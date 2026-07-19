@@ -1,5 +1,5 @@
 > Implemented (the `oc_gateway` cross-repo section is deferred by the plan
-> itself, not by this work). See [docs/deployment.md](../../docs/deployment.md)
+> itself, not by this work). See [docs/deploy_tool.md](../../docs/deploy_tool.md)
 > (the deploy tool as primary UI, API v2, streaming StoreField serving),
 > [docs/field_store.md](../../docs/field_store.md) (the incremental per-day
 > store), and [docs/currents.md](../../docs/currents.md) /

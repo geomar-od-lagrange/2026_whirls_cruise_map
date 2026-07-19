@@ -1,4 +1,4 @@
-> Implemented — see [docs/deployment.md](../../docs/deployment.md).
+> Implemented — see [docs/deploy_tool.md](../../docs/deploy_tool.md).
 > The jet-fence and Z patterns this describes are superseded by the one polyline
 > Deploy tool + batch API ([023](023-simplify-deploy-polyline.md)); the open
 > `t0`-inversion problem here is unchanged.
@@ -6,7 +6,7 @@
 # Interactive deployment-pattern planner (jet frame)
 
 Prototype: extend the interactive click-to-forecast tool
-(`plans/021-interactive-forecast.md`, `docs/deployment.md`) so the
+(`plans/021-interactive-forecast.md`, `docs/deploy_tool.md`) so the
 planner lays a whole **drifter deployment fence** across a jet and forecasts
 every drifter, instead of forecasting one clicked point.
 
@@ -143,4 +143,4 @@ so staggered deployment *lands* the array in that configuration — is a
 forecast-driven step neither this prototype nor Novelli's package does yet. It is
 a fixed point (a node's drop time depends on the ship track, which depends on the
 drop positions), so it iterates. Tracked as a follow-on (see
-[ROADMAP](ROADMAP.md)).
+[ROADMAP](../ROADMAP.md)).

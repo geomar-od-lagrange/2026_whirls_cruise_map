@@ -1,4 +1,8 @@
-# deployment
+# hosting
+
+This doc covers build/CI/OpenShift infrastructure — how the map is built and served.
+For the in-app virtual-deployment tool (planning drifter deployments on the map), see
+[`docs/deploy_tool.md`](deploy_tool.md).
 
 This repo does **not** deploy itself. It builds the static map bundle (`site/`) and
 the cleaned dataset downloads, and describes how the map is authored so it serves
@@ -6,11 +10,10 @@ correctly. Building on a cadence and serving the result — the OpenShift "whirl
 stack: build CronJobs, the gateway that fronts `/map/` and `/api/`, the field-store
 PVC, and the forecast-API pod — live in the sibling repo
 [`oc_gateway`](https://git.geomar.de/2026-whirlscruise-lagrange/oc_gateway) (see
-[`plans/017-whirlsview-openshift.md`](../plans/017-whirlsview-openshift.md) and
-[`docs/deployment.md`](deployment.md)).
+[`plans/017-whirlsview-openshift.md`](../plans/017-whirlsview-openshift.md)).
 
-GitLab Pages is retired: `.gitlab-ci.yml` no longer publishes anything. Its only job
-now is a **type-check guard** — `pixi run check-frontend` (`tsc --checkJs` over
+The pipeline publishes nothing. `.gitlab-ci.yml` has a single job, a **type-check
+guard** — `pixi run check-frontend` (`tsc --checkJs` over
 `site/map`) fails the pipeline on any TypeScript error, the ReferenceError-blank-page
 risk of the no-bundler ES-module split (see [`tsconfig.json`](../tsconfig.json)).
 
@@ -18,8 +21,8 @@ risk of the no-bundler ES-module split (see [`tsconfig.json`](../tsconfig.json))
 
 `python -m whirls_cruise_map.build` (`pixi run build`) runs the whole chain — ingest
 then derive — regenerating two **git-ignored** trees from live upstream sources (the
-committed `site/` carries only `site/map/{index.html,app.js,style.css}` and
-`site/index.html`, never the derived data):
+committed `site/` carries only the map's JS/CSS/HTML sources — `site/map/**` minus
+`site/map/data/`, plus `site/index.html` — never the derived data):
 
 - `site/data/` — the **ingest** stage's output: cleaned per-source CSVs plus their raw
   sources and a manifest (see [data.md](data.md)).
@@ -49,20 +52,24 @@ of `site/`.
 
 ## Secrets: CMEMS credentials
 
-The currents/speed/forecast layers need a Copernicus Marine login. The fetches in
-`_currents.py` (`fetch_shading_window`, `fetch_field_window`) call
-`copernicusmarine.subset(...)` with no explicit credentials — the client reads them from
-the environment, supplied by whatever runs the build (the `oc_gateway` CronJobs):
+The currents/speed/forecast layers need a Copernicus Marine login. The shading fetch —
+`_currents.fetch_shading_window`, feeding the currents/speed/vorticity overlays — and
+the field-store's per-day fetch — `_field_store._default_fetch_day`, feeding the
+forecast — both call `copernicusmarine.subset(...)` with no explicit credentials; the
+client reads them from the environment, supplied by whatever runs the build (the
+`oc_gateway` CronJobs):
 
 - `COPERNICUSMARINE_SERVICE_USERNAME`
 - `COPERNICUSMARINE_SERVICE_PASSWORD`
 
 **The build degrades gracefully when they are absent.** Each data source is a
-best-effort step in `build.py`: a CMEMS failure is caught and logged
-(`WARNING: CMEMS field fetch failed, skipping currents + forecast`), and the build still
-produces positions and tracks. So a run with no variables, an expired password, or a
-CMEMS outage produces a thinner map, never a failed build. The drifter share is public
-and needs no secrets.
+best-effort step in `build.py`, caught and logged separately: a shading-fetch failure
+logs `WARNING: CMEMS field fetch failed, skipping currents overlays: {exc}` and skips
+just the currents/speed/vorticity overlays; a field-store top-up failure logs
+`WARNING: field store update failed: {exc}` and skips just the forecast-feeding field.
+Either way the build still produces positions and tracks. So a run with no variables,
+an expired password, or a CMEMS outage produces a thinner map, never a failed build.
+The drifter share is public and needs no secrets.
 
 ## Authoring the map to serve under any base
 
@@ -86,5 +93,6 @@ the relative `./data/…`, never the top-level `/data/…`.
 
 ## Code mirror
 
-The repository is also pushed to a GitHub `origin` remote as a code mirror; it does not
-deploy anything. Keep the two in sync by pushing `main` to both `origin` and `gitlab`.
+The repository is also pushed to a GitHub `github` remote as a code mirror; it does not
+deploy anything. Keep the two in sync by pushing `main` to both `origin` (GitLab) and
+`github`.

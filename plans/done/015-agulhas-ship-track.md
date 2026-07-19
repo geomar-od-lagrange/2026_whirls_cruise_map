@@ -117,7 +117,7 @@ per-vessel element ids. The Agulhas hint attributes the source
   CORS-open) vs Agulhas (baked, no-CORS, hourly scrape) split and the reported-
   vs-derived motion difference. Drop the "Marion Dufresne only" limitation
   section.
-- `docs/deploy.md`: the "one exception, fetched live" line now applies to the MD
+- `docs/hosting.md`: the "one exception, fetched live" line now applies to the MD
   only; note the Agulhas is baked.
 - Move this plan to `plans/done/` with a pointer once implemented; tick
   ROADMAP item 5.

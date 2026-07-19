@@ -1,4 +1,4 @@
-> Implemented — see [docs/deployment.md](../../docs/deployment.md)
+> Implemented — see [docs/deploy_tool.md](../../docs/deploy_tool.md)
 > ("Waypoint CSV export").
 
 # Deploy tool: waypoint CSV export

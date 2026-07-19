@@ -8,7 +8,7 @@ Add the **wave gliders** the WHIRLS operational map (observations.ipsl.fr)
 recently gained, rendered here alongside the drifters, gliders, floats, and
 ships as a new `waveglider` instrument type. This is the long-deferred
 `WAVEGLIDERS/` follow-up flagged in
-[020](done/020-observations-portal-csv-source.md) ("Add the `waveglider` type
+[020](020-observations-portal-csv-source.md) ("Add the `waveglider` type
 once `WAVEGLIDERS/` carries data") — the folder now carries data.
 
 ## Which tracks the operational map shows
@@ -51,7 +51,7 @@ fall out of the shared path.
   map's own id.
 
 We read the `.nc` **as a static file from the observations portal**, not via
-THREDDS OPeNDAP like the operational map does — [020](done/020-observations-portal-csv-source.md)
+THREDDS OPeNDAP like the operational map does — [020](020-observations-portal-csv-source.md)
 moved this project off the heavy, intermittently failing THREDDS server onto the
 portal, and the portal serves the `.nc` directly (`Content-Type:
 application/x-netcdf`, ~1.7 MB). So this keeps the whole ingest on one host and

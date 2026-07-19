@@ -1,5 +1,7 @@
 # Static cruise map — MVP
 
+> Superseded. The MVP shipped, then was replaced wholesale — see [034-deployment-focused-app.md](034-deployment-focused-app.md) for the app shape that replaced it. Kept for history.
+
 Build a static, client-rendered map of the 2026 Whirls Cruise drifters: latest
 positions, per-drifter trajectories, and today's CMEMS surface currents. Built
 locally for now; GitHub Pages + Actions come later.

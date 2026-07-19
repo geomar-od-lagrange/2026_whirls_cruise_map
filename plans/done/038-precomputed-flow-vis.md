@@ -1,4 +1,5 @@
 # 038 — Pre-computed flow visualisation (fluent scrubbing)
+> Implemented. See [docs/currents.md](../../docs/currents.md) — precomputed flow-vis WebP frames.
 
 ## Problem
 

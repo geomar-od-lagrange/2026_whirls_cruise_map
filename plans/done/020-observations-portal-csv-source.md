@@ -112,7 +112,7 @@ client fetch):
 - `docs/gliders.md` — source section, `fileServer`/`catalog.xml` mechanics.
 - `docs/ship.md` — Agulhas source rows/URL and the CORS paragraph.
 - `docs/data.md` — the `raw/agulhas_ii.csv` / glider-THREDDS provenance lines.
-- `docs/deploy.md` — the "THREDDS source is not CORS-open" note.
+- `docs/hosting.md` — the "THREDDS source is not CORS-open" note.
 - `plans/ROADMAP.md` — the entries calling the Agulhas/glider source a
   "non-CORS IPSL THREDDS CSV".
 

@@ -4,7 +4,7 @@
 > `/map` + `/data` + `/`→`/map/` layout, the ingest/derive split (`_data.py`,
 > `build.py --stage/--tier`), the cleaned + raw `/data` CSVs + `manifest.json`,
 > and the docs ([docs/data.md](../../docs/data.md), the `/data` schema, and
-> [docs/deploy.md](../../docs/deploy.md), the layout). The OpenShift consumption
+> [docs/hosting.md](../../docs/hosting.md), the layout). The OpenShift consumption
 > (CronJobs + the `/data` autoindex backend) stays with
 > [017](../017-whirlsview-openshift.md).
 
@@ -223,7 +223,7 @@ public/
   fallback if `_redirects` needs confirming.
 - Repo layout mirrors this — `site/map/` (shell) + `site/data/` (downloads) — so
   local dev matches production; `.gitlab-ci.yml`'s `pages` job and
-  [docs/deploy.md](../../docs/deploy.md) update to match.
+  [docs/hosting.md](../../docs/hosting.md) update to match.
 
 Ships as a **pure layout move first** (map under `/map/`, root redirect); `/data/`
 fills in once ingest produces the CSVs — the two steps are independent.

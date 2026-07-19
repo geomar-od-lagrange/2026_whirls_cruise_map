@@ -1,4 +1,4 @@
-> **Implemented.** See [docs/deployment.md](../../docs/deployment.md)
+> **Implemented.** See [docs/deploy_tool.md](../../docs/deploy_tool.md)
 > § *The field: one window, cron-written, reloaded on change* for the current state.
 
 # 018 — Forecast API reads the u,v window from the PVC (no per-process fetch)
@@ -69,7 +69,7 @@ constant, shared by the request default and the window sizing.
       (`fwd ≥ horizon + cadence`).
 - [x] `inertial_field.json` / forecast / hindcast unchanged (narrow slice for
       decompose; wider forward window is inert for ±6 h advection).
-- [x] docs/deployment.md reflects PVC-load + mtime-reload.
+- [x] docs/deploy_tool.md reflects PVC-load + mtime-reload.
 
 Gateway-side (`data/_cache/` unrouted, PVC mount, drop creds/egress) is an
 `oc_gateway` follow-up, tracked there.

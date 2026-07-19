@@ -1,5 +1,7 @@
 # 044 — Outlier toggle (client-side, no extra download)
 
+> Implemented. See [docs/controls.md](../../docs/controls.md) (the "Hide GPS outliers" row) and [docs/trajectories.md](../../docs/trajectories.md) (the client-side outlier test).
+
 **#30** — a toggle to not display outlier fixes, "without duplicating the
 download volume for raw vs. qc tracks." Achievable entirely in `site/map/app.js`:
 the data needed to flag outliers **already ships**.

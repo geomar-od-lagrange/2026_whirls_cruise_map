@@ -1,7 +1,7 @@
 # Plan 035 — the clock moves the map: clipped tracks, moving heads, deploy timing
 
 > Implemented — see [docs/trajectories.md](../../docs/trajectories.md) (clock-clipped
-> tracks + moving heads), [docs/deployment.md](../../docs/deployment.md) (timing
+> tracks + moving heads), [docs/deploy_tool.md](../../docs/deploy_tool.md) (timing
 > switch, trail/faint drift lines, legend), [docs/controls.md](../../docs/controls.md)
 > and [docs/currents.md](../../docs/currents.md) (scrubber), plus
 > [docs/ship.md](../../docs/ship.md) / [docs/gliders.md](../../docs/gliders.md).
@@ -71,7 +71,7 @@ absolute per-seed starts.
 A compact legend in the Deploy tab: solid = drift through analysed currents;
 dashed = drift through forecast currents (beyond the analysis edge); faint =
 ahead of the app clock (not yet traversed); grey dashed = vessel route.
-docs/deployment.md explains the same in prose.
+docs/deploy_tool.md explains the same in prose.
 
 ## 4 · Slider
 
@@ -83,5 +83,5 @@ The "now" marker becomes a small blue dot sitting on the range track itself
 
 `site/map/app.js` (at-time → clock machinery, head registries, track builders,
 ship layer, deploy tool + draw path, slider), `site/map/style.css`,
-`docs/deployment.md`, `docs/controls.md`, `docs/trajectories.md`,
+`docs/deploy_tool.md`, `docs/controls.md`, `docs/trajectories.md`,
 `docs/ship.md`.

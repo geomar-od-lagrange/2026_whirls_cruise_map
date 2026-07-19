@@ -13,23 +13,28 @@ stacked boxes (instruments, currents, ships, deploy) summed to ~800 px, more tha
 13″ laptop leaves below the header, so the lowest overflowed the map and collided
 with the time slider. One dock shows **one tab body at a time**, so its footprint
 is the tallest single tab (~a few hundred px, capped and internally scrollable at
-`min(60vh, 460px)`), never the sum.
+`min(calc(100vh - header - 80px), 720px)` — clamped to the viewport on a short
+window, to the Deploy tab's own height on a roomy one), never the sum.
 
 Tabs:
 
 - **Deploy** — placing and interrogating virtual deployments (see the [Deploy
   tab](#the-deploy-tab) below). This is the app's primary capability, so it **leads
   the strip and opens by default**, chosen at build so the dock never flashes another
-  tab first. A `/limits` probe runs off the critical path and only downgrades: when the
-  deploy API is unreachable — the static/Pages fallback, which has no backend — the dock
-  re-selects **Instruments**. Deploy stays present either way (it still places drops and
-  exports CSV without computing drift).
+  tab first — unconditionally, and never auto-switched on API availability. A `/limits`
+  probe is warmed off the critical path so a cold or hanging API pod cannot stall the
+  dock, but it does not steer tab selection. When the deploy API is unreachable — no
+  API process reachable at all (e.g. `pixi run serve` with no `serve-api`), or the API
+  service down while the map's own static half stays up ([hosting.md](hosting.md)) —
+  Deploy still leads, still places drops, and still exports CSV; only the drift
+  computation is unavailable, and the tool reports that inline on placement.
 - **Instruments** — one panel of marker toggles for *every* platform, in three
   families read top-to-bottom, each a two-column grid separated by a divider: the
   **drifter batches** (`batch 1`, `batch 2`, … — one per deployment, the label
   derived from the `deployment_N` key so a new batch reads correctly with no code
   change — plus the staged `batch X`), the
-  **glider-group platforms** (Glider, Float, XSPAR, Waveglider — diamond swatches),
+  **glider-group platforms** (Glider, Waveglider, XSPAR, Float — diamond swatches,
+  alphabetical with Float pinned last rather than sorting into the middle),
   and the two **ships** (M. Dufresne, Agulhas II — the former separate Ships tab,
   folded in here). Each row toggles that platform's markers; a small **select all /
   deselect all** text control at the bottom drives every row at once. The
@@ -38,21 +43,23 @@ Tabs:
   still hides its track along with its markers. A ship row toggles its vessel's
   visibility, but the vessel only appears on the map once its first fix lands (an
   absent or failed feed shows no marker) — toggling the row before then is safe and
-  applied on the first fix.
+  applied on the first fix. Below the three families, a **Hide GPS outliers** row
+  (default on) drops out-and-back GPS spikes from the observed tracks, computed
+  client-side from the derived speeds already downloaded; unchecking it rebuilds
+  the tracks from the raw fixes.
 - **Currents** — the surface shadings as mutually-exclusive radios (None / Current
-  speed / Vorticity ζ·f) plus the flow and near-inertial overlays as independent
-  checkboxes, and an **Animate overlays** master (default off) that freezes the
-  near-inertial animation to a still snapshot so time-scrubbing stays cheap (the flow
-  overlay is a pre-rendered static streamline raster, always fluent — see
-  [currents.md](currents.md)). Present only when the CMEMS field is available.
+  speed / Vorticity ζ·f). The Current-flow and near-inertial overlay checkboxes,
+  and the **Animate overlays** master, are present but rendered greyed-out and
+  inert — unchecked, disabled, and wired to no handler — pending a fix (issue #25);
+  a hint line under them says so. Present only when the CMEMS field is available.
 
 Each tab body is built once and shown/hidden by `display`, so a tab keeps its
 state across switches (the deploy tool stays armed).
 
 ### The Deploy tab
 
-Top to bottom: the **run settings** (release, a Direction switch, a Timing switch,
-a **duration slider**, and a condensed **drop-spacing / speed** line), then the
+Top to bottom: the **run settings** (release, a Direction toggle pair, a Timing
+switch, a **duration slider**, and a condensed **drop-spacing / speed** line), then the
 per-deployment **manager**, then the **Deploy** arm toggle beside a **Clear**
 button, then a collapsible **CSV import / export** menu at the very bottom.
 
@@ -66,15 +73,18 @@ the CSV menu.
 A run is described by **release + direction + timing + duration** (never
 "forecast/hindcast" — that naming is reserved for the *field*'s provenance): the
 release time is read-only and follows the app clock (one clock — "release at t"
-means jump the scrubber to t), a sliding **Direction** switch selects
-forward/backward, a sliding **Timing** switch selects along-track (water entry
+means jump the scrubber to t), **Direction** is two independent toggle pills —
+Forward and Backward — rather than a sliding exclusive switch: either or both can
+be on (a run with both shows `⇄` in the manager row) and the last one on refuses
+to turn off, a sliding **Timing** switch selects along-track (water entry
 staggered by the ship's transit) vs instantaneous (every drop at the release time),
 and duration is a **1d / 2d / 5d / ∞** segmented slider (default 5d). The `∞` stop
 advects to the end of the loaded field (the server truncates at the field edge).
 The spacing and speed collapse to one short line — **"Every \[ \] km at \[ \]
 kn"**; under instantaneous timing the ship speed shapes nothing, so its input greys
-out and shows an `∞` glyph while the km spacing stays editable. Each switch flanks
-its knob with the two option labels (no separate caption). Drift is always computed.
+out and shows an `∞` glyph while the km spacing stays editable. The Timing switch
+flanks its knob with the two option labels (no separate caption). Drift is always
+computed.
 
 The **Deploy** toggle arms click-to-place: while on, the map wears a crosshair and
 a click adds a path vertex, a double-click finishes, and right-click / Esc cancels.
@@ -85,7 +95,7 @@ the **drops** (water-entry discs), and a **moving at-time marker** per drift tha
 walks the line to the clock's instant. Since the clock sits on the release time at
 placement, a fresh line starts zero-length, so a **finish tooltip** (pinned at the
 last vertex) and a **status-line clause** both prompt *drag the clock to draw the
-drift* — see [deployment.md](deployment.md). Successive deployments cycle through the
+drift* — see [deploy_tool.md](deploy_tool.md). Successive deployments cycle through the
 palette's three virtual-deployment colours (see [palette.md](palette.md)).
 The lines carry no analysed-vs-forecast dash split and nothing ahead of the clock,
 and there is no vessel route drawn between the drops.

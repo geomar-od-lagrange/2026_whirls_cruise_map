@@ -570,7 +570,7 @@ export function buildDeployTool(deps) {
     // spacing / ship speed knobs, not from the row count. Start time is pulled live
     // from the time scrubber (getStartTime). The textarea is the source of truth (the
     // input "mask"); "Upload file" only reads a .csv into it, so one parseWaypoints
-    // serves paste and upload alike (see docs/deployment.md).
+    // serves paste and upload alike (see docs/deploy_tool.md).
     const csvSec = L.DomUtil.create("details", "pt-csv", div);
     L.DomUtil.create("summary", "pt-csv-summary", csvSec).textContent =
       "CSV import / export";

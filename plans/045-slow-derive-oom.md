@@ -1,5 +1,19 @@
 # 045 — Slow-tier derive cold-start OOM (float64 shading window + full-window landmask copy)
 
+**Status:** Fixes #1–#3 (mandatory) are implemented — see "Status" note after each
+fix below. Fix #4 (deferred/optional) is unimplemented, as intended. **This plan
+stays open**: the Verification section below calls for two `tracemalloc`
+peak-memory assertions and neither exists — `grep -rn tracemalloc` over the repo
+returns nothing. The dtype-correctness and byte-equivalence tests that do exist
+(`tests/test_shading_frames.py::test_fetch_shading_window_casts_to_float32`,
+`::test_landmask_is_single_slice_equivalent`) verify *what* the fixes produce, not
+that peak RSS during the call is actually bounded — so the memory claim, the
+entire point of this plan, has no regression coverage. A future refactor that
+reintroduces a full-window materialize would pass every existing test. Add the
+`tracemalloc` assertions, or explicitly decide they're not worth the added test
+complexity and strike them from Verification — either way, close this out
+deliberately rather than leaving it to rot open.
+
 **#37** — on a **cold start** (fresh pod / empty render dir / `--refetch-all`),
 `python -m whirls_cruise_map.build --stage derive --tier slow` is OOMKilled at a
 2 Gi container limit (exit 137). Steady-state slow crons (populated render PVC,
@@ -73,6 +87,10 @@ the temp `.nc` chunked over time and casting lazily costs no new dependency:
             ds = ds.astype({"uo": np.float32, "vo": np.float32}).load()
 ```
 
+**Status: implemented as specced** — `_currents.py:74` defines
+`_SHADING_TIME_CHUNK = 8`; `_currents.py:167–168` open the temp `.nc` chunked and
+cast `uo`/`vo` to float32 before `.load()`, matching the snippet below verbatim.
+
 with a module constant e.g. `_SHADING_TIME_CHUNK = 8`. dask evaluates the
 `astype` graph block-by-block: each K-timestep block is read as float64, cast to
 float32, accumulated into the float32 result, and the float64 block released. So
@@ -105,6 +123,14 @@ frame time lands on its hourly grid). That is a product swap needing its own
 validation, so it stays **deferred — see Fix #4**; (a) is the in-place win now.
 
 ### Fix #2 — the land mask needs ONE time step (`_currents.py:450–473`)
+
+**Status: implemented as specced** — `_currents.py:391–415` (line numbers shifted
+after Fix #1's edits) takes `window.isel(time=0, drop=True)` before `sortby`,
+dropping the over-time `np.all(np.isnan(...), axis=0)` reduction; the docstring
+was rewritten to describe the single-slice reality.
+`tests/test_shading_frames.py::test_landmask_is_single_slice_equivalent` asserts
+the N-step and 1-step outputs are byte-identical WebP, confirming the reduction
+was genuinely redundant for well-formed windows.
 
 The land mask is **time-invariant**, definitively: every slice comes off the same
 fixed grid, and this grid has no tidal-flat / intertidal cells, so the land/sea
@@ -181,6 +207,21 @@ case, pinning ~225 MB through the inertial step — the second spike this fix ta
 De-gating to `if shading is not None:` frees it whenever it was fetched; `shading` is
 unbound afterward and never referenced again.
 
+**Status: implemented, but structured differently on purpose.** Rather than the
+guarded `if shading is not None: del shading` snippet above, the shipped code
+extracted the fetch-and-render block into its own function, `_render_shadings`
+(`build.py`), so `shading` and its render locals are function-local and go out of
+scope — and their refcount drops to zero — the moment `_render_shadings` returns,
+with no manual `del` needed at all. `derive()` then calls `_render_shadings(...)`
+followed by one unconditional `gc.collect()` (`build.py:451–460`) before
+`_render_inertial(map_dir)`. This is the better trade: it reaches the same
+outcome (the ~225 MB shading window is gone before the inertial step allocates
+its own window) without an `is not None` guard that has to be kept in sync with
+every raise site inside the old inline block, and it reclaims the ~225 MB
+whether or not the fetch fully succeeded — scoping does the guarding, the
+`gc.collect()` only has to handle xarray's internal reference cycles. The
+in-code comment at `build.py:452–459` records this rationale.
+
 ## Why float32 is safe (every shading consumer is visualization-only)
 
 The window feeds four consumers, each of which produces a colour-quantized
@@ -235,16 +276,37 @@ window (a few float64 timesteps with a fixed land pattern) written to a temp `.n
 - assert `fetch_shading_window(...)["uo"].dtype == np.float32` (Fix #1) — or, to
   avoid the network, drive the chunked-lazy `open_dataset(..., chunks=...)
   .astype(...).load()` on the constructed temp file directly and assert float32
-  out.
+  out. **Done:**
+  `tests/test_shading_frames.py::test_fetch_shading_window_casts_to_float32`
+  (`:258–286`) covers exactly this, dtype-only.
 - around that chunked load, a `tracemalloc` peak shows float64 residency bounded
   to a few time-blocks rather than the whole window (Fix #1(a)) — the honest local
-  evidence for the transient claim without CMEMS.
+  evidence for the transient claim without CMEMS. **Not done — open gap.**
 - assert `to_landmask_webp` is single-slice: the mask bytes from an N-step window
   equal those from its 1-step slice (Fix #2 preserves output), and — via
   `tracemalloc` peak around the call — an N-step window no longer allocates an
-  N-sized float64 array (peak stays ~2-D, not ~N × 2-D).
+  N-sized float64 array (peak stays ~2-D, not ~N × 2-D). **Byte-equivalence half
+  done:** `tests/test_shading_frames.py::test_landmask_is_single_slice_equivalent`
+  (`:289–297`) asserts identical WebP bytes. **The `tracemalloc` half is not
+  done — open gap.**
+
+**Open item: the two `tracemalloc` peak-memory assertions above do not exist.**
+`grep -rn tracemalloc` over the whole repo returns nothing. The tests that do
+exist confirm the fixes produce *correct output* (float32 dtype, byte-identical
+masks) but not that the call is *memory-bounded* while producing it — the
+distinction this entire plan is about. Without them, a regression that silently
+reintroduces a full-window materialize (e.g. a future refactor that drops the
+chunked `open_dataset` or re-widens the landmask slice) would pass every test in
+the suite. Next step: either write the two `tracemalloc` assertions, or make an
+explicit call that they're not worth it for this codebase (e.g. if `tracemalloc`
+peak measurements prove too noisy/platform-dependent to assert on reliably) and
+strike them from this section — but don't leave the gap unacknowledged.
 
 ## Fix #4 — deferred / optional architectural (bound peak independent of span)
+
+**Status: unimplemented — deliberately, this was always optional and out of
+mandatory scope, not an oversight.** `plans/ROADMAP.md:353` (item 39) still
+lists this plan as open, consistent with #4 being the remaining lever.
 
 **Out of the mandatory scope of this plan.** #1–#3 shrink the peak but it still
 **scales linearly with the growing cold-start span** (`FIELD_TMIN` → now + 240 h);

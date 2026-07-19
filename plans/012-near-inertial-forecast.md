@@ -1,7 +1,12 @@
 # Near-inertial forecast/hindcast via a time-dependent current field
 
-**Status: Phases 0–2 resolved (Phase 2's map visualization was built, then
-dropped by decision on review); Phases 3 (cadence) and 4 (docs) open.**
+**Status: Phases 0–2 done and shipped, including the map visualization** (the
+animated inertial-field overlay is live — built out further under
+[014-near-inertial-animation.md](done/014-near-inertial-animation.md) and
+[027-time-aware-flow-and-inertial.md](done/027-time-aware-flow-and-inertial.md)).
+**Phase 3's original cadence design (a GitLab pipeline-artifact scheme) did not
+happen — a different mechanism shipped instead, see Phase 3 below.** Phase 4
+(docs) remains open.
 **Decision: no slab model** — the near-inertial (NI) oscillation is already
 present in the CMEMS current field; the fix is to stop advecting through a
 *frozen* snapshot and advect through a **time-dependent** field instead. The
@@ -45,7 +50,7 @@ Validation scripts + plots: `tmp_ni/` (rotary spectrum, hodograph, NI time serie
 
 ### Time-dependent field; the stepper threads time
 
-Today `_forecast._Field.velocity(lon, lat)` samples a frozen snapshot and the RK4
+`_forecast._Field.velocity(lon, lat)` samples a frozen snapshot and the RK4
 loop already tracks step→hours. The change: sample a **time-dependent** field —
 `u_total(x, y, t) = u_CMEMS(x, y, t)` — adding **linear-in-time** interpolation
 alongside the existing bilinear-in-space sampling. Forecast integrates forward,
@@ -89,7 +94,11 @@ currents in the same slow job?": **yes.** Phase 1 may fetch the window in the
 existing pipeline first to validate cheaply, then move it to the slow tier as the
 optimization once proven (pre-alpha: correctness before cadence).
 
-**Slow/fast wiring (researched).** Two GitLab pipeline schedules: a **slow** one
+**Slow/fast wiring (researched, not what shipped).** The paragraph below was the
+GitLab-Pages-era design; GitLab Pages has since been retired for this repo (CI now
+only runs a frontend type-check gate) and the slow/fast split shipped as a build
+CLI flag plus OpenShift CronJobs instead — see Phase 3 for what actually runs.
+Kept here for the record: two GitLab pipeline schedules: a **slow** one
 (`TIER=slow`, ~6-hourly) builds the field artifact; the existing **fast** Pages
 build fetches the latest slow artifact via the **Job Artifacts API** with
 `search_recent_successful_pipelines=true` (load-bearing — without it the API
@@ -98,13 +107,21 @@ and `$CI_JOB_TOKEN` (same-project download allowed by default). On miss it
 **recomputes inline** — correct, just slower — since the artifact is a pure
 function of the data cycle. `expire_in: 1 week` auto-prunes; no manual prune job.
 CI *cache* keyed by cycle was judged strictly worse (best-effort, runner-local, no
-"latest" selector). Concrete `.gitlab-ci.yml` in the research notes.
+"latest" selector).
 
 ### Visualization — separate design track
 
 How to present the non-frozen/inertial flow ("which current components to plot
-how") needs its own design and is being worked by a dedicated spike. The target
-shape (to be refined there):
+how") needed its own design and was worked by a dedicated spike, then built —
+see [014-near-inertial-animation.md](done/014-near-inertial-animation.md) and
+[027-time-aware-flow-and-inertial.md](done/027-time-aware-flow-and-inertial.md) for
+what actually shipped: the per-cell `(mean, amplitude, phase)` decomposition
+below is live as an animated inertial-field overlay reconstructed on the
+client, sharing the map's `displayedFieldTime` clock. The originally-imagined
+**animated forecast dot** (bullet below) did *not* ship this way — it was
+built once as a separate feature, then dropped by decision — only the
+animated *field* (not a marker walking a path) is on the map today. The
+target shape as originally scoped (for the historical record):
 
 - **Speed at t = 0** — the existing surface-speed shading, unchanged.
 - **Inertial magnitude at t = 0** — a field of the NI component's amplitude,
@@ -143,30 +160,62 @@ always-present line + 1/3/6 h marks, on an optional toggle, paused on
   gain: the ~2.3 came from the most under-energized site/time sampled; across
   all 23 drifters the median sim/obs ratio is 0.65 and no scalar or
   parameterized gain generalizes.
-- **Phase 1 — time-dependent CMEMS advection. DONE** (commit on
-  `near-inertial-forecast`). Windowed hourly `subset` in `_currents.fetch_field_window`
-  (keeps `time`); bilinear-space + linear-time in `_forecast._Field`; forecast +
-  hindcast advect through the window. This is the "more correct than frozen"
-  feature and already carries ~40 % of the inertial excursion with correct phase.
-- **Phase 2 — visualization + inertial gain. RESOLVED.** The per-cell
-  `(mean u,v, amplitude A, phase φ)` decomposition landed as a tested library
-  module (`_inertial.py`, `tests/test_inertial.py`). The gain question is
-  **resolved: Branch C, no gain**
+- **Phase 1 — time-dependent CMEMS advection. DONE**, and grown past a single
+  windowed fetch into an incremental hourly field store (`_field_store.py`):
+  `update_store` backfills/tops up one file per day against
+  `_currents.WINDOW_DATASET_ID`, and `load_window(t0, t1)` reads/brackets/concatenates
+  across day files for a caller-given span — replacing the one-shot `subset` call
+  this phase originally described, since the RK4 forecast service (`_api_parcels.py`)
+  and the inertial decomposition (below) both need arbitrary windows on demand, not
+  just one fetch at build time. Bilinear-space + linear-time sampling in
+  `_forecast._Field`; forecast + hindcast advect through the window. This is the
+  "more correct than frozen" feature and already carries ~40 % of the inertial
+  excursion with correct phase.
+- **Phase 2 — visualization + inertial gain. DONE, including the map
+  visualization.** The per-cell `(mean u,v, amplitude A, phase φ)` decomposition
+  landed as a tested library module (`_inertial.py`, `tests/test_inertial.py`),
+  written each slow build to `inertial_field.json` (`build.py`'s
+  `_render_inertial`). The gain question is **resolved: Branch C, no gain**
   ([done/013-inertial-gain-generalization.md](done/013-inertial-gain-generalization.md));
   the gain stays a parameter defaulting to 1.0 (`_inertial.GAIN`) — the seam
   where a validated gain would plug in (the advection reads the raw hourly
-  window; with gain 1.0 the two are equivalent). The map visualization — the
-  inertial-amplitude overlay and the animated ±6 h dot — was built and then
-  **dropped by decision after review**; the decomposition stays library-only,
-  with no build artifact. The animated NI *flow-trail* reconstruction
-  (rebuilding the leaflet-velocity background from mean + A + φ) remains
-  parked, unbuilt.
-- **Phase 3 — cadence.** Move the field build to a slow 6-hourly GitLab schedule;
-  fast Pages build fetches the artifact (Job Artifacts API +
-  `search_recent_successful_pipelines`, recompute-on-miss, `expire_in`).
-- **Phase 4 — docs.** Update `docs/forecast.md` (frozen → time-dependent; what NI
-  is now included and from where) and `docs/features.md`. Move this plan to
-  `plans/done/`, update `ROADMAP.md`.
+  window; with gain 1.0 the two are equivalent). The map visualization —
+  reconstructing the rotating vector field client-side from `mean, A, φ` and
+  animating it on a shared clock (`startInertialClock` in `app.js`, config key
+  `inertialField`) — **is live**, built out under
+  [014-near-inertial-animation.md](done/014-near-inertial-animation.md) and, for
+  syncing its clock to the scrubbed forecast time, under
+  [027-time-aware-flow-and-inertial.md](done/027-time-aware-flow-and-inertial.md).
+  The *other* animated idea sketched in this plan — a dot walking the
+  forecast/hindcast polyline — was also built at one point but was separately
+  **dropped by decision after review**; only the field animation remains.
+- **Phase 3 — cadence. Shipped, but not as designed above.** The GitLab
+  pipeline-artifact scheme (a slow schedule building an artifact, the fast
+  Pages build fetching it via the Job Artifacts API) cannot happen in this repo
+  any more: GitLab Pages has been retired and `.gitlab-ci.yml` now runs only a
+  frontend type-check gate — the site and forecast API build and serve from an
+  OpenShift stack in the sibling `oc_gateway` repo instead. The same fast/slow
+  split landed there in a different shape: `build.py`'s `derive()` takes
+  `--tier fast|slow`, and separate OpenShift CronJobs run each tier on its own
+  cadence, writing to a shared data volume (see
+  [docs/hosting.md](../docs/hosting.md)). The near-inertial field
+  (`_render_inertial`, inside `_derive_slow`) already lives on the slow tier by
+  construction — this phase's goal is met, just via CronJob cadence instead of
+  a GitLab schedule + artifact fetch.
+- **Phase 4 — docs. Mostly covered, one gap remains.** This phase originally
+  targeted `docs/forecast.md`, which has never existed — the behaviour instead
+  spread across existing docs as it shipped:
+  [docs/deploy_tool.md](../docs/deploy_tool.md) already documents the
+  `/api/forecast` vectorized-RK4 engine and links back to this plan for why the
+  advected tracks show inertial loops; [docs/field_store.md](../docs/field_store.md)
+  documents the incremental hourly field store (Phase 1's `_field_store.py`);
+  [docs/currents.md](../docs/currents.md) and [docs/features.md](../docs/features.md)
+  both describe the near-inertial animation as a user-facing overlay sharing the
+  map's time clock. Still missing: the build-side mechanics of the decomposition
+  itself — `_inertial.py`'s per-cell `(mean, A, φ)` fit, the `GAIN` seam, and the
+  `inertial_field.json` shape — aren't written up anywhere; add that to
+  `docs/currents.md`. Once done, move this plan to `plans/done/` and update
+  `ROADMAP.md`.
 
 ## Out of scope
 

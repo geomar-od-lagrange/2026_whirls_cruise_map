@@ -5,13 +5,19 @@ Two coupled rendering issues that redefine how a track reads on the map:
 track) and **#34** (a dashed bridge closing the reporting-lag gap between an
 observed track and its forecast). Both are `site/map/app.js` only.
 
-**#35 (per-class instrument colours) is deferred to its own session** — it needs
-rendered examples and human review. The consequence for this plan: the "line
-colour" #33 asks the deployment dot to use is defined per-instrument by #35.
-Until then we source the dot colour from a single **identity-colour seam** that
-today returns each instrument's existing marker/head colour, and #35 later makes
-the observed *line* adopt that same colour so "dot = line colour" holds exactly.
-Building the seam now is the clean plumbing; #35 fills in the palette.
+**#33 and #34 have shipped** (deployment dots, clock-gated; the dashed
+bridge/solid-forecast split with a shared clock and a now-ghost handoff
+marker). Two things from the original spec converged differently on the way
+in, and one is genuinely still open — see the status note in each section
+below and the updated verification list at the end.
+
+**#35 (per-class instrument colours) landed independently**, as
+`BATCH_STYLES`/`styleForBatch` (drifters), `gliderStyle` (glider/float/xspar/
+waveglider) and `deployColor` (virtual deployments) — each already returning
+that instrument's identity colour. What did **not** land is the shared
+**`identityColor(kind, key)` seam** this plan asked for to front all three:
+colour is inlined per call site instead (see "The identity-colour seam"
+below). That is the one open item this plan still tracks.
 
 ---
 
@@ -41,20 +47,40 @@ real instruments have {moving head only}. #33 makes both symmetric.
 
 ## #33 — One deployment dot + one moving head on every track (not ships)
 
-### The identity-colour seam
-Add a single accessor, e.g. `identityColor(kind, key)`:
+### The identity-colour seam — still open
+The plan asked for a single accessor, e.g. `identityColor(kind, key)`:
 - drifter batch → `styleForBatch(batch).fillColor`
 - glider/float/xspar/waveglider type → `gliderStyle(type).color`
 - virtual deployment → `DEPLOY_COLOR`
 
-This is the one place #35 later swaps in the per-class palette (and where the
-observed line colour will be sourced from too, converging line = dot = head).
+**This was never built.** Colour is inlined at each of the three call sites
+instead: `buildTrackGroups` uses `styleForBatch(batch).fillColor` directly
+(`app.js`, `src.color`), `buildGliderTrackGroups` uses `gliderStyle(type).color`
+directly (`app.js`), and `drawDrops` uses `deployColor(deploymentId)` directly
+(`features/deploy.js`). Each already returns the right per-class colour (#35
+landed as three independent lookups, not a shared palette), so nothing reads
+wrong today — but the seam that was meant to be "the one place #35 swaps in
+the palette, and where the observed line will source its colour from too" does
+not exist, so there's no single point to extend if the line ever adopts the
+identity colour. Remaining choice: extract the seam now (three call sites →
+one accessor), or explicitly drop the requirement and accept per-call-site
+colour lookups as the shape going forward.
 
-### The deployment dot (spec: 4× line width, identity colour, no outline)
+### The deployment dot (identity colour, no outline; radius converged to a fixed constant)
 A static `L.circleMarker`:
-- `radius`: 4 (= 2 × the base track weight of 2, i.e. a diameter of 4× the line
-  width). Define it relative to the track weight so it stays "4× line width".
-- `fillColor: identityColor(...)`, `fillOpacity: 1`, **`weight: 0`** (no outline).
+- **Radius shipped as the existing `DEPLOY_DROP_RADIUS` constant (3.0), not a
+  computed "4× line width".** Track weight (`trackWeight`) turned out to be
+  zoom-dependent (steps between 1 and 2, plus a selected-state bump) rather
+  than the fixed base-2 this plan assumed, so a "4× line width" radius has no
+  single fixed target to begin with. Reusing `DEPLOY_DROP_RADIUS` instead gives
+  real-instrument dots and virtual-deployment drops the exact same, constant
+  size for free (they're now one visual family, per #33's goal) without
+  introducing a second, zoom-coupled sizing rule. This was a deliberate
+  convergence, not an oversight — the plan's requirement here is superseded by
+  the shipped constant.
+- `fillColor:` the instrument's identity colour (inlined per call site — see
+  "The identity-colour seam" above), `fillOpacity: 1`, **`weight: 0`** (no
+  outline).
 - `interactive: false` — it sits on the track start; non-interactive lets hover
   fall through to the track canvas below (overlayPane z400), so mid-line track
   tooltips/clicks (plan 039) keep working.
@@ -64,10 +90,12 @@ A static `L.circleMarker`:
   track segments that forced the canvas switch).
 
 **Real instruments (new):** place one deployment dot at the track's **first
-coordinate**, coloured by `identityColor`. It never moves. `addTrackSegments`
-(`730`) doesn't know batch/type, so add the dot in the callers
-`buildTrackGroups` / `buildGliderTrackGroups` (which know the identity), or pass
-the colour into `addTrackSegments`.
+coordinate**, coloured by the instrument's identity colour. It never moves.
+`addTrackSegments` (`730`) doesn't know batch/type, so add the dot in the
+callers `buildTrackGroups` / `buildGliderTrackGroups` (which know the
+identity) — this is what shipped, each caller passing its own already-resolved
+colour rather than calling through a shared `identityColor` (which, per the
+status note above, was never built).
 
 - **Group placement (revised after review):** add the dot to the instrument's
   **marker group** (`markerGroups[batch]`), **not** the track group. The track
@@ -115,10 +143,20 @@ that discarded segment as a dashed line instead of throwing it away.
 clock-clipped.** In `drawDrifterForecastLines`, instead of keeping only
 `t ≥ now`, partition the advected vertices at `nowMs`:
 - **Bridge**: vertices with `t ≤ now` (last-fix → now), rendered **dashed**
-  (`dashArray: "6 4"`), violet `VIOLET_FORECAST_COLOR` (a *modeled* recent past,
-  distinct from the solid forecast), pane `driftForecast`, non-interactive.
-  Include the first `t ≥ now` vertex so it visually meets the forecast start.
+  (`dashArray: "6 4"`), pane `driftForecast`, non-interactive. Include the
+  first `t ≥ now` vertex so it visually meets the forecast start.
 - **Forecast**: vertices with `t ≥ now`, solid, as today.
+- **Colour: shipped as the drifter's identity colour (`styleForBatch(seed.batch)
+  .fillColor`) for both segments, not a separate `VIOLET_FORECAST_COLOR`.** The
+  planned distinct "modeled recent past" colour was dropped in favour of one
+  colour source for the whole trail — bridge and solid forecast differ only by
+  `dashArray`, matching how the dot and head are also identity-coloured. This
+  is a better fit for the plan's own stated end-state ("dot = line colour =
+  head colour"): the forecast already sources from identity colour today, so
+  there is nothing left for #35 to converge here. The `driftForecast` pane and
+  code comments still say "violet" in a few places — that naming is now
+  vestigial (the rendered colour is per-batch, never actually violet) and can
+  be reworded whenever those lines are next touched.
 
 Both are driven by the drifter's existing head and the **same clock entry**, so
 the bridge obeys the clock-clip invariant (plan 035: nothing shows ahead of the
@@ -156,13 +194,23 @@ no bridge for them.
 #33 first (the dot/head system), then #34 (the bridge). One plan, likely one or
 two commits.
 
-Verify in the served app (pixi frontend + API):
+**Status: both #33 and #34 have shipped and are verifiable in the served app
+today** (pixi frontend + API):
 - **#33:** every drifter/glider/virtual track shows a small filled dot (no
-  outline) at its deployment point in that instrument's identity colour; ships
-  have none; mid-track hover tooltips and click-highlight still work (the dot is
-  non-interactive); the virtual drop discs lost their white ring.
-- **#34:** a deployed drifter shows a **dashed** violet segment from its last real
-  fix to "now", meeting the **solid** violet forecast; scrubbing the clock walks
-  the head along dashed-then-solid and never draws ahead of the clock.
-- Confirm `identityColor` is the sole colour source for the dot, ready for #35 to
-  extend to the line.
+  outline, fixed `DEPLOY_DROP_RADIUS`) at its deployment point in that
+  instrument's identity colour, clock-gated to appear once actually deployed;
+  ships have none; mid-track hover tooltips and click-highlight still work (the
+  dot is non-interactive); the virtual drop discs lost their white ring.
+- **#34:** a deployed drifter shows a **dashed** segment (identity colour) from
+  its last real fix to "now", meeting the **solid** forecast in the same
+  colour; scrubbing the clock walks the head along dashed-then-solid and never
+  draws ahead of the clock; a small "now-ghost" dot marks the observed↔forecast
+  handoff point.
+
+**Still open — not yet done, don't check this off:** the shared
+`identityColor(kind, key)` accessor was never built; colour is inlined at each
+of the three call sites (`buildTrackGroups`, `buildGliderTrackGroups`,
+`drawDrops`). Either extract the seam or explicitly retire the requirement —
+see "The identity-colour seam" above. (`VIOLET_FORECAST_COLOR` and the
+"4× line width" dot-radius spec are *not* open items — both converged to a
+better shipped design, described in place above.)

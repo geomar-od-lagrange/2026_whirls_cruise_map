@@ -1,6 +1,7 @@
 # FTLE overlay as vector contours
 
-> **Implemented.** See [`docs/ftle.md`](../../docs/ftle.md) for the current state.
+> **Implemented, then removed.** The FTLE overlay was later dropped from the
+> codebase entirely, and its doc went with it.
 > One refinement on landing: a **single** level (0.40 of the p2..p98 range) was
 > chosen over the two-level scheme below — the lower line already carries the
 > Cape Basin structure, and a second level is left as an optional future add.

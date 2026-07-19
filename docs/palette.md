@@ -8,8 +8,8 @@ so one class reads in one colour wherever it appears.
 
 The active palette is chosen at load from the URL — `?palette=<name>` — defaulting
 to **`ember`**. `PALETTES` (the registry) and `PALETTE` (the resolved active one)
-live at the top of `app.js`; the switch exists so alternatives can be compared
-side-by-side in the real app without a rebuild.
+live in `site/map/config.js`, imported by `app.js`; the switch exists so
+alternatives can be compared side-by-side in the real app without a rebuild.
 
 ## The class model: two ordinal ramps + shape-coded categoricals
 
@@ -89,9 +89,10 @@ near-inertial animation uses a faint per-frame fade for its motion trail.
 
 ## Where it lives (and how to change it)
 
-- **`PALETTES` / `PALETTE`** (`app.js`) — the registry and the resolved active
-  palette. Each palette maps class keys (`deployment_1..8`, `deploy_1..3`,
-  `pre_deploy`, the four glider types, `ship_md`, `ship_ag`) to hex colours.
+- **`PALETTES` / `PALETTE`** (`site/map/config.js`) — the registry and the
+  resolved active palette. Each palette maps class keys (`deployment_1..8`,
+  `deploy_1..3`, `pre_deploy`, the four glider types, `ship_md`, `ship_ag`) to
+  hex colours.
 - **`styleForBatch()` → `BATCH_STYLES`** — drifter batch marker/line style, built
   from the palette (fill = identity colour, outline = a derived darker stroke).
 - **`GLIDER_STYLES`** — glider-group colours, from the palette.

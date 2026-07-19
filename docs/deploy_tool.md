@@ -16,10 +16,13 @@ These tracks are computed
 integrator over the CMEMS field, seeded by the request. The live backend is
 reachable in the local pixi flow (`pixi run serve` + `pixi run serve-api`) and,
 under the hosted deployment ([plans/017](../plans/017-whirlsview-openshift.md)),
-as a sibling `…/api/` service beside the map. Where no backend is reachable — the
-bare static/Pages fallback ([deploy.md](deploy.md)) — the Deploy tool still places
-and exports drops; only the drift computation is unavailable, and the tool
-gracefully degrades to the last tab rather than leading the dock.
+as a sibling `…/api/` service beside the map — separate processes/pods either way
+([hosting.md](hosting.md)), so the API can be unreachable — locally when only
+`pixi run serve` runs, with no `serve-api`, or if the API service is down while the
+map's own static half stays up — while the map itself still serves. Where that
+happens, the Deploy tool still places and exports drops and still leads the dock;
+only the drift computation is unavailable, and the tool reports that inline on
+placement.
 
 ## One polyline tool, not a menu of shapes
 
@@ -44,11 +47,17 @@ findings decided it:
   ([`_inertial.py`](../src/whirls_cruise_map/_inertial.py)) is ~0.1–2 MB but
   trades away sub-inertial mesoscale time-variation. Either way it is *far* more
   than the map moves today.
-- **The deployed cache defeats it.** GitLab Pages here serves **uncompressed**,
-  with **deployment-scoped ETags** (one ETag across every file, so a rebuild
-  busts them all) and `max-age=600` against a ~10-min rebuild cadence — so a
-  reload more than 10 min after the last one **re-downloads the whole field**.
-  On the cruise's at-sea VSAT link ([data.md](data.md)) that is untenable.
+- **The field changes on a cadence, so one download never suffices.** The
+  currents/vorticity/forecast overlays are rebuilt roughly every six hours and
+  positions/tracks roughly every ten minutes ([hosting.md](hosting.md)), so a client
+  that shipped the field once would still need to refetch it every cycle to stay
+  current — repeating a many-MB (or even the compact ~1 MB) download on that
+  cadence over the cruise's at-sea VSAT link ([data.md](data.md)) is the same cost
+  restated, not one caching can remove. And the field is not part of the statically
+  served map data (`site/map/data/`) today at all — it lives only in the forecast
+  API's own incremental per-day store (below), so shipping it to the client would
+  mean adding a wholly new export competing for the same rebuild bandwidth, not
+  just relaxing an existing fetch.
 
 The server-side API inverts the economics: the ~66 MB window stays in the
 backend's memory, and each response is a **small FeatureCollection** — one short
@@ -68,10 +77,13 @@ viewer can actually resolve:
   drops from ~4.9 MB raw to ~1/3 gzipped; responses below `minimum_size` (the
   `limits` probe, error bodies) skip the codec overhead and stay identity-encoded.
 - **coordinates cropped to 4 dp.** Every emitted coordinate (track vertices and
-  marks alike) is rounded to 4 decimal places (~11 m) — sub-pixel at the map's
-  `maxZoom: 12` (~30 m/CSS-px at the working latitude), at the drifters' ~5–15 m
-  GPS fix scatter, and three orders below the 1/12° CMEMS field driving the
-  advection, so nothing visible is lost. The bound is one constant
+  marks alike) is rounded to 4 decimal places — ~11 m in latitude, ~8 m in
+  longitude at the cruise's latitudes. That sits inside the drifters' own ~5–15 m
+  GPS fix scatter and three orders below the 1/12° CMEMS field driving the
+  advection, so the rounding is well under the position uncertainty it carries.
+  It is on the order of a single CSS pixel at the map's `MAX_ZOOM` of 14
+  (~6–7 m/CSS-px across the cruise bbox), so it is visible only as sub-pixel
+  jitter at the deepest zoom. The bound is one constant
   (`_forecast._COORD_NDIGITS`), shared with the `_geojson` emitters, so every served
   coordinate obeys it. Combined with gzip, a 1000-seed response lands at ~1 MB.
 
@@ -79,62 +91,55 @@ viewer can actually resolve:
 
 `pixi run serve` (static map, `:8000`) and `pixi run serve-api` (forecast API,
 `:8001`) are **separate processes**. The split is intentional: the static half is
-byte-for-byte what GitLab Pages serves, so it can fall back to Pages with no
-backend, and only the deploy tool's fetch needs the live service. Under the
+exactly the bundle any plain static server can serve — a local `python -m
+http.server`, or the OpenShift map-nginx pod in production ([hosting.md](hosting.md))
+— so the app degrades gracefully whenever only it is reachable, and only the deploy
+tool's fetch needs the live API service. Under the
 plan-017 gateway the two become sibling backends under **one origin** — the map at
 `…/map/` and its API at `…/api/`, and the gateway may mount each instance under a
 subpath (`…/live-test/map/`, `…/live/map/`), so a same-origin fetch works in
 production — the only real deployment.
 
 The client resolves the API base rather than hardcoding it (`resolveApi` in
-`app.js`), with no client-controlled override: in the two-port dev flow (page on
+`api.js`), with no client-controlled override: in the two-port dev flow (page on
 `:8000`) it auto-targets `:8001`, and otherwise it derives the API **relative to
 the map's own served base** — it strips the trailing `map/…` from the page path
 and re-roots the API alongside it (`…/live-test/map/` → `…/live-test/api/forecast`,
 origin-root `/map/` → `/api/forecast`), so a gateway subpath resolves correctly
-without an origin-root assumption. Dropping the former
-`?api=`/`window.WHIRLS_FORECAST_API` override means a crafted link can't retarget
+without an origin-root assumption. There is no `?api=` or
+`window.WHIRLS_FORECAST_API` override, so a crafted link can't retarget
 the seed `POST` at a hostile host.
 
-## The engine: the build's RK4, seeded by each drop
+## The engine: a vectorized RK4, run once per POST
 
-The API does **not** re-implement advection. `_forecast._integrate` — RK4 with a
-5-min sub-step, a polyline vertex every 15 min, the m/s→deg conversion, and the
-NaN-land / window-edge stop — already advects an *arbitrary* `(lon, lat)` from an
-*arbitrary* start; the build's forecast just happens to feed it instrument heads.
-The API feeds it each drop instead. Two small refactors keep this shared cleanly:
+`POST /api/forecast` (`_api.py`, `forecast()`) takes the request body straight to
+`_batch_run` (`_api.py`), which validates and shapes the seeds, then hands the whole
+batch to `_forecast._batch_advect` — a **vectorized RK4**: 5-min sub-steps, a
+polyline vertex every `cadence_min` (derived from the run's `horizon_h`), the
+m/s→deg conversion, and a NaN-land / window-edge stop, all done for every
+still-active seed at once via a single numpy gather per stage rather than a
+per-seed Python loop. There is no separate scalar integrator in production that
+this mirrors or defers to — the vectorized path *is* the engine, and its cost is
+what the batch endpoint's latency and memory budget are sized against (2000 seeds
+in ~1–2 s).
 
-- `_anchor_t0(sampler, t0=None)` — the clock's t = 0 and its `valid_time`, either
-  nearest-now (the build) or an explicit epoch (each drop's water-entry time).
-- `_advection_feature(sampler, props, lon, lat, t0, valid, direction, *,
-  horizon_h, mark_hours)` — the single-line Feature builder, with `_integrate`'s
-  cadence knobs (`horizon_h`, `mark_hours`) as parameters. The build keeps its
-  defaults (±6 h, 1/3/6 h marks); the API passes each drop the horizon that lands
-  it on the run's common end and the run-relative mark hours (below).
-
-So the interactive line carries the *same* physics and the *same* caveats as the
-build forecast — surface current only, model near-inertial amplitude — because it is
-literally the same integrator over the same field.
-
-**Batched, not looped.** The build advects a handful of instrument heads, so it runs
-the scalar `_integrate` per head. A deployment is up to a couple thousand drops, where
-that pure-Python per-seed loop dominates walltime (~23 ms/seed → ~46 s at the cap). So
-the API advects the whole batch through a **vectorized twin** of the same RK4
-(`_forecast._batch_advect`): every stage samples the field for all still-active seeds
-in one numpy gather. It is **bit-identical** to the scalar path — same corner-sum /
-time-lerp / RK4 arithmetic order, same land-`NaN`→stop and window-edge truncation — but
-~40× faster (2000 drops in ~1.2 s, from ~46 s), pinned to the scalar reference by a
-test. The seeds are scheduled on a **shared wall clock** (a later-starting drop begins
-stepping later) rather than in raw step-index lockstep, so a store-backed field's day
-cache stays bounded by the horizon window rather than the start spread (below) — a
-scheduling reorder that leaves each seed's own step sequence, and hence the output,
-unchanged. `direction` (`+1`
-forward, `-1` backward) mirrors the scalar integrator's `dt` negation exactly, so a
+The seeds are scheduled on a **shared wall clock** (a later-starting drop begins
+stepping later) rather than in raw step-index lockstep, so a store-backed field's
+day cache stays bounded by the horizon *window* rather than the start *spread*
+(below). `direction` (`+1` forward, `-1` backward) negates the step sign, so a
 backward run walks the same vectorized path in reverse. Pure numpy: no new
 dependency.
 
 `_api_parcels.py` is a second, independent engine (see *Validation* below); `_api.py`
 (RK4) is the one the client uses.
+
+**Cached by field version + request.** `_batch_run` itself is wrapped by
+`_cached_batch_run` (`functools.lru_cache`, capacity 32, keyed on the field's
+version plus `direction`/`horizon_h`/the seed tuple): an identical request against
+an unchanged field returns the memoized `FeatureCollection` without re-running the
+integrator or touching the concurrency semaphore, and the cache is cleared
+whenever the field index reloads (a fresh build day) so a stale field version is
+never served from it.
 
 ## The field: an incremental store, streamed per request
 
@@ -155,21 +160,20 @@ resident however long it runs. Because `_batch_advect` schedules seeds on a shar
 wall clock, that residency tracks the run's horizon **window** (the current day plus
 its bracketing neighbour, ~100 MB), not the seed-start **spread** — at any instant
 only the seeds on the current window day are being stepped, so a batch whose drops
-start on far-apart calendar days no longer pins that many days at once (SEC-1). Peak
+start on far-apart calendar days does not pin that many days at once. Peak
 *memory* across requests is then bounded by a single `_MAX_CONCURRENCY` semaphore
 capping how many runs hold a field at once, keeping it inside the pod's 4 Gi limit.
 
 That one constant is the whole memory contract. A run's field residency is
 `~2 × 50 MB/day` regardless of how it places its seeds, and `_MAX_CONCURRENCY`
-multiplies both that and the transient trajectory buffer per run. Since FC-1 landed the
-buffer holds only vertex-cadence rows (not every 5-min sub-step), a few tens of MB even
-at the budget — at the shipped concurrency 3 that is `~2×50 MB×3 + ~0.1 Gi + ~0.7 Gi
-base ≈ 1.3 Gi < 4 Gi`. Because residency no longer tracks the start spread, wide-spread
-*planning* runs — e.g. "here is a 20-day cruise track; lay 200 drifters equidistant in
-time and forecast each," a ~20-day start spread — are served like any other, with no
-spread cap to raise and no memory trade-off against concurrency. (The wall-clock resync
-in `_batch_advect` is what removed the earlier `_MAX_START_SPREAD_DAYS` rejection and
-its `day_cache_cap_for_starts` sizing; see the audit's SEC-1/FC-1.)
+multiplies both that and the transient trajectory buffer per run. The buffer holds
+only vertex-cadence rows (not every 5-min sub-step), so it stays a few tens of MB
+even at the budget — at the shipped concurrency 3 that is `~2×50 MB×3 + ~0.1 Gi +
+~0.7 Gi base ≈ 1.3 Gi < 4 Gi`. Because residency tracks the horizon window rather
+than the start spread, wide-spread *planning* runs — e.g. "here is a 20-day cruise
+track; lay 200 drifters equidistant in time and forecast each," a ~20-day start
+spread — are served like any other, with no spread cap to raise and no memory
+trade-off against concurrency.
 
 Because it holds no `cmems-creds` and makes no CMEMS request, the API pod needs **no
 credentials and no internet egress** — the field arrives entirely over the shared
@@ -240,7 +244,9 @@ that check is still rejected server-side with a `422`, whose validation message 
 client renders verbatim instead of a bare error.
 
 Because a whole deployment advects in ~1–2 s even at the seed cap (vectorized RK4),
-the request is a **single POST** — no result cache, single-flight, or client retry.
+the request is a **single POST** with no client-side retry or single-flight logic;
+the server-side `lru_cache` (above) is what catches a repeated identical request,
+not anything the client coordinates.
 
 ## Start time, locked to the displayed field; staggered entry
 
@@ -275,10 +281,13 @@ and the separate near-inertial animation excludes the mean current entirely.)
 ## Client: the Deploy tool
 
 The **Deploy** tab is the dock's primary tab — it leads the strip and opens by default,
-chosen at build so the dock never flashes another tab first. A `/limits` probe runs off
-the critical path and only downgrades: when the API is unreachable (the static/Pages
-fallback), the dock re-selects Instruments; Deploy still places + exports drops without
-computing drift. A run is described in **release / direction / duration** terms; the
+chosen at build so the dock never flashes another tab first, unconditionally and never
+auto-switched on API availability. A `/limits` probe is warmed off the critical path so
+a cold or hanging API pod cannot stall the dock, but it does not steer tab selection.
+When the API is unreachable — no API process reachable at all, or the API service down
+while the map's own static half stays up ([hosting.md](hosting.md)) — Deploy still leads
+and still places + exports drops without computing drift, reporting that inline on
+placement. A run is described in **release / direction / duration** terms; the
 forecast/hindcast vocabulary is reserved for the *field*'s provenance (below),
 never for a virtual run.
 

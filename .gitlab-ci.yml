@@ -2,7 +2,7 @@
 #
 # This repo NO LONGER deploys from CI. The site (and the forecast API) are built on a
 # cadence and served by the OpenShift "whirlsview" stack in the sibling `oc_gateway`
-# repo (see README.md / docs/deploy.md); GitLab Pages is retired.
+# repo (see README.md / docs/hosting.md); GitLab Pages is retired.
 #
 # What remains is a guard: `pixi run check-frontend` (tsc --checkJs over site/map) fails
 # the pipeline on ANY TypeScript error — the ReferenceError-blank-page risk of the
@@ -26,7 +26,10 @@ check-frontend:
     paths:
       - .pixi-cache/
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+    # git is required at solve time, not just for the checkout: pixi.toml pulls
+    # `parcels` straight from a git ref, so resolving the default environment shells
+    # out to git before any task runs.
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git
     - curl -fsSL https://pixi.sh/install.sh | bash
     - export PATH="$PIXI_HOME/bin:$PATH"
   script:

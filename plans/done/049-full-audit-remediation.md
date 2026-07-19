@@ -139,7 +139,7 @@ Every group landed as a focused MR merged to `main`; the final state:
 
 ## Doc corrections (fold in as tiny cleanups, any MR)
 
-- [ ] `docs/deploy.md:261` claims a `128k` request-body cap the live gateway conf no
+- [ ] `docs/hosting.md:261` claims a `128k` request-body cap the live gateway conf no
       longer has — the gateway relies on nginx's 1 MB default. Correct or drop the claim.
 - [ ] The review's SEC-1 "3 Gi" figure — note the pod is 4 Gi (captured in G1 above).
 

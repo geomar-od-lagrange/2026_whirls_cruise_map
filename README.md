@@ -32,7 +32,7 @@ auto-targets the API on `:8001` (see `resolveApi` in `site/map/app.js`).
 ## Documentation
 
 - `docs/*.md` — standalone docs for the current state of the code (start with
-  [`docs/data.md`](docs/data.md), [`docs/deployment.md`](docs/deployment.md)).
+  [`docs/data.md`](docs/data.md), [`docs/deploy_tool.md`](docs/deploy_tool.md)).
 - `plans/*.md` — intent before implementation; `plans/ROADMAP.md` is the index,
   implemented plans move to `plans/done/`.
 - [`AGENTS.md`](AGENTS.md) — working guidelines for this repo.
@@ -44,6 +44,6 @@ OpenShift manifests, PVC wiring, and forecast-API pod live in the sibling repo
 **[`oc_gateway`](https://git.geomar.de/2026-whirlscruise-lagrange/oc_gateway)**.
 This repo builds the static bundle + cleaned data (`pixi run build`) and describes
 the shared streaming field-store shape in
-[`docs/deployment.md`](docs/deployment.md). Its own CI (`.gitlab-ci.yml`) no longer
+[`docs/deploy_tool.md`](docs/deploy_tool.md). Its own CI (`.gitlab-ci.yml`) no longer
 deploys — it only type-checks the frontend (GitLab Pages is retired). See
-[`docs/deploy.md`](docs/deploy.md).
+[`docs/hosting.md`](docs/hosting.md).

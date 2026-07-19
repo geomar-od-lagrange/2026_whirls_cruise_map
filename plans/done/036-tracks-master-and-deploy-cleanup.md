@@ -77,5 +77,5 @@ half of the forecast/hindcast removal is a sibling change (see below).
 3. `index.html`: drop the drift sidebar panel.
 4. `style.css`: tick-label clipping, radio rows, collapsible CSV menu, scrubber
    checkbox.
-5. `docs/controls.md` + `docs/forecast.md`/`deploy.md` updated to the new state.
+5. `docs/controls.md` + `docs/forecast.md`/`hosting.md` updated to the new state.
 6. Review agent, then verify by serving locally.

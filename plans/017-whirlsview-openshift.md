@@ -12,8 +12,9 @@ as [`2026_whirls_cruise_prep`](https://github.com/geomar-od-lagrange/2026_whirls
 3. `/data` — **aggregated / cleaned drifter & glider datasets** for download
    (static files, browsable index), produced by the same rebuild.
 
-Nothing here is built yet. This records the shape, the trade-offs, and the
-decisions still owed.
+This records the shape, the trade-offs, and the decisions still owed. The
+map-serving half has since shipped, on a topology that diverged from the
+three-path sketch below — see the status note immediately following.
 
 > **Update (2026-07-05): the gateway + OpenShift orchestration moved to a
 > dedicated repo.** Everything below about topology, tiers, auth, and TLS still
@@ -23,6 +24,19 @@ decisions still owed.
 > [`oc_gateway`](https://git.geomar.de/2026-whirlscruise-lagrange/oc_gateway.git),
 > whose `plans/001-oc-gateway-and-phasing.md` owns the cross-repo migration and its
 > phase order. See **Repo structure — revised to three repos** below.
+
+> **Status (2026-07-19): the map + forecast API are live on OpenShift, on a
+> simpler topology than the three-path sketch below.** Production is
+> `https://whirlsview.geomar.de`, with a gateway nginx (in `oc_gateway`)
+> fronting `/live/` (prod) and `/live-test/` (staging) — each a frontend-nginx
+> pod serving this repo's map off a CronJob-filled PVC — plus a forecast API
+> pod at `/live/api/`. There is no `/archetypes` or `/data` path yet: the
+> archetypes-viewer and cleaned-dataset-download integrations described below
+> have **not** happened. GitLab Pages, which this plan originally proposed
+> keeping alongside OpenShift, is **retired** (`.gitlab-ci.yml` only
+> type-checks now). The in-repo producer refactor (the "Code changes" list
+> below) is done. See [docs/hosting.md](../docs/hosting.md) for the current
+> build/CI story and "Still open" below for what remains.
 
 ## What we inherit from the prep repo's `deploy/viewer/`
 
@@ -58,11 +72,12 @@ gliders/Agulhas, CMEMS currents). So the equivalent of "the CI build" becomes an
 CronJob** — and that CronJob, unlike the serve pod, needs egress and (for CMEMS)
 credentials.
 
-A concrete upside over today's GitLab Pages deploy: OpenShift `CronJob` is a
-real in-cluster scheduler, so a sub-hourly fast cadence fires reliably — it is
-not capped by GitLab's `PipelineScheduleWorker` interval (the constraint
-[docs/deploy.md](../docs/deploy.md) and [plans/performance.md](performance.md)
-both flag).
+A concrete upside over the (now-retired) GitLab Pages deploy: OpenShift
+`CronJob` is a real in-cluster scheduler, so a sub-hourly fast cadence fires
+reliably — it is not capped by GitLab's `PipelineScheduleWorker` interval (the
+constraint [docs/hosting.md](../docs/hosting.md) and
+[plans/performance.md](done/performance.md) both flagged). This upside is realized:
+the shipped `oc_gateway` CronJobs are what run the map-refresh cadence today.
 
 ## Fast vs. slow rebuild paths
 
@@ -145,7 +160,7 @@ stripping the prefix with a trailing slash, and `return 302`s `/` → `/map/`:
   `/map/` → `map-svc:8080/`, so the map serves at its own root and its
   **relative** asset/data refs resolve under `/map/` in the browser. This is why
   all-relative refs matter — the map is already all-relative
-  ([docs/deploy.md](../docs/deploy.md)); **confirm the archetypes viewer has no
+  ([docs/hosting.md](../docs/hosting.md)); **confirm the archetypes viewer has no
   absolute-root (`/data`, `/app.js`) refs** before wiring it in.
 - Cost: one extra small pod + one config file — the *simplest correct* primitive
   for one host / three paths / a root redirect.
@@ -218,22 +233,22 @@ The `/archetypes` viewer keeps its own separate HPC-pushed PVC; don't co-mingle.
 ## Code changes this needs in *this* repo
 
 Small, and in keeping with the greenfield/reshape ethos in `AGENTS.md`. Items
-1–4 are the producer refactor; **[018](done/018-ingest-derive-data-seam.md) owns
-their design** (the ingest/derive split, `_data.py` seam I/O, the `/data` CSV
-schema, `docs/data.md`) — this list is the summary, 018 is the spec:
+1–4 are the producer refactor that **[018](done/018-ingest-derive-data-seam.md)
+designed and shipped** (the ingest/derive split, `_data.py` seam I/O, the
+`/data` CSV schema, `docs/data.md`) — **all four are done**:
 
-1. **Configurable output dirs** — `build.py`'s `SITE_DATA` is hardcoded to
-   `site/data`; make the map root *and* the new `/data` root env/args (`--out` /
-   `WHIRLS_SITE_DATA`, `WHIRLS_DATA`) so a CronJob writes to the PVC mounts.
-2. **Stage + tier selector** — factor `main()` into `ingest` / `derive` with a
-   tier switch (`--stage ingest`, `--stage derive --tier fast|slow`). Keep each
-   step best-effort as today. Note 018 re-cuts this tier table into
-   ingest / derive-fast (egress-free) / derive-slow (CMEMS).
-3. **Atomic per-file writes** — `_write_json` / the PNG / CSV writes go through
-   `*.tmp` + `os.replace`; under 018 this also guards the seam derive reads.
-4. **Dataset-export = ingest** — the cleaned drifter+glider+ship track CSVs +
-   `manifest.json` in `/data` are not a separate export step but the **ingest
-   stage's** output, which derive then consumes (018).
+1. **Configurable output dirs** — **done.** `build.py` takes `--data` /
+   `WHIRLS_DATA` (the download tree) and `--map` / `WHIRLS_SITE_DATA` (the
+   map's tree), each defaulting to the `site/` layout, so a CronJob can point
+   both at PVC mounts.
+2. **Stage + tier selector** — **done.** `main()` is split into `ingest` /
+   `derive` with `--stage ingest|derive|all` and, for derive,
+   `--tier fast|slow|all`. Each step stays best-effort as before.
+3. **Atomic per-file writes** — **done.** JSON/PNG/CSV writes go through
+   `*.tmp` + `os.replace`, which also guards the seam's derive-side reads.
+4. **Dataset-export = ingest** — **done.** The cleaned drifter+glider+ship
+   track CSVs + `manifest.json` under `/data` are not a separate export step
+   but the **ingest stage's** own output, which `derive` reads back (018).
 5. **OpenShift manifests → the `oc_gateway` repo, not a `deploy/` dir here**
    (revised 2026-07-05). The gateway conf + single Route + `/`→`/map/` redirect,
    and the OC glue that composes the apps (the map viewer image off
@@ -304,19 +319,21 @@ pick a framework now. Its OpenShift Deployment lands in `oc_gateway` alongside
 the other OC specifics when scoped (the service *code* reuses this repo's
 package); see the `poc-interactive-forecast` branch for the current prototype.
 
-## Relationship to the current GitLab Pages deploy
+## Relationship to the former GitLab Pages deploy
 
-Today the map ships via GitLab Pages ([docs/deploy.md](../docs/deploy.md)).
-**Keep GitLab Pages running for now** — OpenShift stands up alongside it, not as
-a replacement. OpenShift adds a reliable sub-hourly cron and co-location with the
-archetypes viewer + datasets under one hostname. Revisit retiring Pages once
-whirlsview is proven; no decision forced now.
-
-**Pages adopts the split now.** Rather than staying at `/`, the Pages deploy
-takes the same browser-facing layout as this gateway — `/map/`, a sibling
-`/data/`, and `/`→`/map/` — per [018](done/018-ingest-derive-data-seam.md). Because the
-client is all-relative, that is a pure layout move, and it **de-risks this
-gateway**: the identical path shape runs on Pages before the cluster exists.
+This plan originally proposed standing OpenShift up **alongside** GitLab Pages,
+revisiting retirement only once whirlsview was proven. That is not what
+happened: **GitLab Pages is retired outright.** `.gitlab-ci.yml` no longer
+publishes anything — its only job now is the frontend type-check gate (see
+[docs/hosting.md](../docs/hosting.md)). Production is fully the OpenShift
+whirlsview stack, and the shipped topology is the simpler `/live` +
+`/live-test` + `/live/api` split described in the status note at the top of
+this plan, not the `/archetypes` + `/map` + `/data` three-path gateway sketched
+below. The all-relative-references authoring rule this plan called for
+(so the map serves correctly under any subpath) did land and is what makes
+`/live` vs. `/live-test` possible without a client-side base-path fork; see
+[docs/hosting.md](../docs/hosting.md) "Authoring the map to serve under any
+base".
 
 ## Decisions locked (2026-07-04, revised 2026-07-05)
 
@@ -334,15 +351,25 @@ gateway**: the identical path shape runs on Pages before the cluster exists.
 - **TLS/DNS handled by the OC admins** — no cert in our manifest; the gateway
   Route is `host: whirlsview.geomar.de` + `termination: edge` + redirect, same
   shape as the archetypes viewer's Route (which carries no host and no cert).
-- **GitLab Pages stays** for now.
+- **(Reversed) GitLab Pages does not stay.** It is retired outright, not kept
+  running alongside OpenShift — see "Relationship to the former GitLab Pages
+  deploy" above.
 
 ## Still open / to confirm
 
-- **RWX storage** — deferred; not a phase-1 blocker (RWO + podAffinity ships
-  without it, see "Shared storage"). Check `oc get storageclass` when you can; it
-  only decides `/data` durability.
+- **`/archetypes` and `/data` have not been built.** Production stopped at the
+  map + forecast API (`/live` + `/live-test` + `/live/api`); folding the
+  archetypes viewer and a cleaned-dataset download tree into the same gateway,
+  as this plan's topology sketches, is unstarted work, not a decision pending
+  confirmation.
+- **RWX vs. RWO storage — out of this repo.** The PVC(s) backing the map/API
+  data live in `oc_gateway`'s manifests, so which storage class is used and
+  whether `/data` gets a durable PVC is that repo's call, not resolvable here.
+  This plan's own phase-1 default (RWO + `podAffinity`) was this repo's design
+  input to that decision, not a standing question for this repo to chase.
 - **`/data` durability**: regenerate-only (ephemeral) vs. a persistent, growing
-  download archive (wants a durable PVC).
+  download archive (wants a durable PVC) — moot until `/data` itself is built
+  (see above); tracked in `oc_gateway` once it is.
 - **Cron cadences**: fast ~10 min, slow ~6 h are starting points tied to upstream
   turnover — confirm against the CMEMS release schedule.
 - **Analysis-app runtime** (future `/analysis`) — defer.

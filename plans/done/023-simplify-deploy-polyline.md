@@ -1,4 +1,4 @@
-> Implemented — see [docs/deployment.md](../../docs/deployment.md).
+> Implemented — see [docs/deploy_tool.md](../../docs/deploy_tool.md).
 
 # Simplify the deploy tool: one multi-click polyline
 

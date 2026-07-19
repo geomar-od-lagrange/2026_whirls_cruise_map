@@ -1,11 +1,12 @@
 # The hourly-current field store
 
-The virtual-deployment engine ([deployment.md](deployment.md)) advects drops
-through the CMEMS surface-current field, and the speed/vorticity/flow overlays
-([currents.md](currents.md)) are rendered from the same field. That field is
-kept on disk as an **incremental per-day store** — one small netCDF per UTC day
-plus a manifest — that a slow build run maintains and that both the build's own
-render step and the live forecast API read back.
+The virtual-deployment engine ([deploy_tool.md](deploy_tool.md)) advects drops
+through the CMEMS surface-current field. That field is kept on disk as an
+**incremental per-day store** — one small netCDF per UTC day plus a manifest —
+that a slow build run maintains and that the live forecast API reads back. The
+speed/vorticity/flow overlays ([currents.md](currents.md)) are a separate
+concern: they come from their own independent `copernicusmarine.subset` call
+against a different, 6-hourly dataset, not from this store.
 
 ## Why a separate store, not part of `/data`
 
@@ -18,7 +19,7 @@ a *published* artifact: unlike `site/map/data/` (served to the browser) or
 `/data/` (served for download), the store sits in a directory **no HTTP server
 mounts**, because raw hourly u/v over the whole cruise is both large and not
 something a client ever needs whole — only the small advected answers ship
-([deployment.md](deployment.md)).
+([deploy_tool.md](deploy_tool.md)).
 
 ## Layout
 
@@ -38,10 +39,8 @@ storing duplicate edge hours.
 
 The store directory is resolved from `WHIRLS_FIELD_CACHE` (env), else a
 repo-local `cache/field/`. It sits **outside `site/`** so neither `pixi run
-serve` nor, in the hosted deployment, the frontend pod ever serves it — the same
-structural reason the store replaces the old single `forecast_window.nc`, which
-lived under a subtree that *was* statically served and so was likely publicly
-fetchable. The store is mounted read-only into the API and read-write into the
+serve` nor, in the hosted deployment, the frontend pod ever serves the raw
+field — the store is mounted read-only into the API and read-write into the
 build; the frontend never sees it.
 
 ### The manifest
@@ -93,13 +92,12 @@ fetches every UTC day in `[tmin, tmax]` that is **missing or not yet `final`**,
 one `copernicusmarine.subset` call per day (bounded memory, ~50 MB each), and
 returns the freshly rewritten manifest.
 
-**Per-day and incremental, not a whole-window refetch.** The predecessor fetched
-one `forecast_window.nc` covering the whole window on *every* slow run. Once the
-window spans the whole cruise that no longer fits the build's tight deadline —
-every run would re-pull the entire, ever-growing span. The per-day store instead
-pulls only what is missing or non-final: ~11 recent+forecast days per steady-state
-run (~550 MB), well inside the cron budget, and the initial ~25-day backfill
-spreads resumably across runs.
+**Per-day and incremental, not a whole-window refetch.** A whole-window refetch
+on every slow run would mean re-pulling the entire, ever-growing span once it
+spans the whole cruise — that no longer fits the build's tight deadline. The
+per-day store instead pulls only what is missing or non-final: ~11
+recent+forecast days per steady-state run (~550 MB), well inside the cron
+budget, and the initial ~25-day backfill spreads resumably across runs.
 
 **Newest first.** Days are fetched in descending date order, so even a killed or
 deadline-truncated run leaves the **recent + forecast** span — the part the app
@@ -112,9 +110,9 @@ return stays non-final so a still-filling day is retried, not locked in), **and*
 its whole span is `FINAL_MARGIN_H` (default 12 h) behind the fetch wall clock.
 This encodes the working assumption that **CMEMS revises nothing behind the
 current analysis edge**: a day old enough to be safely behind that edge will
-never change, so re-pulling it is wasted work. Final day files are immutable, which
-is also what lets the render step's absolute-named frames cache on the gateway
-([currents.md](currents.md)).
+never change, so re-pulling it is wasted work. Final day files are immutable,
+which is what lets a batch run treat them as safe to hold in a long-lived cache
+without ever re-checking them.
 
 **The escape hatch.** `--refetch-all` (equivalently: wipe the store) forces a
 complete re-pull — the guard if the deferred rollover validation (a repo issue:
@@ -135,26 +133,23 @@ outright kill loses more than that one day's progress.
 ## The read side: two paths
 
 Both read paths open the day files touching a requested `[t0, t1]` **plus one
-hourly step outside each end** (integration needs the bracket; the legacy
-single-fetch used `coordinates_selection_method="outside"` for the same reason),
-verify hourly continuity across the span, and name the missing range if there is
-a gap. They differ in how much they hold in memory.
+hourly step outside each end** (integration needs the bracket), verify hourly
+continuity across the span, and name the missing range if there is a gap. They
+differ in how much they hold in memory.
 
 ### `load_window` — the batch path
 
 `load_window` brackets, concatenates, deduplicates, and **loads the whole span
-into one in-RAM `xr.Dataset`**, shaped exactly like the legacy whole-window
-fetch's output (`uo`, `vo`; `time`/`latitude`/`longitude`) so its consumers are
-drop-in. It is used where the span is inherently narrow:
+into one in-RAM `xr.Dataset`** (`uo`, `vo`; `time`/`latitude`/`longitude`) so
+its consumers are drop-in. It is used where the span is inherently narrow:
 
-- the slow build's **render** step (the ~few-day window behind the
-  speed/vorticity/flow frames),
-- the **inertial** decomposition's narrow ~24 h slice,
+- the slow build's **near-inertial decomposition** step, over its own narrow
+  ~24 h slice,
 - the **parcels** cross-check API (`_api_parcels.py`, its own ±12 h window).
 
 ### `StoreField` — the streaming path
 
-The deployment API's runs cover the **whole cruise span** ([deployment.md](deployment.md),
+The deployment API's runs cover the **whole cruise span** ([deploy_tool.md](deploy_tool.md),
 API v2), where loading every touched day whole would put the entire field back in
 API RAM — exactly what the pod's 4 Gi limit forbids. `StoreField` is the
 streaming alternative: a drop-in for `_forecast._Field` (same
@@ -172,14 +167,11 @@ spread (a pure scheduling reorder — each seed still steps its own sequence fro
 own `start`, so the output is bit-identical). The day cache therefore sweeps the
 horizon window monotonically, holding only the current day plus its bracketing
 neighbour, and a **fixed small cap** (`_DEFAULT_DAY_CACHE_CAP`) suffices for any seed
-placement. A batch whose drops start one-per-day across the whole cruise no longer
-pins that many days resident — it walks each day once as the window passes it (SEC-1).
+placement. A batch whose drops start one-per-day across the whole cruise does not
+pin that many days resident — it walks each day once as the window passes it.
 This is what lets wide-spread *planning* runs ("lay 200 drifters equidistant across a
 20-day cruise track and forecast each") be served like any other, with no start-spread
-cap and no memory trade-off against concurrency. (Before the resync, residency tracked
-the spread and a `day_cache_cap_for_starts` helper sized the LRU to it, backstopped by
-a hard ceiling and an API-level spread rejection; the resync removed all three — see
-git history.)
+cap and no memory trade-off against concurrency.
 
 ### The API's field index
 
@@ -191,6 +183,6 @@ isn't yet covered — a fetch gap or an in-progress backfill). Reading true time
 coordinates rather than assuming a full day per manifest entry means a
 still-filling forecast-edge day narrows the servable span at its real edge
 instead of failing a later `StoreField` build on an internal gap. The index is
-rebuilt only when the manifest's **mtime** changes — one `stat` per request, the
-same one-stat shape the single-file predecessor used — and its bounds are what
-`GET /api/forecast/limits` advertises as the loaded `window`.
+rebuilt only when the manifest's **mtime** changes — one `stat` per request —
+and its bounds are what `GET /api/forecast/limits` advertises as the loaded
+`window`.
