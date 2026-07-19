@@ -1,5 +1,7 @@
 # Currents inclusion
 
+> Superseded. Shipped, then wholly replaced by the precomputed flow-vis pipeline — see [038-precomputed-flow-vis.md](038-precomputed-flow-vis.md) and [docs/currents.md](../../docs/currents.md). Kept for history.
+
 Turn the placeholder currents overlay into the intended feature: current **speed
 as a cmocean-`speed` shaded field** with **animated flow trails** over it, for a
 single "today" snapshot. The cruise targets mesoscale eddies ("whirls") in the

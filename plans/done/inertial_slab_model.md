@@ -7,7 +7,7 @@
 > adding it on top of the model field would coherently double-count the same
 > wind events. Full investigation record in
 > [013-inertial-gain-generalization.md](013-inertial-gain-generalization.md);
-> doc counterpart [docs/forecast.md](../../docs/forecast.md) (alternatives
+> doc counterpart [docs/deploy_tool.md](../../docs/deploy_tool.md) (alternatives
 > weighed).
 
 This was the original approach for adding near-inertial (NI) motion to the

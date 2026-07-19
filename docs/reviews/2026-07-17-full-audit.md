@@ -114,7 +114,7 @@ is a sync `def` run in the default AnyIO threadpool with **no concurrency gate**
 `_field_lock` is released before advection, so 2–3 concurrent such requests exceed the
 3 Gi pod limit → OOM kill of the forecast service. This directly contradicts the
 documented "memory stays flat … the pod's 3 Gi limit" guarantee
-(`docs/deployment.md:149`, `_api.py:322-324`), whose own comment endorses "holding its
+(`docs/deploy_tool.md:149`, `_api.py:322-324`), whose own comment endorses "holding its
 whole span resident … no separate per-request bound is needed" — that is the bug.
 
 **Fix:** clamp `day_cache_cap_for_starts` to a ceiling (e.g. 8 days) that keeps

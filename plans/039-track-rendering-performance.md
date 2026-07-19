@@ -2,11 +2,17 @@
 
 ## Why
 
-After the deployment-focused refactor (plans 034/035) the map feels laggy. The
-lag is **specific to the "Show tracks = on" state** — with tracks off, pan/zoom
-and scrubbing are smooth. This plan records what was measured, the root cause,
-and a ranked set of fixes (render-side and data-volume), with trade-offs, so we
-can pick work deliberately. **Nothing here is implemented yet.**
+After the deployment-focused refactor (plans 034/035) the map felt laggy. The
+lag was **specific to the "Show tracks = on" state** — with tracks off, pan/zoom
+and scrubbing stayed smooth. This plan recorded what was measured, the root
+cause, and a ranked set of fixes (render-side and data-volume), with
+trade-offs.
+
+**Status: the render-side fixes (A and B, below) have landed** — tracks now
+draw on a canvas renderer as one polyline per instrument. **The data-volume
+fixes (C and D) are still open** and are the real remaining levers: the eager
+payload is still the full per-fix `fixes[]` array, still un-simplified, still
+fetched and parsed up front. This plan stays open for C/D.
 
 ### Deployment context
 
@@ -28,7 +34,7 @@ must **decompress + parse + turn into 100k objects**, which gzip does nothing fo
 
 It complements the two prior performance plans, which it partly *supersedes*:
 
-- [`plans/performance.md`](performance.md) — cold-load / at-sea transfer
+- [`plans/performance.md`](done/performance.md) — cold-load / at-sea transfer
   profiling (serial fetches, Leaflet CDN risk, wasted tiles). Still open; those
   items are load-time, largely orthogonal to this render-time lag.
 - [`plans/done/032-download-volume.md`](done/032-download-volume.md) — made
@@ -38,57 +44,63 @@ It complements the two prior performance plans, which it partly *supersedes*:
 
 ## What renders when (the current pipeline)
 
-`site/map/app.js`, `main()` (line ~3470):
+`site/map/app.js`, `main()`:
 
 **On load, tracks OFF (the smooth case):**
 - `latest.geojson` (57 KB) → ~146 drifter `circleMarker`s (SVG). Cheap.
 - `speed_*.webp` → one `imageOverlay` raster in the `shading` pane. Cheap.
 - `gliders.geojson` (388 KB) → glider markers. Cheap.
 - Drifter/glider "heads": one marker per instrument that follows the app clock.
-- **But `tracks.geojson` (19 MB) is still eager-fetched, parsed, and turned into
-  ~100k polyline objects off-map** (line 4063 → `buildTrackGroups` →
-  `addTrackSegments`). The lines aren't in the DOM yet, so pan/zoom stays smooth,
-  but this is a multi-second main-thread build + large memory/GC footprint right
-  after load.
+- **But `tracks.geojson` (19 MB) is still eager-fetched and parsed** (`app.js`,
+  the `fetchJSON(DATA.tracks, { optional: true })` call feeding
+  `buildInstrumentRows`) and turned into one polyline per instrument via
+  `addTrack` (`app.js:926`). The lines aren't necessarily in the DOM yet (see
+  below), so pan/zoom stays smooth, but this is still a fetch + JSON-parse +
+  object-build pass over the full per-fix payload right after load — see item 2
+  below.
 
-**"Show tracks" → ON** (`setTracksVisible` → `setInstrumentTracks` →
-`buildInstrumentRows.sync()`, line 849): each batch's `featureGroup` is
-`addTo(map)`, injecting **all of its per-segment polylines into the DOM at once**
-→ ~100k SVG `<path>` nodes appear. This is the laggy state.
+**"Show tracks" → ON/OFF**: each instrument's track is now a *single*
+`L.polyline` (built once by `addTrack`, one multi-part line per instrument —
+gaps from de-spiked outliers are drawn as disjoint parts via `splitAtGaps`),
+rendered on one shared `L.canvas` renderer in the `overlayPane`
+(`trackRenderer`, `app.js:838-839`). Toggling visibility adds/removes ~150
+polyline objects, not ~100k `<path>` DOM nodes.
 
-**Scrub** (`buildTimeSlider` `onChange` → `updateClock`, line 381): rAF-throttled
-(good), but each frame loops **every track entry × every segment** — `clipTrack`
-(line 569) walks all ~100k segments calling `setSegShown` (which does
-`group.addLayer/removeLayer`, i.e. DOM mutation, when a segment crosses the
-clock) plus a `setLatLngs` on each crossing segment. With tracks on, scrubbing is
-continuous DOM churn across 146+ tracks.
+**Scrub** (`updateClock`, rAF-throttled): clips each track's polyline to the
+clock via `setLatLngs` rather than the old per-segment `addLayer`/`removeLayer`
+churn — a few hundred `setLatLngs` calls per frame across all instruments, not
+one check per fix.
 
-## Root cause (measured)
+## Root cause (as originally measured, and what changed)
 
-1. **One `L.polyline` per fix-to-fix segment.** `addTrackSegments`
-   (`app.js:715`) builds a separate polyline for every leg so each can carry its
-   own hover tooltip (issue #11) and be clipped by segment membership (plan 035).
-   `tracks.geojson` has **146 LineStrings / 100,549 vertices** → **~100,400
-   segment polylines**. Gliders and both ship tracks use the same builder, adding
-   more. Every one is an SVG `<path>` + a bound sticky tooltip + a click handler +
-   a `registerPart` restyle closure.
+The two render-side items below (1 and 2) have been fixed — recorded here for
+the diagnosis trail. Items 3 and 4 are unchanged and remain the open levers
+(see Recommendations C and D).
 
-2. **Default SVG renderer.** The map is created with no `preferCanvas`
-   (`app.js:3481`) and no per-line `renderer:`, so all track lines render as SVG.
-   ~100k `<path>` DOM nodes is the killer: zoom re-projects every path
-   (`O(vertices)` `setAttribute("d", …)`), and the browser must lay out,
-   composite, and hit-test 100k nodes on every interaction. Canvas draws the same
-   lines as a handful of draw calls with **no DOM**.
+1. **One `L.polyline` per fix-to-fix segment — fixed (Recommendation B).** The
+   original design (`addTrackSegments`, no longer present) built a separate
+   polyline for every leg so each could carry its own hover tooltip and be
+   clipped by segment membership. `tracks.geojson` has **146 LineStrings / ~100k
+   vertices**, so this was ~100k SVG `<path>` nodes. See Recommendation B for
+   what replaced it.
 
-3. **Eager load + eager build (regression vs 032).** Plan 032 made tracks lazy —
-   fetched and built only when the layer was first switched on. Plan 035 reverted
-   to eager because the drifter **heads now follow the clock from load** and need
-   the per-drifter time series. But the head only needs *times + positions*, not
-   the rendered polylines — so we pay the full 100k-polyline build up front even
-   though the lines are hidden.
+2. **Default SVG renderer — fixed (Recommendation A).** Tracks now render on a
+   dedicated canvas renderer instead of SVG. See Recommendation A for the
+   implementation and a hover/hit-testing gotcha found along the way.
 
-4. **19 MB payload, 89 % of it duplicated telemetry.** Measured on the committed
-   artifact:
+3. **Eager load + eager build — still open (item D below).** Plan 032 made
+   tracks lazy — fetched and built only when the layer was first switched on.
+   Plan 035 made it eager because the drifter **heads now follow the clock
+   from load** and need the per-drifter time series. The head only needs
+   *times + positions*, not the rendered polylines, so the app still pays a
+   full fetch + parse + polyline-build over the entire `tracks.geojson` up
+   front even though the lines may be hidden. With the render-side fix (1/2
+   above) this build is far cheaper than it was (~150 polylines, not ~100k),
+   but the eager **payload** (item 4) is unchanged.
+
+4. **19 MB payload, 89 % of it duplicated telemetry — still open (item C
+   below).** Unchanged since this plan was first written. Measured on the
+   committed artifact:
 
    | part | size | note |
    |---|---:|---|
@@ -96,29 +108,38 @@ continuous DOM churn across 146+ tracks.
    | geometry `coordinates` | 2.1 MB (11 %) | the actual track shape |
    | total | 19.0 MB | **~2.45 MB on the wire** (production nginx gzip-5); the browser still decompresses, parses, and builds objects from the full 19 MB |
 
-   Emitter: `_geojson.tracks_geojson()` (`_geojson.py:242-304`); the per-vertex
-   dual append (one coord **and** one `fixes` record per row) is `_geojson.py:288-291`.
-   There is **no simplification/decimation anywhere** in the module. The refactor
-   added the `fixes` array (~532 KB raw before → 19 MB now). Coordinates are
-   already 4 dp (`_coord`, `_geojson.py:27`); **precision is not the problem**
-   (see below). `gliders.geojson` (388 KB) carries the **same** duplicated
-   per-vertex `fixes` pattern (`_geojson.py:190-193`, 3 fields/fix).
+   Emitter: `_geojson.tracks_geojson()` (`_geojson.py:251-313`); the per-vertex
+   dual append (one coord **and** one `fixes` record per row, via `_fix_record`,
+   `_geojson.py:97-111`) is `_geojson.py:296-300`. There is still **no
+   simplification/decimation anywhere** in the module. Coordinates are already
+   4 dp (`_coord`, `_geojson.py:40`); **precision is not the problem** (see
+   below). `gliders.geojson` (388 KB) carries the **same** duplicated per-vertex
+   `fixes` pattern (`gliders_geojson`, `_geojson.py:159-215`, 194-211 for the
+   track branch).
 
 ## Data-volume analysis (answering "binary? low precision? pixel in deg?")
 
-**What is a pixel, in degrees?** At `maxZoom: 12`, Web Mercator, working latitude
-≈ −37°:
+**What is a pixel, in degrees?** This was originally worked out at `maxZoom: 12`;
+the map's `MAX_ZOOM` is now **14** (`config.js:88`, used at `app.js:2281`), two
+levels deeper — a pixel at the deepest zoom is correspondingly **~4× smaller**
+than the figures below, so the px-based DP tolerance table needs re-deriving
+against real data at implementation time rather than trusted as-is. At the
+original `maxZoom: 12`, Web Mercator, working latitude ≈ −37°:
 
 - world width = `256 · 2¹²` = 1,048,576 px for 360°
 - **longitude: 0.000343°/px (~30.5 m/px)**
 - **latitude: 0.000274°/px (~30.4 m/px)**
 
-So a pixel at the deepest zoom is **~0.0003° ≈ 30 m**.
+So a pixel at zoom 12 is **~0.0003° ≈ 30 m**; at the current `maxZoom: 14` it is
+**~0.00007–0.00009° ≈ 7.6 m**.
 
 **Cropped to low precision?** Coordinates are *already* 4 dp (plan 032) =
-0.0001° ≈ 11 m ≈ **0.29 px** at max zoom — already sub-pixel and at the GPS noise
-floor. 032 measured that cropping tracks to 4 dp saved only −6 % gzipped.
-**Precision is a dead lever; vertex count and the telemetry are the levers.**
+0.0001° ≈ 11 m — sub-pixel at zoom 12 (~0.29 px) but roughly **1.2–1.5 px** at
+the current `maxZoom: 14`, i.e. close to a pixel rather than clearly beneath
+one. Still at/near the GPS noise floor, and 032 measured that cropping tracks
+to 4 dp saved only −6 % gzipped either way. **Precision remains a weak lever
+compared to vertex count and the telemetry, but re-check the sub-pixel claim
+against zoom 14 before treating it as settled.**
 
 **Ranked data-volume levers (biggest first):**
 
@@ -129,20 +150,27 @@ floor. 032 measured that cropping tracks to 4 dp saved only −6 % gzipped.
    gzipped.
 
 2. **Simplify the geometry (Douglas–Peucker at build time).** Drifter tracks are
-   smooth; a tolerance of ~0.0005° (≈ 1.5 px at max zoom) is visually lossless
-   and keeps only **14 %** of vertices:
+   smooth, so a modest tolerance keeps most of the visual shape while dropping
+   most vertices. The table below is the original measurement (at the then-current
+   `maxZoom: 12`); the vertex-kept percentages are a property of the tolerance vs.
+   the real track geometry (zoom-independent), but the **px-at-max-zoom column is
+   stale** now that `MAX_ZOOM` is 14, not 12 — re-run against the current zoom
+   before picking a tolerance for "visually lossless":
 
-   | DP tolerance | ≈ px @ z12 | vertices kept |
+   | DP tolerance | ≈ px @ then-current z12 | vertices kept |
    |---|---:|---:|
    | 0.0005° (~56 m) | 1.5 | 14,499 (14 %) |
    | 0.001° (~111 m) | 3.0 | 10,137 (10 %) |
    | 0.002° (~222 m) | 6.0 | 7,159 (7 %) |
 
+   At the current `maxZoom: 14` each of those tolerances is ~4× larger in pixels
+   (≈6, 12, 23 px) — likely too coarse to still read as lossless at full zoom, so
+   the tolerance should probably be tightened (and the vertex-kept counts
+   re-measured) rather than reused as-is.
+
    Caveat: the clock-follows head interpolates along the vertices, so keep enough
    temporal resolution for smooth head-walking — simplify on space but never drop
-   so much that a straight-but-slow leg loses its time samples. Even 14 % (≈15k
-   vertices total) is ample. This cuts geometry ~2.1 MB → ~0.3 MB **and** cuts the
-   rendered vertex/segment count ~7×.
+   so much that a straight-but-slow leg loses its time samples.
 
 3. **Wire compression is already handled — don't chase it.** The production
    frontend nginx gzips `application/geo+json` at level 5 (Deployment context
@@ -154,8 +182,8 @@ floor. 032 measured that cropping tracks to 4 dp saved only −6 % gzipped.
    pre-emit in the build would help there — but that host is secondary and
    levers 1–2 make it moot.)
 
-4. **Minify the JSON** (trivial). `json.dumps` uses default separators
-   (`build.py:68`), so **1.41 MB (7.4 %)** of `tracks.geojson` is separator
+4. **Minify the JSON** (trivial). `json.dumps` still uses default separators
+   (`build.py:71`), so **1.41 MB (7.4 %)** of `tracks.geojson` is separator
    whitespace. `separators=(",",":")` reclaims it — mostly redundant under gzip,
    but it also shrinks the string the browser must parse. Free.
 
@@ -170,72 +198,65 @@ build — before any renderer change.
 
 ## Recommendations (ranked, biggest-impact / lowest-risk first)
 
-### A. Render tracks on a Canvas renderer — the immediate fix
+### A. Render tracks on a Canvas renderer — implemented
 
-Give every track line a canvas renderer instead of SVG. Two ways:
+The targeted variant shipped, not the minimal `preferCanvas: true` alternative
+originally floated: `trackRenderer(pane)` (`app.js:838-839`) memoizes one
+`L.canvas({ pane })`; `addTrack` (`app.js:926-949`) passes
+`renderer: trackRenderer("overlayPane")` for the drifter + glider tracks.
+Markers/heads stay SVG. This turns the per-line DOM cost into a single
+per-pane canvas redraw: pan/zoom re-projects/re-strokes a few dozen paths
+instead of laying out, compositing, and hit-testing ~100k `<path>` nodes.
 
-- Minimal: `L.map("map", { …, preferCanvas: true })` — all vector layers
-  (tracks, markers, heads) go to canvas. Verified safe: **no CSS depends on
-  `.leaflet-interactive`/path DOM**. Watch the at-time/head `circleMarker`s
-  behave (they use `setStyle`/`setRadius`, all canvas-supported).
-- Safer/targeted: pass `renderer: L.canvas({ pane })` to the track polylines in
-  `addTrackSegments` (one canvas per track pane preserves the z-order stack), and
-  leave markers on SVG.
-
-Canvas turns ~100k DOM nodes into a single per-pane redraw: pan/zoom becomes one
-`clearRect` + redraw instead of re-projecting/compositing 100k `<path>`s.
-**Expected to resolve the reported lag with a small, low-risk change**, while
-preserving per-segment tooltips. Do this first.
-
-Note: the canvas renderer still iterates every *layer* per redraw, so 100k tiny
-polylines keep per-object overhead — which motivates B.
-
-**Implemented (the targeted variant).** `trackRenderer(pane)` (`app.js`, near
-`addTrackSegments`) memoizes one `L.canvas({ pane })`; the drifter + glider
-segments pass `renderer: trackRenderer("overlayPane")`. Markers/heads stay SVG.
-
-**Critical gotcha found while implementing — only ONE full-viewport track canvas
-may exist.** A Leaflet canvas renderer's `<canvas>` spans the whole viewport and
+**Gotcha found while implementing — only ONE full-viewport track canvas may
+exist.** A Leaflet canvas renderer's `<canvas>` spans the whole viewport and
 hit-tests its entire rectangle regardless of transparency, so a *second* track
-canvas stacked above the first **swallows every hover/click meant for the tracks
-below it**. The first attempt also gave the ship tracks a canvas (in the
-`shipTrack` pane, z 410, above the overlay-pane track canvas at 400) — that killed
-all drifter/glider hover *and* click-to-highlight (verified: at every track pixel
-the topmost element was the ship canvas). Fix: **ship tracks stay on SVG** (few
-segments; SVG's per-path `pointer-events: visiblePainted` lets events fall through
-its transparent areas to the track canvas below). Net: exactly one track canvas,
-in `overlayPane`; everything above it (ship SVG, forecast/deploy SVG panes, marker
-panes) either falls through or sits legitimately on top.
+canvas stacked above the first would swallow every hover/click meant for the
+tracks below it. The first attempt also gave the ship tracks a canvas (in the
+`shipTrack` pane, above the overlay-pane track canvas) — that killed all
+drifter/glider hover *and* click-to-highlight (at every track pixel the topmost
+element was the ship canvas). Fix: **ship tracks stay on SVG** (few segments;
+SVG's per-path `pointer-events: visiblePainted` lets events fall through its
+transparent areas to the track canvas below, `makeShipLayer`). Net: exactly one
+track canvas, in `overlayPane`; everything above it (ship SVG, forecast/deploy
+SVG panes, marker panes) either falls through or sits legitimately on top.
 
-The canvas hover hit-test is throttled and skipped during drags, so it does **not**
-tax panning; measured empty-area/drag `mousemove` cost ≈ 0 ms. (A one-time ~10 ms
-on first-hover-onto-a-track is tooltip render, same as SVG.) So the O(N)-per-redraw
-concern above is real for memory/GC but not for pan latency — B remains the
-cleanup, not an urgent fix.
+The canvas hover hit-test is throttled and skipped during drags, so it does not
+tax panning.
 
-### B. Collapse to one polyline per track; clip via `setLatLngs`
+### B. Collapse to one polyline per track; clip via `setLatLngs` — implemented (plan 050)
 
-Replace per-segment polylines with **one polyline per instrument** (146 drifters
-+ gliders + 2 ships instead of ~100k objects). Clip exactly as `clipForecast`
-already does (`app.js:629`): set the line's coords to `vertices ≤ clock` + the
-interpolated at-clock point — no per-segment `addLayer/removeLayer`, no crossing
-`setLatLngs` on a separate object. This:
+Landed under plan 050 (`fac6023`), after this plan's own A→C→B→D sequencing —
+the felt stutter turned out to persist even with canvas (A) alone, because a
+canvas renderer still iterates every *layer* per redraw, so ~100k tiny
+per-segment polylines kept per-object overhead on every zoom. `addTrack`
+(`app.js:926-949`) replaced the per-segment build with **one multi-part
+`L.polyline` per instrument** (~150 objects total instead of ~100k), split into
+disjoint parts only at a de-spiked gap (`splitAtGaps`). Clock clipping
+(`clipLineTrack`, `app.js:586` — the observed-track counterpart to
+`clipForecast`) sets the line's coordinates to the vertices up to the clock
+plus the interpolated at-clock point via `setLatLngs`, instead of per-segment
+`addLayer`/`removeLayer` churn.
 
-- cuts object count ~700× (memory, GC, build time, per-redraw iteration),
-- makes scrubbing ~150 `setLatLngs` calls per frame instead of ~100k
-  `setSegShown` checks,
-- removes the "add the whole featureGroup to the DOM" freeze on toggle-on.
+The trade-off flagged here — losing per-*leg* hover tooltips — was resolved as
+anticipated: one sticky tooltip per track, whose content is resolved on
+`mouseover`/`mousemove` to the nearest fix vertex (`nearestVertexIdx`,
+`app.js:911-923`, feeding `showTip` in `addTrack`). Ship tracks are the
+exception (see A's gotcha): they still build one polyline per segment on SVG,
+which is fine at their much smaller segment count.
 
-Trade-off: per-*leg* hover tooltips are lost. Recover with one sticky tooltip per
-track whose content updates on `mousemove` (canvas polylines fire `mousemove`
-with a `latlng`; find the nearest fix and set the tooltip). This is a real design
-change to `addTrackSegments` / `registerTrackClock` / `clipTrack` — do it after A
-proves the renderer direction, and lands cleanly with canvas (A).
+### C. Split geometry from telemetry; simplify at build time — still open
 
-### C. Split geometry from telemetry; simplify at build time
+Not started: `tracks_geojson` and `gliders_geojson` still emit the full
+per-vertex `fixes[]`, there is no Douglas–Peucker (or any) simplification
+anywhere in `_geojson.py`, and `build.py`'s `json.dumps` still uses default
+separators. This is the biggest remaining lever — the eager payload is
+unchanged at ~19 MB raw / ~2.45 MB gzipped, and the browser still inflates,
+parses, and builds objects from the full per-fix telemetry on every load with
+tracks eager-fetched (see D).
 
-Build-side, in `_geojson.tracks_geojson` (`_geojson.py:242-304`) and the shared
-`gliders_geojson` (`_geojson.py:151-206`):
+Build-side, in `_geojson.tracks_geojson` (`_geojson.py:251-313`) and the shared
+`gliders_geojson` (`_geojson.py:159-215`):
 
 - Drop `properties.fixes[]` from `tracks.geojson`. Emit only what the clock needs
   per vertex — a parallel `times` array alongside `coordinates`. Use a **compact
@@ -252,28 +273,37 @@ Build-side, in `_geojson.tracks_geojson` (`_geojson.py:242-304`) and the shared
 - Minify the output (lever 4). Wire compression is already done by nginx.
 
 `gliders.geojson` carries the **same** duplicated `fixes` pattern
-(`_geojson.py:190-193`, confirmed) — give it the same treatment via the shared
+(`_geojson.py:194-211`, confirmed) — give it the same treatment via the shared
 emitter.
 
-### D. Restore lazy build of the rendered lines (keep eager time series)
+### D. Restore lazy build of the rendered lines (keep eager time series) — still open
 
-The head-follows-clock requirement (plan 035) needs the **time series**, not the
-**rendered polylines**. Split the two:
+Not started: `tracks.geojson` is still fetched, parsed, and turned into ~150
+`addTrack` polylines unconditionally on load (`app.js:2917`,
+`fetchJSON(DATA.tracks, { optional: true })`), whether or not "Show tracks" is
+ever switched on. The head-follows-clock requirement (plan 035) needs the
+**time series**, not the **rendered polylines**. Split the two:
 
 - eagerly load the lightweight geometry+times (cheap after C) and register the
   head clips, so heads walk from load as today;
 - build/attach the display polylines **lazily on first "Show tracks = on"**,
   restoring plan 032's deferral for the heavy part.
 
-With A+B+C the eager build is already cheap (~150 polylines, ~0.3 MB), so D is a
-smaller win than it was — take it only if profiling still shows a build hitch.
+With B landed, the eager **build** is already cheap in object count (~150
+polylines, not ~100k), so D's win is now specifically about the eager
+**fetch + parse** of `tracks.geojson` — which stays ~19 MB raw until C lands,
+and would still be a non-trivial ~0.3 MB post-C. D is worth doing once C
+lands even if no build hitch remains, purely to avoid paying for track data
+that a session with "Show tracks" left off never needs.
 
-### E. Scrub-path micro-opts (minor)
+### E. Scrub-path micro-opts — moot
 
-`updateClock` is already rAF-throttled. After B its per-frame cost is trivial.
-Also: `renderCurrentsInfo` rebuilds DOM on every slider `input` event
-(`app.js:3844`) — coalesce to the rAF or to frame-index changes. The shading
-`setUrl` swap is already guarded by frame-index change. Low priority.
+`renderCurrentsInfo` (`app.js:1900`) is called from inside the time slider's
+`onChange` (`core/controls.js:453-457`, wired to the range input's `input`
+event, which browsers already throttle to roughly one callback per animation
+frame during a drag) — it is not rebuilding DOM on every raw input tick beyond
+that. Combined with B already making the per-frame track-clipping cost trivial,
+there is no remaining scrub-path hitch this item was chasing. No action needed.
 
 ## Also observed — not the cause of the lag
 
@@ -296,16 +326,26 @@ lag, so treat them as separate cleanups.
   ≈ 8×RTT; no local Leaflet fallback). Orthogonal to this render-time lag, but
   they matter for the at-sea cold load — sequence them from that plan.
 
-## Suggested sequencing
+## Sequencing — actual vs. planned
 
-1. **A — canvas renderer.** Small, low-risk; expected to fix the felt lag on its
-   own. Do this first and re-measure before anything heavier.
-2. **C — build-side telemetry split + DP simplification.** Cuts the eager payload
-   from 19 MB → < 300 KB (and the browser's decompress/parse/build cost, which
-   nginx's gzip cannot), and the render/scrub vertex count ~7×.
-3. **B — one polyline per track + `setLatLngs` clipping** (with the mousemove
-   tooltip). Structural cleanup; removes the last of the per-object overhead.
-4. **D / E** only if profiling still shows a hitch.
+Planned order was A → C → B → D. What actually landed was **A then B**
+(`fac6023`, under plan 050), out of order, once profiling after A alone still
+showed a zoom stutter from the per-object overhead of ~100k tiny SVG-turned-canvas
+paths — the concern flagged in A's original writeup ("B remains the cleanup,
+not an urgent fix") turned out to matter sooner than expected. C and D have not
+been started.
+
+**Remaining work, in the order that still makes sense:**
+
+1. **C — build-side telemetry split + DP simplification.** Cuts the eager
+   payload from ~19 MB raw / ~2.45 MB gzipped toward well under 300 KB on the
+   wire (the telemetry split alone gets most of the way there; the exact DP
+   contribution depends on re-deriving the tolerance at the current
+   `maxZoom: 14`, see the data-volume section above), and the browser's
+   decompress/parse/build cost, which nginx's gzip cannot touch.
+2. **D — defer the eager fetch/build to first "Show tracks = on".** Worth doing
+   independent of C; most valuable once C has shrunk the payload C leaves to
+   defer.
 
 Wire compression is already in place (nginx gzip-5), so it is not on this list —
 the levers above target the client-side render/parse cost that gzip doesn't
@@ -313,15 +353,18 @@ reach.
 
 ## Verification
 
-- **Render:** with "Show tracks" on, DevTools Performance — a pan/zoom should
-  drop from 100k-node SVG layout/paint to a single canvas redraw; target smooth
-  interaction on a mid-range laptop with all batches shown.
-- **Payload:** serve `site/` (`python -m http.server`), headless-Chrome load,
-  assert `tracks.geojson` on the wire is < 0.3 MB (post-C) and — if D lands —
-  not fetched until "Show tracks" is first toggled.
-- **Correctness:** heads still walk the clock with tracks off; hover still shows
-  the right fix (per-leg via canvas mousemove after B); clock clipping still
-  trims at the scrubber; DP simplification is visually indistinguishable at every
-  zoom.
+- **Render (done):** with "Show tracks" on, pan/zoom now redraws a handful of
+  canvas polylines per pane instead of laying out/compositing ~100k SVG
+  `<path>` nodes.
+- **Payload (open, item C):** serve `site/` (`python -m http.server`),
+  headless-Chrome load, assert `tracks.geojson` on the wire shrinks materially
+  from its current ~2.45 MB gzipped, and that `properties.fixes[]` is gone from
+  the geometry-only artifact.
+- **Lazy load (open, item D):** with item C in place, assert `tracks.geojson`
+  is not fetched until "Show tracks" is first toggled.
+- **Correctness:** heads still walk the clock with tracks off; hover still
+  shows the right fix (nearest-vertex via canvas mousemove — done); clock
+  clipping still trims at the scrubber; DP simplification (once added) is
+  visually indistinguishable at every zoom, re-checked at `maxZoom: 14`.
 - **Build:** `pixi run test`; regenerate `tracks.geojson` and confirm vertex
-  count, absence of `fixes[]`, and size against the tables above.
+  count, absence of `fixes[]`, and size against the tables above once C lands.

@@ -2,7 +2,8 @@
 
 > **Implemented 2026-06-24** — the latitude correction (`FTLE_LAT_CORRECTION_DEG =
 > -0.13` in `_ftle.fetch_ftle`) is live and verified (south-coast FTLE-low → CMEMS
-> land edge dropped from −0.13° to −0.02°); see [docs/ftle.md](../../docs/ftle.md).
+> land edge dropped from −0.13° to −0.02°); the FTLE overlay was later removed from the codebase entirely, and its doc
+> went with it.
 > The optional ocean clip was deferred to [BACKLOG](../BACKLOG.md).
 
 The SPASSO FTLE field is plotted **~0.12–0.14° (~13–15 km) too far north**: its

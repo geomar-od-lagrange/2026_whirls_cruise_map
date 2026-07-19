@@ -1,4 +1,4 @@
-> Implemented — see [docs/deployment.md](../../docs/deployment.md).
+> Implemented — see [docs/deploy_tool.md](../../docs/deploy_tool.md).
 > The single-click +12 h tool this describes is superseded by the one polyline
 > Deploy tool + batch API ([023](023-simplify-deploy-polyline.md)).
 
@@ -23,14 +23,14 @@ against a **live API** (keep the field on the server). The API won, on transport
 - The API keeps the ~66 MB window in server memory and returns a **~1–2 KB
   polyline** per forecast — less than the existing `forecast.geojson`, and it
   scales with *particles requested*, not with the field. See
-  [docs/deployment.md](../docs/deployment.md).
+  [docs/deploy_tool.md](../../docs/deploy_tool.md).
 
 ## Plan of work
 
 - **Phase 0 — architecture. DONE.** Chose the live-API route over client-side
   advection (transport + VSAT caching, above). Two endpoints (static `:8000`,
   API `:8001`) so the static half can fall back to Pages; one origin under the
-  [017](017-whirlsview-openshift.md) gateway.
+  [017](../017-whirlsview-openshift.md) gateway.
 - **Phase 1 — RK4 API + deploy-mode UI. DONE (PoC).** `_api.py` (FastAPI) reuses
   the build's RK4 (`_forecast._integrate`, now parameterized on horizon/marks,
   with shared `_anchor_t0` / `_advection_feature`); one hourly window fetched
@@ -55,7 +55,7 @@ against a **live API** (keep the field on the server). The API won, on transport
   window-bounds check are already in place; the window `fwd` span must cover
   `run duration + horizon`.
 - **Phase 4 — productionization. OPEN.** Move the field to the
-  [017](017-whirlsview-openshift.md) slow-tier: a CronJob writes the window to a
+  [017](../017-whirlsview-openshift.md) slow-tier: a CronJob writes the window to a
   shared volume; the API switches from lazy-fetch-with-TTL to **load-latest +
   mtime-reload** (no CMEMS creds, no egress in the API pod). Deploy the API as
   the `/analysis` FastAPI `Deployment` behind the gateway. A small `/api/window`
@@ -77,5 +77,5 @@ against a **live API** (keep the field on the server). The API won, on transport
 
 - Client-side advection over a shipped field (rejected in Phase 0).
 - Windage / Stokes / drogue-depth corrections — the line is surface-current-only,
-  the same caveat as the build forecast ([docs/forecast.md](../docs/forecast.md)).
+  the same caveat as the build forecast ([docs/deploy_tool.md](../../docs/deploy_tool.md)).
 - Parcels as the interactive engine (100× too slow per click; kept as oracle).

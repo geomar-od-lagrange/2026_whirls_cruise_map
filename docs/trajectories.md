@@ -12,9 +12,11 @@ For every drifter with at least two free-drift fixes, the tracks layer draws
 **a line** over its time-sorted positions, in that drifter's **identity colour** —
 the same colour as its batch marker and moving head, so its line, deployment dot,
 and head all read as one instrument (see [palette.md](palette.md)). The line is
-built as one polyline **per fix-to-fix segment** (see *Tooltips* below) rather than
-a single stroke, so the whole line is a hover target — but the segments abut into
-one continuous track.
+built as **one multi-part polyline for the whole track** (see *Tooltips* below and
+*Performance*), drawn on a shared canvas renderer rather than one path per
+fix-to-fix segment — the whole line is still a single hover target, and a
+blanked de-spike gap (see *Hiding GPS outliers*) simply splits it into disjoint
+parts with no line drawn across the gap.
 
 For a **deployed** drifter only the **free drift** is drawn: the path is
 truncated at its deployment (see *Truncation at deployment* below), so the
@@ -48,13 +50,15 @@ ship tracks load with their layers, and the drifter tracks come from `tracks.geo
 fetched **once at startup** (off the critical path — see *Control* below). The
 per-track at-time dots of plan 034 are gone: the moving heads replace them (two
 markers on the same moving spot would z-fight), and only the virtual deployment
-tracks keep an at-time marker — it is their only head ([deployment.md](deployment.md)).
+tracks keep an at-time marker — it is their only head ([deploy_tool.md](deploy_tool.md)).
 
 ## Tooltips: every fix shows the marker's info on hover
 
-The track carries no separate dot markers; instead **each line segment** carries a
-hover tooltip, so hovering a leg of the track — and hovering the latest-position
-marker — shows the **same tooltip**, filled with *that fix's* own data:
+The track carries no separate dot markers; instead each track's line carries **one
+sticky tooltip** for the whole line, whose content is resolved on hover to the
+fix nearest the cursor rather than being bound per segment. So hovering anywhere
+along the track — and hovering the latest-position marker — shows the tooltip,
+filled with *that fix's* own data:
 
 - **identity** (`D_number`), **last fix** time, **battery**;
 - **velocity, derived and reported, side by side**;
@@ -75,6 +79,29 @@ oceanographic (m/s), and showing both keeps every speed on the map comparable.
 Directions are degrees true with a 16-point compass label; reported direction is
 normalised into 0–360° for display.
 
+## Hiding GPS outliers (client-side)
+
+Alongside the build-time deployment despike (a different mechanism — see
+[data.md](data.md)), the client can hide **out-and-back GPS spikes** in the
+tracks it already has, using the per-fix derived speeds baked into `fixes`. A
+fix is flagged as a spike when the implied speed is anomalous on **both** the
+segment arriving at it and the segment leaving it — a genuine fast leg trips
+only one side, so a real manoeuvre is never flagged. The threshold is a fixed
+`OUTLIER_SPEED_MPS = 5`, well above the drift regime (well under 2 m/s); a real
+spike implies speeds far higher still. A track's first and last fix are never
+flagged (no incoming or no outgoing segment to test), and neither is a fix with
+a null derived speed.
+
+This is controlled by the **"Hide GPS outliers"** checkbox in the Instruments
+control (see [controls.md](controls.md)), on by default. With it on, the flagged
+fixes are dropped from the drawn track and its clock entries alike, so the
+cleaned path is what the head follows too, not just what is drawn. Dropping a
+fix leaves a gap between its two now-adjacent kept neighbours: if they are no
+more than `OUTLIER_MAX_GAP_MS` (24 h) apart, the gap is bridged with a straight
+segment; beyond that the segment is left blank instead, splitting the track's
+multi-part polyline so no line is drawn across an unknowably long span.
+Toggling the checkbox rebuilds every observed track in place for the new state.
+
 ## Data
 
 The derivation happens in the **build**, not the client: the Python build has
@@ -90,11 +117,11 @@ properties:
 `latest_geojson` carries the same per-fix payload in each Point's properties
 (its latest fix, derived against the prior one). Non-finite cells are written as
 `null`, never `NaN`, so the JSON parses client-side and the tooltip renders a dash.
-The client tags segment `i` (from `coordinates[i]` to `coordinates[i+1]`) with
-`fixes[i]`, so hovering a leg shows the fix at its start; the **last** fix is not
-a segment start but is covered by the latest-position head marker, so every fix
-stays reachable on hover. A `fixes`-less artifact from an older build degrades
-gracefully (segments fall back to the line-level identity with blank time/velocity).
+The client keeps `fixes` aligned with `coordinates` and, on hover, resolves the
+cursor position to the **nearest fix vertex** in the track (not a segment lookup),
+so the tooltip always shows a real fix's data; near a leg boundary that nearest
+vertex may be either endpoint of the hovered leg. The latest-position head marker
+covers the last fix, so every fix stays reachable on hover.
 
 ## Truncation at deployment
 
@@ -163,9 +190,9 @@ stays on the coloured diamond marker, not the track (see [gliders.md](gliders.md
 
 ## Selection: click a track to highlight it
 
-Clicking any part of an instrument — its **line** (any segment) or its
+Clicking any part of an instrument — its **line** (anywhere along it) or its
 **latest-position head marker** — selects that instrument: its line **brightens**
-(to a lighter orange) and thickens, its head enlarges, and its line segments are
+(to a lighter orange) and thickens, its head enlarges, and its line is
 **raised in front of every other track** (`bringToFront`), while **every other
 instrument desaturates** — greyed rather than faded, so it recedes without
 vanishing. One track lifts out of the overlapping tangle while the rest stay
@@ -184,8 +211,8 @@ glider `id`). Each element *registers a restyle callback* as it is built — in
 `buildGliderTrackGroups`/`buildGliderMarkerGroups` (gliders) — and selects its
 instrument on click; `applySelection` calls every registered callback with the new
 state (`"selected"` / `"dim"` / `"normal"`). A callback per element, rather than a
-shared restyler, lets each element kind render each state its own way: SVG line
-segments via `setStyle` (colour swapped for the brighter or the desaturated
+shared restyler, lets each element kind render each state its own way: the canvas
+track line via `setStyle` (colour swapped for the brighter or the desaturated
 tone), and the gliders' `divIcon` heads via `setIcon` (a CSS class scales the
 selected diamond; the dim fill is desaturated in the icon HTML).
 
@@ -201,7 +228,7 @@ front-raise is the one part that is *draw order*, not an option, so it is not
 carried by a remove/re-add — it is simply reapplied by the next `applySelection`
 pass (any selection change or zoom), which is when a re-enabled selected track
 returns to the front.
-Click and hover are cleanly separated: **hovering** a line segment or head shows
+Click and hover are cleanly separated: **hovering** a line or head shows
 that fix's tooltip (see above), while **clicking** selects the instrument — the tooltip is
 non-interactive (`pointer-events: none`), so it never intercepts the click.
 Selection also composes with the empty-map clear, which works because the track
@@ -211,12 +238,13 @@ the map's `click` handler.
 ## Rendering and stacking order
 
 The trajectory lines draw **below** the latest-position markers, which stay on
-top. The line **is interactive** — hovering a segment shows that fix's tooltip and
-clicking any segment selects the drifter. The track is drawn as one polyline per
-fix-to-fix segment (see `addTrackSegments`); the segments share endpoints and one
-style, so they read as a single continuous line while each stays independently
-hit-testable for its own tooltip. There are **no separate dot markers**, so
-nothing sits over the line to intercept a click meant for it.
+top. The line **is interactive** — hovering anywhere along it shows the nearest fix's
+tooltip and clicking it selects the drifter. The track is built as one multi-part
+polyline for the whole instrument (`addTrack`), not one polyline per fix-to-fix
+segment, so it reads as a single continuous line (split only at a blanked
+de-spike gap) and is hit-tested as one shape by the shared canvas renderer.
+There are **no separate dot markers**, so nothing sits over the line to
+intercept a click meant for it.
 
 **Line weight scales with zoom** so the tracks read well at every scale. Zoomed
 out, overlapping tracks blur together, so lines are **thin**; they thicken a step
@@ -228,8 +256,8 @@ glider tracks scale identically. The latest-position heads and the ship track do
 not scale — only the track lines.
 
 **Every line/track pane sits below every marker pane** — the governing rule of the
-stack. Bottom to top: the raster/animation underlays (`shading` 350, `inertial`
-360); then the line panes — observed drifter/glider tracks in Leaflet's default
+stack. Bottom to top: the raster/animation underlays (`shading` 350, `flow` 355,
+`inertial` 360); then the line panes — observed drifter/glider tracks in Leaflet's default
 `overlayPane` (400), the `shipTrack` (410), the real-drifter forecast lines
 (`driftForecast` 420, see below), and the PoC deploy tool's drift lines and drop
 discs (`deployTracks` 430, `deployDrops` 440); then the marker panes — the glider
@@ -283,10 +311,18 @@ loaded field window is skipped server-side and gets no forecast.
 
 ## Performance
 
-One polyline per segment means a track of *n* fixes is *n − 1* small polylines
-rather than one — roughly the layer count the per-fix dots used to add, traded for
-the dots, so it is cheap at current counts (drifters report sparsely, so each
-track has few fixes). The ship, on a fixed 10-minute grid, accumulates many more
-(hundreds over the cruise); its own per-fix dots stay plain SVG below the drifter
-markers for the click-through reason above, which is fine at cruise scale. If a
-future dense track lags, decimate it — see the *Track thinning* backlog item.
+The drifter and glider tracks render on a shared **canvas** renderer, and each
+track is **one multi-part polyline per instrument** rather than one polyline per
+fix-to-fix segment. Cost scales with the number of *instruments*, not the number
+of fixes: a few dozen canvas paths draw in one redraw with no DOM, and — the part
+that matters for interaction — Leaflet only has to re-project and re-stroke those
+few dozen paths on `zoomend`, instead of one path per fix across the whole fleet.
+The alternative — one polyline per fix-to-fix segment — puts `~100k` segments across
+the fleet through individual reprojection on every zoom, which is what makes zooming
+stutter; one polyline per instrument is what a canvas renderer is fast at.
+
+Only one full-viewport track canvas can exist without one swallowing the other's
+hit-testing, so the ship track stays on plain SVG (few segments per ship, and it
+needs to sit in its own pane below the drifter/glider markers — see *Rendering
+and stacking order*); it is fine at cruise scale. If a future dense track lags,
+decimate it — see the *Track thinning* backlog item.

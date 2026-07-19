@@ -2,21 +2,22 @@
 
 The map shades the CMEMS surface field two ways — **current speed** (|velocity|,
 cmocean `speed`) and **relative vorticity ζ/f** (see [vorticity.md](vorticity.md))
-— as mutually-exclusive base rasters in the **Currents** control. Both are
-**time-sliced**: a bottom-centre **time slider** scrubs the shading through the
-covered span. The **flow overlay** — a pre-rendered static streamline raster — ships
-one WebP per frame and scrubs in lockstep; the **near-inertial animation** follows too,
-anchoring its analytic phase to the displayed field time. So every time-dependent
-layer shares one clock — scrub to any time and the whole map shows that time. The two
-animated overlays can be **frozen to a still snapshot** with one toggle (see *Animate
-overlays* below) so time-scrubbing stays cheap.
+— as mutually-exclusive base rasters in the **Currents** control, over a static
+land/sea basemap. Both are **time-sliced**: a bottom-centre **time slider** scrubs the
+shading through the covered span. The **flow overlay** — a pre-rendered static
+streamline raster — ships one WebP per frame and would scrub in lockstep, and the
+**near-inertial animation** would anchor its analytic phase to the displayed field
+time, so every time-dependent layer shares one clock — scrub to any time and the whole
+map shows that time. Both of those two overlays, and the toggle meant to freeze the
+animation to a still snapshot, are currently disabled pending issue #25 (see
+*Current-flow and near-inertial overlays* below).
 
 ## Absolute-time frames
 
 Frames are named by their **absolute valid time**, not an offset from a moving *now*:
 `speed_2026-07-01T00Z.webp`, `vorticity_2026-07-01T00Z.webp`,
-`currents_2026-07-01T00Z.json`. The token is hour-precision UTC with no colons, so it
-is a safe filename (`_currents.frame_filename` / `parse_frame_filename` are the
+`flowvis_2026-07-01T00Z.webp`. The token is hour-precision UTC with no colons, so it
+is a safe filename (`_frames.frame_filename` / `parse_frame_filename` are the
 round-trip pair). The manifests carry the full ISO `valid_time`
 (`2026-07-01T00:00:00Z`) so a client parses frame and slice times identically.
 
@@ -42,12 +43,12 @@ on disk plus wall-clock now, which frames still need work:
   run), **recent** (within the margin of now), or **forecast** (beyond now) — is
   (re)rendered this run.
 
-A frame counts as "on disk" only when **all three** artifacts (speed + vorticity WebP,
-flow JSON) exist (`_currents.existing_frame_times`), so a frame half-written by a
+A frame counts as "on disk" only when **all three** WebP artifacts (speed, vorticity,
+flowvis) exist (`_currents.existing_frame_times`), so a frame half-written by a
 failed prior step re-plans rather than being mistaken for final.
 
-The 6-hourly CMEMS fetch (`_currents.fetch_shading_window`, gaining explicit
-`[t_lo, t_hi]` bounds) covers **only** the span of frames to render: the first run
+The 6-hourly CMEMS fetch (`_currents.fetch_shading_window`, bounded by an explicit
+`[t_lo, t_hi]`) covers **only** the span of frames to render: the first run
 backfills everything since `FIELD_TMIN` in one subset call (~100 6-hourly steps,
 bounded memory); later runs fetch only the recent + forecast tail. The fetch's lower
 bound (`first_pending_frame`) is computable before the fetch — it's the earliest frame
@@ -56,9 +57,8 @@ a generous `now + FORECAST_REACH_H` that CMEMS clamps to the product's actual ed
 the returned window's max time *is* that edge (`window_frame_edge`).
 
 Files matching the frame patterns that are no longer in the current span are **pruned**
-each run (`_currents.prune_stale_frames`) — including the **retired offset-named**
-`speed_±NNh.webp` / `vorticity_±NNh.webp` / `currents_±NNh.json` from the moving-anchor
-design — so stale artifacts never linger. Meta and non-frame files are left untouched.
+each run (`_currents.prune_stale_frames`), so stale artifacts never linger. Meta and
+non-frame files are left untouched.
 
 ## One frozen colour scale
 
@@ -67,15 +67,14 @@ single legend would lie. A per-*build* pooled percentile would fix that within a
 but **drift** as the frame history grows — and force every immutable old frame back
 into build memory to stay colour-consistent. So the scale is a **frozen constant**:
 `_currents.SPEED_VMAX = 1.2` m/s and the vorticity clip `_vorticity.VORT_CLIP = 0.3`
-(|ζ/f|, symmetric ±clip). Both were frozen 2026-07-13 from the then-current pooled
-99th / 98th-percentile scale (which rendered vmax 1.18 / clip 0.30). A colour therefore
-means the same value at every time and across every build; only the displayed *time*
-changes as the slider moves, and the legend renders once.
+(|ζ/f|, symmetric ±clip). A colour therefore means the same value at every time and
+across every build; only the displayed *time* changes as the slider moves, and the
+legend renders once.
 
 ## Discrete colour classes
 
 Both rasters snap the field to **`N_BINS = 12` flat colour classes**: the
-`_currents._quantize_unit` step rounds the normalized `[0, 1]` colour-map input to a
+`_frames._quantize_unit` step rounds the normalized `[0, 1]` colour-map input to a
 bin midpoint *before* the cmocean lookup, so a frame carries 12 constant-colour
 regions instead of a ~256-step continuous ramp — same `speed` / `curl` palettes, no
 new colours. Two reasons:
@@ -93,7 +92,7 @@ new colours. Two reasons:
 The diverging ζ/f map keeps an **even** bin count so **zero stays a bin edge**: the
 neutral midpoint `0.5` falls on the boundary between the two central classes (6
 classes per rotation sense), so no single class straddles no-rotation. The cost is
-deliberate banding; `N_BINS` (in `_currents`) is the one constant to raise to go back
+deliberate banding; `N_BINS` (in `_frames`) is the one constant to raise to go back
 toward a continuous ramp.
 
 ## Transport: full pixel detail, minimum bytes
@@ -108,7 +107,7 @@ at-sea VSAT link ([data.md](data.md)):
    `image-rendering: pixelated`, so the crisp native-grid look is unchanged. WebP with
    lossless alpha is roughly *half* an equivalent RGBA PNG's bytes at *identical*
    pixels; combined with the 12 discrete classes above, a cruise-bbox speed frame lands
-   at **~27 kB** (a single RGBA PNG would be ~310 kB). Weighed and rejected: indexed
+   at **~27 kB** (versus ~310 kB for a single RGBA PNG). Weighed and rejected: indexed
    PNG (bigger, and its fixed 256-colour palette buys nothing once the field is binned
    to 12 classes); a client-side temporal-delta codec (real complexity for less gain
    than WebP + binning already give).
@@ -138,6 +137,12 @@ frame, with no client-side integration.
   over the u/v field, Mercator-warped to the **same bounds** as the speed raster, dark
   semi-transparent lines so the shading reads through. The client swaps it as a plain
   imageOverlay, so the flow scrubs fluently with no particle animation.
+- `landmask.webp` — a single time-invariant gray-land / blue-sea raster
+  (`_currents.to_landmask_webp`), baked once per build from one representative time
+  slice's own NaN-on-land pattern in the fetched field, Mercator-warped to the same
+  bounds as the shadings. The client draws it in a `basemap` map pane below every
+  shading (only when the meta carries a `landmask` key), so picking "None" or panning
+  past the shading's edge shows continents instead of open sea-tone background.
 - `currents_meta.json` / `vorticity_meta.json` — shared `bounds`, `vmax` (+ `vmin` for
   ζ/f), `units`, `colorbar` (the 12 discrete class colours the raster is binned to —
   see *Discrete colour classes*), plus:
@@ -145,9 +150,10 @@ frame, with no client-side integration.
     order, each with its own `valid_time` (no offset);
   - top-level `valid_time`: the **now-nearest** frame's time, kept for now-only readers
     (the deploy tool seeds its run start from it — see
-    [deployment.md](deployment.md)).
-  - `currents_meta.json` additionally carries `flow_frames`: the flow overlay's own
-    `[{valid_time, file}]` manifest (same frame times as `frames`).
+    [deploy_tool.md](deploy_tool.md)).
+  - `currents_meta.json` additionally carries `flow_frames` (the flow overlay's own
+    `[{valid_time, file}]` manifest, same frame times as `frames`) and `landmask` (the
+    basemap file name, present whenever the fetch succeeded).
 
 The renderers (`to_speed_frames` / `to_vorticity_frames` / `to_flowvis_frames`) take
 the fetched window and the list of frame times to render, and return just those frames
@@ -159,8 +165,7 @@ rendered this run.
 ## Client: the app clock
 
 The client reads each meta's `frames` manifest and computes the **now-nearest** index
-itself from the entries' `valid_time`s (there is no `now_offset_h` key — the anchor is
-no longer baked into the build). It builds the speed and ζ/f overlays at that frame,
+itself from the entries' `valid_time`s. It builds the speed and ζ/f overlays at that frame,
 then a bottom-centre **datetime scrubber** becomes the app's single **clock**.
 
 The clock runs at **1 h granularity** over the frames' full span `[first valid_time,
@@ -175,17 +180,14 @@ shading overlay stays in lockstep (speed and ζ/f both re-point even while one i
 hidden). The tracks follow the same clock: observed tracks clip to the fixes at or
 before the clock with their head markers riding the clipped end (see
 [trajectories.md](trajectories.md)), and the virtual drift trails re-split into a
-strong traversed part and a faint remainder ([deployment.md](deployment.md)) — a
+strong traversed part and a faint remainder ([deploy_tool.md](deploy_tool.md)) — a
 scrub moves the whole picture, not just the shading. The scrubber carries day tick
 marks with sparse `Jul 14`-style UTC date labels, a live clock readout, and a
 wall-clock **now** affordance: a small blue dot sits on the scrub line itself (out of
-the tick lane so it can't collide with the date labels) with a slow pulsing ring so
-the present reads at a glance, and — because the dot is deliberately non-interactive so
-it never blocks grabbing a thumb parked near it — a small **"now" chip** beside the
-clock readout carries the click. Pressing it snaps the scrubber back to the now hour
-through the same input→onChange path a drag uses, so every clock-aware layer re-syncs
-identically; the chip dims to a quiet outline once the thumb already sits on now. Both
-appear only when now falls inside the covered span.
+the tick lane so it can't collide with the date labels), doubling as the jump-to-now
+control — clicking it snaps the scrubber back to the now hour through the same
+input→onChange path a drag uses, so every clock-aware layer re-syncs identically. It
+appears only when now falls inside the covered span.
 
 The prefetch policy is a **band around now**: the whole (growing) frame set is never
 bulk-prefetched. On the clock's first move the client warms only the shading + flow
@@ -198,21 +200,14 @@ overlay keeps the last loaded frame).
 The scrubber is built only when the meta carries more than one frame; with CMEMS down
 (no meta) there is no clock and no shading.
 
-## Animate overlays (static-snapshot toggle)
+## Current-flow and near-inertial overlays (temporarily disabled)
 
-The **near-inertial particle canvas** runs its own continuous `requestAnimationFrame`
-loop that repaints every frame regardless of the clock. During a time-scrub that loop
-competes with the raster/track work on the main thread and scrubbing stutters. The
-**"Animate overlays"** checkbox in the Currents tab governs it. Turned **off**, the
-overlay freezes to a **still snapshot** of the current frame, redrawn only on discrete
-state changes (a clock scrub, a pan/zoom) — never free-running — so a scrub costs the
-raster/track work alone. The default is **off**.
-
-The near-inertial animation loop parks (schedules no `requestAnimationFrame` while
-static). The still is drawn by integrating each particle forward a fixed number of steps
-at the *displayed* field time — an instantaneous streamline snapshot — without mutating
-the particle pool, so toggling animation back on resumes from the live positions. It
-re-renders (coalesced to one raster per frame) on clock scrub and on `moveend`/`zoomend`.
-
-The **flow overlay** is *not* part of this toggle: it is a pre-rendered static streamline
-raster swapped per frame (see *Artifacts*), so it is always fluent and never animates.
+The Currents tab's **Current flow** and **Near-inertial animation** overlay checkboxes,
+and the
+**"Animate overlays"** toggle that would govern the near-inertial particle canvas'
+animation, are currently rendered greyed-out and inert (checked off, `disabled`, never
+added to the map), pending a fix for issue #25. A hint under the row spells this out.
+This covers the **flow overlay** (the pre-rendered streamline raster described under
+*Artifacts*) too: every overlay row is disabled together. The flow raster is a static
+per-frame image swap rather than a running animation, so it is independent of the
+animation toggle by construction — but its checkbox is inert alongside the others.

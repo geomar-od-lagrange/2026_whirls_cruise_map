@@ -1,7 +1,7 @@
 # 027 — Time-aware flow trails & near-inertial animation
 
 > **Implemented.** See [docs/currents.md](../../docs/currents.md) (flow frames +
-> client scrub) and [docs/forecast.md](../../docs/forecast.md) (near-inertial phase
+> client scrub) and [docs/deploy_tool.md](../../docs/deploy_tool.md) (near-inertial phase
 > anchor). This plan is kept for intent/history.
 
 Closes gitlab issue #5. The forecast time slider (`displayedFieldTime`) scrubs the

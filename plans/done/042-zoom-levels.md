@@ -1,5 +1,7 @@
 # 042 — Zoom levels: finer max + intermediate stops
 
+> Implemented. Zoom configuration lives in `site/map/config.js` (`FALLBACK_ZOOM`, `MAX_ZOOM`).
+
 **#27** — the finest zoom isn't fine enough, and there's no zoom *between* two
 existing levels. `site/map/app.js` only.
 

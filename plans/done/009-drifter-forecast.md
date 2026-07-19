@@ -1,4 +1,4 @@
-> **Implemented** → [docs/forecast.md](../../docs/forecast.md). Built as planned;
+> **Implemented** → [docs/deploy_tool.md](../../docs/deploy_tool.md). Built as planned;
 > one addition beyond the intent: a sidebar **Drift forecast** panel carrying the
 > caveat (current-advection estimate, field frozen at `valid_time`; surface
 > current only) and the dashed-line legend, since positions get read off the line.

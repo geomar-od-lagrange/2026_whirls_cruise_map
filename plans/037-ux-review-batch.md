@@ -1,5 +1,16 @@
 # 037 — UX review batch: z-order, colors, control redesign, responsiveness
 
+**Status: OPEN — blocked on issue #25.** #20, #21, #22, #23, #24, and #18 have
+shipped (in some cases with a deliberately different detail than specced below —
+noted inline). #17 shipped and was then **disabled**: the "Animate overlays"
+toggle and the Current-flow / near-inertial rows it governs are rendered
+disabled (`site/map/core/controls.js:226-267`, `disabledRow()`, tagged
+"issue #25") and `overlaysAnimated` now defaults to `false`
+(`site/map/app.js:2589`) rather than the on-by-default toggle specced here.
+This plan cannot close until #25 resolves whether/how that feature comes back.
+#19 shipped as a clickable now-dot rather than the separately specced button —
+see its section for the actual mechanism.
+
 A batch of eight review issues against the deployment-focused frontend (plans
 034–036). Everything lands in `site/map/{app.js,style.css,index.html}` — the map
 is a static Leaflet app, no build step. The work splits into three clusters that
@@ -7,7 +18,8 @@ run **sequentially on the same working tree**, in this order, because B rebuilds
 the very control bodies A recolors and C re-times:
 
 - **A. Render & colors** — #20 pane z-order, #21 Marion Dufresne dark blue,
-  #22 violet forecast tracks for the real deployed drifters.
+  #22 forecast tracks for the real deployed drifters (shipped in each
+  drifter's own identity colour, not a flat violet — see #22 below).
 - **B. Controls redesign** — #23 deploy-tool layout, #24 merge instruments +
   ships (seaglider→glider rename, select/deselect-all).
 - **C. Responsiveness** — #17 static-overlay snapshot toggle, #18 show-tracks
@@ -19,14 +31,17 @@ control state from the async render it triggers). Everything else is localized.
 
 Update the matching `docs/*.md` in the **same pass** as each cluster (docs
 describe what *is*, no changelog narration): `ship.md` (A/#21), `trajectories.md`
-+ `features.md` (A/#20, #22), `deploy.md` (B/#23), `controls.md` + `batches.md` +
++ `features.md` (A/#20, #22), `deploy_tool.md` (B/#23), `controls.md` + `batches.md` +
 `gliders.md` (B/#24), `currents.md` (C/#17), `controls.md` (C/#18, #19).
 
 ---
 
 ## Cluster A — Render & colors
 
-### #20 — all markers above all tracks
+### #20 — all markers above all tracks *(shipped)*
+
+Panes now live at `site/map/app.js:2336-2349`, matching the ordering decided
+below.
 
 **Root cause.** The single z-order authority is the `createPane` block at
 `app.js:3098-3118`. Track panes are interleaved *among* the marker panes:
@@ -65,7 +80,17 @@ regression. Verify glider markers still receive clicks (they should — 600 is n
 strictly above every line pane). The observed track *hover tooltips* live in
 `tooltipPane` 680 and are unaffected.
 
-### #21 — Marion Dufresne in dark blue
+### #21 — Marion Dufresne in dark blue *(shipped)*
+
+Landed as part of the identity-colour palette rather than a standalone
+`VESSELS`-config edit: `ship_md` is `#1e40af` (dark blue) / `#12408f`
+(alternate) in `PALETTE`, `site/map/config.js:42-66`, consumed via
+`site/map/app.js:64-79`. `ship_ag` (Agulhas II) got its own distinct dark red
+(`#9b1c31`/`#8a1030`) in the same palette so both vessels read apart from the
+drifter/glider colours — a broader fix than the single-vessel recolor
+originally proposed here. See `docs/ship.md` and `docs/palette.md`.
+
+Original analysis (superseded by the palette-driven approach above):
 
 `VESSELS.md.trackColor` and `.markerColor` are both `#1a1a1a` (near-black) at
 `app.js:74-76`; `haloColor` `#ffffff`. Change both to a **dark navy** — proposed
@@ -83,7 +108,18 @@ white halo, so on the map it reads as a distinct dark line rather than merging
 with the drifter cluster. If it still reads too close under the shading overlay,
 darken toward `#08182f`.
 
-### #22 — violet forecast tracks for the REAL deployed drifters
+### #22 — violet forecast tracks for the REAL deployed drifters *(shipped, one detail superseded)*
+
+The mechanism below shipped essentially as specced — `kickDrifterForecasts`,
+`drawDrifterForecastLines`, and the `driftForecast` pane (420) all exist at
+`site/map/app.js:1166-1303` and `:2341`. The one deliberate deviation: forecast
+lines are **not** a flat violet. Each drifter's forecast line carries that
+drifter's own **identity colour** (the same batch/head colour as its observed
+track), so a track reads observed→forecast in one continuous colour instead of
+switching to a shared accent — the `#35` seam (`app.js:1163-1212`,
+`docs/palette.md`). `VIOLET_FORECAST_COLOR` was never added; there is no single
+forecast colour constant. Treat every "violet" reference below as superseded by
+per-drifter identity colour.
 
 **Approach (DECIDED): use the API.** Reuse the exact machinery the deploy tool
 already drives — `FORECAST_API = resolveApi("/api/forecast")` (l.1173),
@@ -133,11 +169,11 @@ L.polyline(latlngs, { pane: "driftForecast", color: VIOLET_FORECAST_COLOR,
                       weight: 2, opacity: 0.85, interactive: false })
 ```
 
-Add `const VIOLET_FORECAST_COLOR = "#7c3aed";` beside `DEPLOY_COLOR` (l.1208) —
-the codebase comments at 1206/2248 already reserve the word "violet" for forecast
-lines. The lines go into the **new `driftForecast` pane (420)** from #20, so they
-sit below every marker but above the ship track. Collect them in one
-`L.featureGroup` added to the map when the response arrives.
+*(As shipped: no `VIOLET_FORECAST_COLOR` constant — see the superseded-detail
+note above; each line takes its drifter's identity colour instead.)* The lines
+go into the **new `driftForecast` pane (420)** from #20, so they sit below every
+marker but above the ship track. Collect them in one `L.featureGroup` added to
+the map when the response arrives.
 
 **Kickoff & gating.** After the dock is assembled in `main`, call an async
 `kickDrifterForecasts()` that: (1) `await getDeployLimits()` (the same gate the
@@ -165,7 +201,11 @@ a very large one should just clamp at the field edge — verify against `/limits
 
 ## Cluster B — Controls redesign
 
-### #23 — deploy controls
+### #23 — deploy controls *(shipped)*
+
+Landed in `site/map/features/deploy.js:365-638` (the deploy-tool body moved out
+of `app.js` into its own module along the way). See `docs/deploy_tool.md` for
+the current layout.
 
 All edits are inside `buildDeployTool.renderBody` (`app.js:1458-1748`) plus the
 state head (`1381-1393`) and the deploy CSS (`style.css:615-902`). Reorder the
@@ -219,7 +259,13 @@ Moving the Deployments manager above click-to-place means `deployManagerRefresh`
 still targets the same element — keep the registration (l.1733) pointed at the
 relocated node.
 
-### #24 — merge instruments and ships into one Drifters panel
+### #24 — merge instruments and ships into one Drifters panel *(shipped)*
+
+Landed in `site/map/core/controls.js:37-184` (the panel-building code moved
+into `core/controls.js`). `buildShipsTab` and the separate ships tab are gone,
+confirming the merge described below happened as specced. See
+`docs/controls.md` / `docs/batches.md` / `docs/gliders.md` for current labels
+and layout.
 
 Target layout (one panel, three groups separated by `---`):
 
@@ -291,7 +337,22 @@ overflow.
 
 ## Cluster C — Responsiveness
 
-### #17 — static overlay snapshot toggle *(architectural)*
+### #17 — static overlay snapshot toggle *(architectural — shipped, then disabled pending issue #25)*
+
+**Current status.** The mechanism described below was built — an "Animate
+overlays" toggle plus the snapshot/live behaviour for both the near-inertial
+canvas and the leaflet-velocity flow layer. It has since been **switched off**:
+`site/map/core/controls.js:226-267` renders the Current-flow row, the
+near-inertial row, and the "Animate overlays" row all as disabled
+(`disabledRow()`, `cb.disabled = true`, no change handler), each tagged "issue
+#25" with the on-hover title "Temporarily disabled — see issue #25"
+(`core/controls.js:242`). `overlaysAnimated` now defaults to `false`
+(`site/map/app.js:2589`), not the default-on toggle specced below, and the
+inertial overlay is parked (`setAnimated(overlaysAnimated)`,
+`app.js:2749-2752`) rather than free-running. **This plan is blocked on #25**:
+whatever ships to resolve #25 (re-enable as specced, redesign, or drop the
+overlays) is the remaining work item here, not the mechanism below, which
+already exists in the codebase but is currently unreachable through the UI.
 
 **Problem.** Both animated overlays run their **own continuous `requestAnimationFrame`
 loop** and repaint every frame regardless of the clock: the near-inertial canvas
@@ -329,7 +390,11 @@ cost drops to the raster/track work alone.
 against version drift (feature-detect, no-op if absent). Document the toggle in
 `docs/currents.md`.
 
-### #18 — show-tracks checkbox eventual consistency *(architectural)*
+### #18 — show-tracks checkbox eventual consistency *(architectural — shipped)*
+
+The deferral mechanism landed at `site/map/app.js:2604-2634`: the checkbox
+flips and repaints synchronously, the reconcile runs off the event, keyed to a
+pending-state value so a rapid re-toggle collapses to the last write.
 
 **Problem.** The "Show tracks" checkbox's `change` handler runs
 `setTracksVisible` (l.3332-3337) **synchronously**: it flips `tracksOn`, toggles
@@ -364,14 +429,28 @@ must be safe to call against a half-added set (it already iterates registered
 entries). The same deferral should cover the standalone `buildTracksChip` path
 (l.1123) when there is no scrubber.
 
-### #19 — now-point affordance on the scrubber
+### #19 — now-point affordance on the scrubber *(shipped, with a different affordance than specced)*
 
-**Problem.** The wall-clock "now" marker is a small, **non-interactive** blue dot
-(`.ts-nowdot`, built l.1076; CSS `pointer-events:none` so it never blocks the
-thumb). There is no easy way to jump the clock back to now.
+**Current status.** Rather than adding a separate "⦿ now" button beside the
+dot, the shipped fix made the **dot itself** the clickable affordance: the
+now-dot (`.ts-nowdot`, `site/map/core/controls.js:414`) now carries
+`pointer-events: auto` and a click handler that snaps the scrubber to the now
+hour (`core/controls.js:409-421`, `style.css:328-340`), a simpler surface than
+a second control next to it. The specced **pulse/ring CSS enhancement** was
+built and then **removed**: `style.css:323-340` and the comment at
+`core/controls.js:387` both note "the pulse animation was removed — #36"; the
+dot is now a static (non-pulsing) filled circle. Treat the "make the dot
+attractive" paragraph below as superseded — the dot stayed visually plain and
+became the click target instead of gaining a companion button.
 
-**Mechanism.** Add a **clickable "now" affordance** — the cleaner option given the
-dot deliberately ignores the pointer:
+**Original problem framing (for context).** The wall-clock "now" marker used to
+be a small, **non-interactive** blue dot (`.ts-nowdot`; CSS
+`pointer-events:none` so it never blocked the thumb). There was no easy way to
+jump the clock back to now.
+
+**Mechanism as originally proposed (superseded by the dot-is-clickable
+approach above).** Add a **clickable "now" affordance** — the cleaner option
+given the dot deliberately ignores the pointer:
 
 - Add a small **"⦿ now" button/chip** in the `.ts-head` row (l.1049-1058), beside
   the clock readout. Clicking it sets the range to the now offset
@@ -406,10 +485,23 @@ guard as the dot, l.1075). Ensure the dispatched jump goes through the exact
 
 ## Docs to update (same pass, per cluster)
 
-- A: `docs/ship.md` (#21 navy), `docs/trajectories.md` + `docs/features.md`
-  (#20 stacking order; #22 violet forecast lines).
-- B: `docs/deploy.md` (#23 layout), `docs/controls.md` + `docs/batches.md`
+- A: `docs/ship.md` (#21 — shipped via the palette, not a standalone navy
+  edit), `docs/trajectories.md` + `docs/features.md` (#20 stacking order; #22
+  forecast lines — per-drifter identity colour, not a flat violet).
+- B: `docs/deploy_tool.md` (#23 layout), `docs/controls.md` + `docs/batches.md`
   (#24 merged panel, `batch N`/`batch X` labels), `docs/gliders.md`
   (row label `Glider`; note the `seaglider` data key is unchanged).
-- C: `docs/currents.md` (#17 animate/snapshot toggle), `docs/controls.md`
-  (#18 eventual-consistency master, #19 now affordance).
+- C: `docs/currents.md` (#17 — must state the toggle and its governed rows are
+  currently **disabled pending issue #25**, not describe a working
+  animate/snapshot switch), `docs/controls.md` (#18 eventual-consistency
+  master — shipped; #19 now affordance — shipped as a clickable dot, no
+  separate button, no pulse/ring).
+
+## Remaining work
+
+Everything in this plan has shipped except #17's live toggle, which was built
+and then intentionally disabled pending **issue #25**. This plan stays open
+until #25 is resolved and the "Animate overlays" / Current-flow / near-inertial
+rows in the Currents tab are either re-enabled, redesigned, or the plan is
+amended to drop them — at that point move this file to `plans/done/` with a
+`docs/currents.md` update recording whatever ships.

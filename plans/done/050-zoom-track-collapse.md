@@ -1,4 +1,5 @@
 # 050 — Zoom performance: collapse per-segment tracks + stop markers leading
+> Implemented. See [docs/trajectories.md](../../docs/trajectories.md) — one multi-part polyline per instrument on a shared canvas renderer.
 
 ## Symptom
 

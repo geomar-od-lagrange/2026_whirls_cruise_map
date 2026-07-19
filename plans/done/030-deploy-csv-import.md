@@ -1,4 +1,5 @@
 # 030 — Deploy tool: CSV / paste import of spatial waypoints
+> Implemented. See [docs/deploy_tool.md](../../docs/deploy_tool.md) — importing a deployment from pasted or uploaded spatial waypoints.
 
 ## Goal
 
@@ -23,7 +24,7 @@ branch.
 of lines. A hand-rolled tolerant parser (~30 lines) is smaller than wiring a
 library, and keeps the client free of a new CDN `<script>` (the map already pulls
 Leaflet + leaflet-velocity from a CDN, but the offline-VSAT / future-CSP concerns in
-[deployment.md](../docs/deployment.md) argue against adding
+[deploy_tool.md](../../docs/deploy_tool.md) argue against adding
 more). PapaParse would be the pick if we needed quoting/streaming/type inference; we
 don't. Noted as the alternative, not chosen.
 
@@ -74,5 +75,5 @@ vessel-route fixture. Pasting/loading them and clicking Place must resample the
 ## Docs
 
 Add an "Importing a deployment" section to
-[deployment.md](../docs/deployment.md) (the export section's
+[deploy_tool.md](../../docs/deploy_tool.md) (the export section's
 inbound twin). Move this plan to `done/` when merged.

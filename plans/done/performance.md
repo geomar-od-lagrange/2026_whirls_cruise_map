@@ -1,4 +1,5 @@
 # At-sea performance
+> Superseded. Measured against a GitLab Pages deployment that no longer exists — see [docs/hosting.md](../../docs/hosting.md). Still-live items moved to [BACKLOG.md](../BACKLOG.md). Kept for history.
 
 ## Why
 
@@ -104,7 +105,7 @@ Ordered biggest-impact / lowest-risk first. Numbers are the measured wire bytes.
 
 Related, because "near-live at sea" depends on both payload size *and* how often
 the build actually runs. Freshness is driven by a **GitLab pipeline schedule** on
-the default branch (see [deploy.md](../docs/deploy.md)). On self-managed GitLab a
+the default branch (see [hosting.md](../../docs/hosting.md)). On self-managed GitLab a
 schedule fires no more often than the instance's `PipelineScheduleWorker` polls
 (`gitlab_rails['pipeline_schedule_worker_cron']`), so a sub-hourly cadence needs
 that worker interval set to match — reliable, but capped by the instance config

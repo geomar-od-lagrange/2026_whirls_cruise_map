@@ -5,7 +5,7 @@
 > and tracks no driver usable at forecast time, and the slab alternative fails
 > independently — so the un-gained time-dependent field ships, with the gain
 > exposed as a parameter defaulting to 1.0 (`_inertial.GAIN`). Doc
-> counterpart: [docs/forecast.md](../../docs/forecast.md). The analysis lived
+> counterpart: [docs/deploy_tool.md](../../docs/deploy_tool.md). The analysis lived
 > in untracked `tmp_ni/`; the Findings section below is the durable record.
 
 ## The question

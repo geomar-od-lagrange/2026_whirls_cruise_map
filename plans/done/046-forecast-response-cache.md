@@ -1,4 +1,5 @@
 # 046 — Cache the observed-drifter forecast (server-side response cache)
+> Implemented. See [docs/deploy_tool.md](../../docs/deploy_tool.md) — the server-side forecast response cache.
 
 The map fires the observed-drifter forecast at page load for **every client**, and it
 is a **byte-identical** `POST /api/forecast` at a given data version — seeds come off

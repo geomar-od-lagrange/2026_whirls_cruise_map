@@ -1,7 +1,7 @@
 # Gliders: XSPAR buoy + seagliders
 
 > **Done.** Implemented — see [docs/gliders.md](../../docs/gliders.md) (and the
-> per-instrument forecast/hindcast in [docs/forecast.md](../../docs/forecast.md),
+> per-instrument forecast/hindcast in [docs/deploy_tool.md](../../docs/deploy_tool.md),
 > the Instruments control in [docs/batches.md](../../docs/batches.md)).
 
 Add the WHIRLS glider platforms — the **XSPAR** drifting spar buoy and the

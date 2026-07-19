@@ -52,7 +52,7 @@ speed (~0.5–0.7 m/s) at assignment; **Deployment 4** — an array staged toget
 the Marion Dufresne and left in the water as the ship departed station, seeded with
 the two drifters (D-433, D-434) confirmed separated (21–44 km) and drifting (~0.2 m/s)
 first, to be extended as the array's other staged drifters report their own free
-drift; **Deployment 5** — a large overnight array of 82 drifters that went into the
+drift; **Deployment 5** — a large overnight array that went into the
 water between 2026-07-09 21:29 and 2026-07-10 05:30 UTC, each confirmed separated
 from the vessel (14–67 km) and drifting steadily at surface-current speed (~0.3–1.7
 m/s) by assignment (a handful included with a last fix ~1 h old — an irregular
@@ -64,7 +64,7 @@ D-548, D-558, D-561, D-563, D-579, D-584, D-605) laid along the ship's track
 through 2026-07-16 (reported water entry 08:36–20:00 UTC), each confirmed
 separated from the vessel and drifting steadily at surface-current speed
 (~0.3–0.75 m/s) for 11–22 h by assignment. The algorithmic free-drift detachment
-(see [deploy.md](deploy.md)) landed within +5 to +47 min of each reported entry,
+(see [deploy_tool.md](deploy_tool.md)) landed within +5 to +47 min of each reported entry,
 and the drifters are now 38–167 km astern — furthest for the earliest-laid, the
 ship having steamed on down its track between drops. Drifters that merely reported
 the same day while stationary on deck, or that showed only brief ship-transit
@@ -91,7 +91,7 @@ The control is **data-driven** for the drifter/glider rows: it builds one
 `L.featureGroup` per distinct instrument key — a drifter `batch`, or a glider `type` —
 and renders a row for each. A new batch or a new glider therefore appears automatically
 once the data contains it — no client code change. Known keys get friendly labels
-(`pre_deploy` → "batch X", `deployment_1` → "batch 1", the gliders → "XSPAR buoy" /
+(`pre_deploy` → "batch X", `deployment_1` → "batch 1", the gliders → "XSPAR" /
 "Glider"); any other key is shown verbatim, so an unanticipated instrument is still
 legible. The two ship rows are rendered eagerly from config (the vessels are known up
 front); a ship row toggles its vessel's visibility, but the vessel only joins the map
@@ -110,8 +110,8 @@ This control — not a Leaflet layer control — governs instrument (and vessel)
 visibility; it and the **Currents** control are two tabs of the one top-right
 [control dock](controls.md). In Currents the two shadings (speed, ζ/f vorticity) are
 **mutually-exclusive radios** — plus a *None* radio to turn shading off — since both
-fill the one `shading` pane; the flow overlay and near-inertial animation, which
-coexist with either shading, are **checkboxes**.
+fill the one `shading` pane; the flow overlay and near-inertial animation rows are
+also present but currently rendered greyed-out and inert (issue #25).
 
 ### Why a custom control, not the Leaflet layer control
 

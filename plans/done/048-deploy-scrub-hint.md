@@ -1,7 +1,7 @@
 # 048 — Hint that a fresh deployment's drift needs a scrub (#38)
 
 > **Done.** Implemented; behaviour documented in
-> [docs/deployment.md](../../docs/deployment.md) (*A fresh deployment needs a scrub*)
+> [docs/deploy_tool.md](../../docs/deploy_tool.md) (*A fresh deployment needs a scrub*)
 > and [docs/controls.md](../../docs/controls.md) (Deploy tab).
 
 ## Problem
@@ -50,7 +50,7 @@ text/tooltip hints above are the cheap, always-correct first pass.
 
 ## Docs
 
-Update `docs/deployment.md` (the clock-clips-the-trail section) and
+Update `docs/deploy_tool.md` (the clock-clips-the-trail section) and
 `docs/controls.md` (Deploy tab) to describe both hints. Also fix the stale
 `controls.md` line describing a "slow pulsing ring" on the now-dot — that pulse
 was removed in #36 and no `@keyframes` remain in the stylesheet.

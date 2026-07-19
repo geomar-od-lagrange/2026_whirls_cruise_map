@@ -37,8 +37,8 @@ two arms.
 ## Source and resolution
 
 Derived from the **same CMEMS forecast window** the speed and flow overlays use
-(`_currents.fetch_shading_window`, `cmems_mod_glo_phy-cur_anfc_0.083deg`, 1/12° ≈
-8 km). Vorticity is a spatial derivative of the `uo`/`vo` already fetched, so it
+(`_currents.fetch_shading_window`, `cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i`,
+1/12° ≈ 8 km). Vorticity is a spatial derivative of the `uo`/`vo` already fetched, so it
 adds **no download** and renders at the same near-native grid as the speed frames.
 Like the speed shading it is **time-sliced**: one frame per 12 h step on a growing
 absolute-time grid anchored at `FIELD_TMIN` and running through the product's
@@ -63,12 +63,16 @@ rationale). Two choices follow from ζ/f being **signed** rather than a magnitud
 
 - a **diverging** colour map (cmocean `curl`, built for field curl) instead of the
   sequential `speed` map; and
-- a **symmetric clip**: `vmax` is the 98th percentile of |ζ/f| and the field is
+- a **symmetric clip**: `vmax` is the frozen `VORT_CLIP = 0.3` and the field is
   mapped from `[−vmax, +vmax]` so zero lands on the map's neutral midpoint. The
   meta ships `vmin = −vmax` alongside `vmax`, which is the one field the client
   legend needs to render a symmetric −vmax…0…+vmax scale rather than the speed
-  bar's 0…vmax. The percentile clip keeps a few grid-scale spikes in the Agulhas
-  shear front (where |ζ/f| can exceed 1) from washing out the mesoscale scale.
+  bar's 0…vmax. `VORT_CLIP` was frozen the same way as `_currents.SPEED_VMAX` —
+  fixed once from an early pooled-percentile scale rather than recomputed per
+  build — so a colour means the same value at every time and across every build
+  (see [currents.md](currents.md), *One frozen colour scale*); the clip keeps a
+  few grid-scale spikes in the Agulhas shear front (where |ζ/f| can exceed 1)
+  from washing out the mesoscale scale.
 
 Like the speed raster, ζ/f is **binned to `N_BINS = 12` discrete colour classes**
 before the colour lookup (`_currents._quantize_unit`) — same `curl` palette, no new
@@ -89,8 +93,9 @@ independent checkboxes — picking ζ/f swaps it in for the speed raster; speed 
 selected by default. Both rasters are drawn **fully opaque** (the overlay carries
 no `opacity`, so the ocean shows its true colour rather than a wash over the
 basemap; land stays transparent via the PNG's own alpha mask, so the coastline
-still shows through). Its legend is a local twin of the speed legend
-(`renderVorticityInfo`), symmetric where the speed one is zero-based, and drawn as
+still shows through). Its legend shares the speed legend's renderer
+(`shadingLegendHtml(meta, diverging)`, called with `diverging = true` for ζ/f and
+`false` for speed), symmetric where the speed one is zero-based, and drawn as
 the same 12 hard-edged colour classes the raster uses.
 
 ### Land and coastal edge

@@ -44,10 +44,10 @@ VERTEX_MIN = 15.0
 MARK_HOURS = (1, 3, 6)
 
 # Display precision for every emitted coordinate (shared with the _geojson
-# emitters): 4 dp is ~11 m — sub-pixel at the map's maxZoom 12 (~30 m/CSS-px at the
-# working latitude), at the drifters' ~5–15 m GPS fix scatter, and three orders
-# below the 1/12° CMEMS field driving the advection. 5 dp (~1.1 m, the source
-# feed's own precision) buys nothing visible and costs ~1/3 of the gzipped
+# emitters): 4 dp is ~11 m in latitude, well inside the drifters' own ~5–15 m GPS
+# fix scatter and three orders below the 1/12° CMEMS field driving the advection.
+# It is on the order of a CSS pixel at the map's deepest zoom. 5 dp (~1.1 m, the
+# source feed's own precision) buys nothing visible and costs ~1/3 of the gzipped
 # forecast payload.
 _COORD_NDIGITS = 4
 

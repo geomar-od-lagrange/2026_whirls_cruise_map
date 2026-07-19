@@ -1,4 +1,4 @@
-> Implemented. See [docs/deployment.md](../../docs/deployment.md)
+> Implemented. See [docs/deploy_tool.md](../../docs/deploy_tool.md)
 > ("Batched, not looped") for the current state.
 
 # Vectorize the batch forecast; retire the 60 s-timeout machinery
@@ -113,7 +113,7 @@ near-coast + out-of-window), identical forecast/skip counts and marks.
    `test_follower_recomputes_when_leader_fails`, the `_fresh_cache` fixture). Keep
    the marks/skip/limits/window/reload tests.
 
-6. **Docs** (`docs/deployment.md`): drop the "Surviving the 60 s
+6. **Docs** (`docs/deploy_tool.md`): drop the "Surviving the 60 s
    gateway timeout" section; update "The batch endpoint" and the seed-cap
    paragraph to state the vectorized cost (n=2000 ≈ 1–2 s, far under the timeout)
    and that the cap is a DoS/memory bound. Note the vectorized engine as the

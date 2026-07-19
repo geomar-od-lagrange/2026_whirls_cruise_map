@@ -3,13 +3,19 @@
 Ordered intent. Each open item links a plan in this directory; implemented plans
 move to `done/` and gain a `docs/` counterpart.
 
-1. [Static cruise map — MVP](001-static-cruise-map.md) — fetch the drifter
+1. [Static cruise map — MVP](done/001-static-cruise-map.md) — fetch the drifter
    share, derive tracks, render latest positions + trajectories + a first CMEMS
-   surface-currents overlay in a local Leaflet site. **Done** (built + reviewed;
-   docs/ + move to done/ pending).
-2. [Currents inclusion](002-currents.md) — speed shading + monochrome flow trails
-   from one CMEMS field. **Done** (built + reviewed; pan/zoom fix pending confirm).
-3. [FTLE overlay + trail-velocity scaling](003-ftle-and-trail-scaling.md) — red
+   surface-currents overlay in a local Leaflet site. **Done, then superseded
+   wholesale** by the deployment-focused rebuild (see 31,
+   [done/034](done/034-deployment-focused-app.md)) — no `currents.json`/
+   leaflet-velocity, no slippy basemap, the app itself moved to `site/map/**`.
+   Kept in `done/` for history.
+2. [Currents inclusion](done/002-currents.md) — speed shading + monochrome flow
+   trails from one CMEMS field. **Done, then wholly replaced**: the flow trails
+   became precomputed WebP streamlines
+   ([done/038-precomputed-flow-vis.md](done/038-precomputed-flow-vis.md)) and the
+   frozen per-build vmax gave way to a fixed scale; kept in `done/` for history.
+3. [FTLE overlay + trail-velocity scaling](done/003-ftle-and-trail-scaling.md) — red
    alpha-ramped LCS ridges from the SPASSO FTLE product, plus sqrt-scaling of the
    particle-animation velocity. The trail-velocity scaling stays; **the FTLE
    overlay was later dropped — see 13.**
@@ -44,20 +50,31 @@ move to `done/` and gain a `docs/` counterpart.
 9. [Drift forecast](done/009-drifter-forecast.md) — per-drifter current-advection
    track to 6 h (RK4 through the frozen CMEMS field, NaN land so it stops at the
    coast), solid line with 1/3/6 h dots, toggled per-batch like trajectories.
-   **Done** ([docs/forecast.md](../docs/forecast.md)). Frozen single field and
-   surface-current-only at the time; time-varying advection landed later — see 15.
+   **Done, then later removed** (frozen single field and surface-current-only at
+   the time; time-varying advection landed later — see 15). This whole
+   per-observed-instrument forecast/hindcast render layer — controls, drawing,
+   and build step — was dropped in [036](done/036-tracks-master-and-deploy-cleanup.md)
+   in favour of the Deploy tool's on-demand forecasts
+   ([docs/deploy_tool.md](../docs/deploy_tool.md)).
 10. Automation & hosting — GitLab CI builds the site and publishes it to GitLab
     Pages on `git.geomar.de` (push, manual, or scheduled pipelines); CMEMS
-    credentials via masked CI/CD variables. **Done**
-    ([docs/deploy.md](../docs/deploy.md)). (GitHub's native Actions scheduler
+    credentials via masked CI/CD variables. **Done, then superseded**: GitLab
+    Pages is retired — `.gitlab-ci.yml` now only runs a frontend type-check gate
+    — and serving moved to OpenShift (see 18). (GitHub's native Actions scheduler
     never fired for this repo across three re-registration attempts, so GitHub
-    Pages was dropped and GitLab is the sole deploy.)
-11. [At-sea performance](performance.md) — profiled the deployed site for
+    Pages was dropped before Pages itself was retired.) **See
+    [docs/hosting.md](../docs/hosting.md)** for the current build/CI story.
+11. [At-sea performance](done/performance.md) — profiled the deployed site for
     low-bandwidth / high-latency (VSAT) use; ranked opportunities (parallelize
     the data fetches, self-host Leaflet, lazy-load off-by-default layers,
     fit-before-tiles / Esri default, lighter currents payload, ship-API
-    windowing). **Investigated, not yet acted on** (per request — investigate
-    only).
+    windowing). **Partially acted on, then overtaken by later rewrites**:
+    parallelized fetches and self-hosted Leaflet landed; the tile basemap was
+    dropped entirely rather than deferred (see 13); the named artifacts
+    (`currents.json`, `speed.png`, `ftle.geojson`) no longer exist under the
+    deployment-focused app. The still-live bullets (ship-API windowing, no
+    favicon, cache-header re-check) are carried forward in
+    [BACKLOG.md](BACKLOG.md). Kept in `done/` for history.
 12. [Truncate tracks at deployment](done/010-truncate-tracks-at-deployment.md) —
     detect each drifter's detachment from the vessel (build-time, distance to the
     R/V Marion Dufresne track) and truncate its trajectory there, so the layer
@@ -80,7 +97,7 @@ move to `done/` and gain a `docs/` counterpart.
     forecast/hindcast advects through a **time-dependent hourly CMEMS field**
     instead of a frozen snapshot, so the path curls into the near-inertial loop the
     model carries (the drifters' visible corners). **Phases 1–2 resolved** (built +
-    validated; [docs/forecast.md](../docs/forecast.md)): time-dependent advection,
+    validated): time-dependent advection,
     plus the per-cell `(mean, A, φ)` decomposition as a tested library module
     (`_inertial.py`, no build artifact). The inertial-amplitude overlay and the
     animated ±6 h dot were built and then **dropped by decision after review**.
@@ -90,8 +107,15 @@ move to `done/` and gain a `docs/` counterpart.
     (slow-tier field cache) landed** for the forecast API
     ([plans/018](done/018-forecast-window-pvc-cache.md)): the slow cron persists the
     hourly window to `data/_cache/` and the forecast API serves it (reload on
-    mtime, no per-process CMEMS fetch). **Open:** re-advecting the fast tier's live
-    positions off that cache for a fast-fresh forecast origin.
+    mtime, no per-process CMEMS fetch). This field cache and the `_inertial.py`
+    decomposition both outlived the per-observed-instrument forecast/hindcast
+    render layer, which [036](done/036-tracks-master-and-deploy-cleanup.md) later
+    removed — the cache now feeds the Deploy tool's on-demand forecasts (22, 23,
+    40) and the client-side near-inertial animation instead (built under
+    [done/014-near-inertial-animation.md](done/014-near-inertial-animation.md) as
+    flowing particle tracks rather than the vector glyphs originally specced; see
+    27). **Open:** re-advecting the fast tier's live positions off that cache for
+    a fast-fresh forecast origin.
 16. [Inertial-gain generalization](done/013-inertial-gain-generalization.md) —
     does one scalar amplitude gain hold across deployments (D1 has corners too),
     space, and time, or does it need parameterizing / dropping? **Resolved
@@ -116,7 +140,13 @@ move to `done/` and gain a `docs/` counterpart.
     the gateway + OpenShift orchestration now live in a dedicated third repo,
     `oc_gateway`** (`git.geomar.de/2026-whirlscruise-lagrange/oc_gateway`) — map
     stays here, archetypes in prep — reversing 017's original "keep the gateway as
-    a `deploy/gateway/` subdir here." **Exploration only — not yet acted on.**
+    a `deploy/gateway/` subdir here." **Live in production**: the map + forecast
+    API are served from OpenShift at `whirlsview.geomar.de`, on a simpler topology
+    than the three-path sketch — a gateway nginx (in `oc_gateway`) fronting
+    `/live/` (prod) and `/live-test/` (staging), each a frontend pod serving this
+    repo's map off a CronJob-filled PVC, plus a forecast-API pod at `/live/api/`.
+    GitLab Pages is retired. **Open remainder:** the `/archetypes` and `/data`
+    paths from the original three-path sketch have not been built.
 19. [Ingest → derive: the `/data` seam](done/018-ingest-derive-data-seam.md) — the
     pipeline-internals counterpart to 18. Split `build.py` into **ingest** (fetch
     + clean all instrument/ship tracks into human-inspectable **CSVs** under
@@ -125,7 +155,7 @@ move to `done/` and gain a `docs/` counterpart.
     *and* build input at once — which re-cuts 18's fast/slow tiers into
     ingest / derive-fast (egress-free) / derive-slow (CMEMS). Subsumes the
     backlog "Track DB parquet cache"; gives "GPS despike at ingestion" a visible
-    home. **Done** ([docs/data.md](../docs/data.md), [docs/deploy.md](../docs/deploy.md)):
+    home. **Done** ([docs/data.md](../docs/data.md), [docs/hosting.md](../docs/hosting.md)):
     the map now serves at `/map/` (root redirects there) with cleaned + raw
     dataset CSVs published at `/data/`. OpenShift consumption (CronJobs, `/data`
     backend) stays with 18.
@@ -163,7 +193,7 @@ move to `done/` and gain a `docs/` counterpart.
     browser (transport + VSAT caching); the field stays in server memory, each
     response is a small FeatureCollection. Validated against **OceanParcels v4**
     (agree to metres; RK4 ~100× faster per particle, so RK4 is the engine and
-    parcels the oracle). **Done** ([docs/deployment.md](../docs/deployment.md));
+    parcels the oracle). **Done** ([docs/deploy_tool.md](../docs/deploy_tool.md));
     a **dev PoC, not in the deployed Pages build**. The single-click +12 h tool this
     started as is **superseded by the one polyline Deploy tool + batch API in 23**.
     **Field-cache productionization landed** ([plans/018](done/018-forecast-window-pvc-cache.md)):
@@ -188,7 +218,7 @@ move to `done/` and gain a `docs/` counterpart.
     [Lagrangian-Drifter-Array](https://github.com/guillaumenovelli/Lagrangian-Drifter-Array)
     MATLAB package (Novelli, G. (2026), Zenodo
     [10.5281/zenodo.20650545](https://doi.org/10.5281/zenodo.20650545)). **Done**
-    ([docs/deployment.md](../docs/deployment.md)); dev PoC, not
+    ([docs/deploy_tool.md](../docs/deploy_tool.md)); dev PoC, not
     in the deployed Pages build. **Open — the `t0` inversion:** the reference time
     for a deformation / flow-map estimate is when the array is *complete* in the
     water, but staggered deployment means the clean array exists in the deploy frame,
@@ -213,7 +243,7 @@ move to `done/` and gain a `docs/` counterpart.
     deployment waypoints (position + staggered water-entry ETA), so the export is a
     client-side dump of geometry already owned: no API round-trip, no build
     artifact, wiped by **Clear**. **Done**
-    ([docs/deployment.md](../docs/deployment.md)); dev PoC, like
+    ([docs/deploy_tool.md](../docs/deploy_tool.md)); dev PoC, like
     the rest of the Deploy tool.
 26. [Controls dock + tidy sidebar](done/026-controls-dock.md) — on a 13" laptop the
     four top-right controls (Instruments, Currents, Ships, Deploy) stacked ~800 px,
@@ -231,8 +261,9 @@ move to `done/` and gain a `docs/` counterpart.
     values rounded to 4 dp so the now frame is *lighter* than the old single grid;
     the rest lazy-load); the near-inertial animation needs no new data — it anchors
     its analytic phase `amp·exp(i(phase − f·(T − t_ref)))` to the displayed instant,
-    read live from the slider. **Done** ([docs/currents.md](../docs/currents.md),
-    [docs/forecast.md](../docs/forecast.md)).
+    read live from the slider. **Done** ([docs/currents.md](../docs/currents.md)).
+    The per-offset leaflet-velocity grid this shipped is itself superseded by the
+    precomputed WebP streamlines — see item 2.
 28. [Forecast cache + client retry](done/028-forecast-cache-and-retry.md) — a large
     placement can advect longer than the deployment gateway's 60 s network timeout,
     which cut the connection and lost the forecast. A FastAPI *sync* task keeps
@@ -243,7 +274,7 @@ move to `done/` and gain a `docs/` counterpart.
     coalesces onto the still-running compute. Same POST, retried; no job IDs, no
     polling. The seed cap stays at **2000**: the retry/cache — not a lower cap — is
     what makes an over-timeout placement safe. **Done**
-    ([docs/deployment.md](../docs/deployment.md)); dev PoC, like
+    ([docs/deploy_tool.md](../docs/deploy_tool.md)); dev PoC, like
     the rest of the Deploy tool. **Superseded by 29:** vectorizing the advection
     removed the 60 s timeout this worked around, so the cache + single-flight +
     client retry were **removed**.
@@ -260,7 +291,7 @@ move to `done/` and gain a `docs/` counterpart.
     With the timeout gone by a >40× margin, the 60 s-survival machinery from 28 (the
     server result-cache + single-flight and the client retry) was **removed**; the
     scalar integrator stays for the build's per-instrument forecast/hindcast. **Done**
-    ([docs/deployment.md](../docs/deployment.md)); dev PoC, like
+    ([docs/deploy_tool.md](../docs/deploy_tool.md)); dev PoC, like
     the rest of the Deploy tool.
 30. [Wave gliders](done/033-wave-gliders.md) — the two **wave gliders** the WHIRLS
     operational map now shows, added as a new `waveglider` instrument type (pink,
@@ -287,7 +318,7 @@ move to `done/` and gain a `docs/` counterpart.
     budgets incl. a seeds×hours bound, `/limits`), not an observation viewer with
     a tool bolted on. Four workstreams (store, engine/API, frames/scrubber,
     frontend) landed sequentially, developed entirely in the local pixi flows.
-    **Done** ([docs/deployment.md](../docs/deployment.md),
+    **Done** ([docs/deploy_tool.md](../docs/deploy_tool.md),
     [docs/field_store.md](../docs/field_store.md),
     [docs/currents.md](../docs/currents.md),
     [docs/controls.md](../docs/controls.md)). **Open remainder:** the
@@ -304,7 +335,7 @@ move to `done/` and gain a `docs/` counterpart.
     distinguishes along-track (ship-speed-staggered) from instantaneous releases;
     the slider's "now" becomes a blue dot on the scrub line and day ticks label
     as `Jul 14`. **Done** ([docs/trajectories.md](../docs/trajectories.md),
-    [docs/deployment.md](../docs/deployment.md),
+    [docs/deploy_tool.md](../docs/deploy_tool.md),
     [docs/controls.md](../docs/controls.md)).
 33. [Tracks master + deploy cleanup](done/036-tracks-master-and-deploy-cleanup.md) —
     one **"Show tracks"** master in the scrubber governs every observed track line
@@ -317,14 +348,14 @@ move to `done/` and gain a `docs/` counterpart.
     (no dash split, nothing ahead of the clock, no vessel route) and always shown;
     the MD track crops at 28 Jun and the scrubber drops its type-in jump box.
     **Done** ([docs/controls.md](../docs/controls.md)).
-34. [Defaults & quick wins](040-defaults-and-quick-wins.md) — a batch of small
+34. [Defaults & quick wins](done/040-defaults-and-quick-wins.md) — a batch of small
     frontend issues: drop the scrubber's "Now" button and the now-marker pulse
     (#36); deployment defaults to 10 km spacing + instantaneous release (#26);
     tracks (drifter/glider/ship) show on first load without stalling first paint
     (#28, which needs the track-visibility state decoupled from the Instruments
     tab's DOM since Deploy is the default tab); and forward + backward runs become
     an OR (both checkable, run and drawn from the same drops) instead of an
-    exclusive switch (#32). **Open.**
+    exclusive switch (#32). **Done.**
 35. [Track visual overhaul](041-track-visual-overhaul.md) — every instrument and
     virtual track gains a fixed **deployment dot** (4× line width, identity
     colour, no outline) at its deployment point plus a clock-driven **moving
@@ -335,21 +366,21 @@ move to `done/` and gain a `docs/` counterpart.
     Sources the dot colour from a single identity-colour seam so
     **#35 (per-class palette)** converges line = dot = head. **Open**
     (#35 has since landed — see item 41 / [docs/palette.md](../docs/palette.md)).
-36. [Zoom levels](042-zoom-levels.md) — half-level intermediate zoom
+36. [Zoom levels](done/042-zoom-levels.md) — half-level intermediate zoom
     (`zoomSnap`/`zoomDelta` 0.5) and a finer max zoom (raise `MAX_ZOOM`), bounded
     by the CMEMS 1/12° raster resolution — past it only the pixels enlarge (#27).
-    **Open.**
+    **Done** (`MAX_ZOOM=14` in `site/map/config.js`).
 37. [Default continent basemap](043-continent-basemap.md) — a highly compressed
     static gray-land / blue-sea WebP mask at CMEMS resolution, baked from the
     field's own NaN-land pattern (same grid, co-registered) and drawn in a pane
     below the shadings as a permanent basemap — land context with no OSM and no
     per-pan transfer (#29). **Open.**
-38. [Outlier toggle](044-outlier-toggle.md) — a client-only "Hide outliers"
+38. [Outlier toggle](done/044-outlier-toggle.md) — a client-only "Hide outliers"
     toggle keyed on the `derived_speed_mps` already in `tracks.geojson` (no second
     download): flag out-and-back GPS spikes (anomalous speed on both adjacent
     segments), then **interpolate** the resulting gap if it spans ≤ 24 h or
     **blank** it beyond 24 h (#30). Server-side despike stays a separate BACKLOG
-    item. **Open.**
+    item. **Done** ("Hide GPS outliers" row, Instruments tab).
 39. [Slow-derive cold-start OOM](045-slow-derive-oom.md) — the slow-tier
     `derive` is OOMKilled at 2 Gi on a cold start (#37): the full-cruise 6-hourly
     shading window loads as **float64** (~449 MB, no cast) and `to_landmask_webp`
@@ -360,8 +391,12 @@ move to `done/` and gain a `docs/` counterpart.
     derive the land mask from a **single** time slice, and `del`+`gc` the window
     before the inertial step. Deploy-side, `oc_gateway` bumped the slow-cron cap
     2 Gi → 3 Gi as a stopgap. Fix #4 (store-derived shadings / batching — the true
-    float32-on-disk end state, bounds peak independent of span) deferred. **Open.**
-40. [Cache the observed-drifter forecast](046-forecast-response-cache.md) — the map
+    float32-on-disk end state, bounds peak independent of span) deferred, as
+    intended. **Open:** the mandatory fixes are shipped, but the plan's own
+    verification section calls for two `tracemalloc` peak-memory regression
+    assertions and neither exists, so the memory claim itself has no regression
+    coverage (tracked in [BACKLOG.md](BACKLOG.md)).
+40. [Cache the observed-drifter forecast](done/046-forecast-response-cache.md) — the map
     fires the same observed forecast at page load for every client; on the single API
     pod it should compute once per data version, not once per client. A
     `functools.lru_cache` over `_batch_run`, keyed on the field-manifest mtime (the
@@ -387,7 +422,7 @@ move to `done/` and gain a `docs/` counterpart.
     both places the eye lands: a transient **finish tooltip** pinned at the last vertex and
     a durable **status-line clause** in the dock, both reading *"drag the clock to draw the
     drift"* (one shared `SCRUB_HINT`, direction-agnostic). **Done**
-    ([docs/deployment.md](../docs/deployment.md), *A fresh deployment needs a scrub*).
+    ([docs/deploy_tool.md](../docs/deploy_tool.md), *A fresh deployment needs a scrub*).
 43. [Full-audit remediation](done/049-full-audit-remediation.md) — rollout of the
     2026-07-17 full-repo review ([docs/reviews/2026-07-17-full-audit.md](../docs/reviews/2026-07-17-full-audit.md))
     as sequenced focused MRs merged straight to `main`, no staging branch: G1 SEC-1
@@ -401,6 +436,8 @@ move to `done/` and gain a `docs/` counterpart.
     window and retiring the coarse spread cap. **Done** (all groups on `main`; SRC-2
     skipped as a net-negative merge — see the plan's Rollout record).
 
-Deferred / not in these batches: **#16** (CMEMS rollover validation), **#17** (static
-streamlines), **#25** (re-enable flow/near-inertial overlays), **#31** (xspar/float
-forecasts — needs more CMEMS layers) — out of scope for this frontend pass.
+Deferred / not in these batches: **#16** (CMEMS rollover validation), **#25**
+(re-enable flow/near-inertial overlays), **#31** (xspar/float forecasts — needs more
+CMEMS layers) — out of scope for this frontend pass. **#17** (static streamlines) has
+since shipped — see item 2 above and
+[done/038-precomputed-flow-vis.md](done/038-precomputed-flow-vis.md).

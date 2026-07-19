@@ -15,7 +15,7 @@ as a seam:
   cleans and unifies them, and writes the tables described below.
 - **derive** reads those same tables back — never re-fetching from the live
   upstreams — and builds the map's GeoJSON/PNG artifacts (`site/map/data/`, a
-  separate tree; see [deploy.md](deploy.md)).
+  separate tree; see [hosting.md](hosting.md)).
 
 So a human opening `/data/drifters.csv` in a spreadsheet sees exactly what the
 map was built from, not a side-export approximating it. This also means the map

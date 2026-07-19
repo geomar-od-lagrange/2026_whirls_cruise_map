@@ -1,4 +1,5 @@
 # 040 — Defaults & quick wins
+> Implemented. See [docs/controls.md](../../docs/controls.md) (tracks-on default, instrument rows) and [docs/deploy_tool.md](../../docs/deploy_tool.md) (deploy defaults).
 
 Four small frontend issues that are default flips or element removals, batched
 because they touch nearby seams and carry little risk. All are `site/map/app.js`

@@ -3,7 +3,7 @@
  * Static client. Fetches the build artifacts from ./data/ and renders them as
  * Leaflet layers:
  *   latest.geojson                 -> circle markers (on by default)
- *   tracks.geojson                 -> trajectory lines (off by default)
+ *   tracks.geojson                 -> trajectory lines (on by default)
  *   speed_<t>Z.webp + currents_meta.json -> surface-speed shading, one lossless
  *                                           WebP frame per valid time (imageOverlay)
  *   flowvis_<t>Z.webp              -> static streamline flow overlay, one lossless
@@ -381,7 +381,8 @@ registerClockTick(CLOCK_PRIORITY.deployDrift, (ms) => {
   if (deployTool) deployTool.clipAllDeployTracks(ms);
 });
 // Forecast last (priority 60): when the clock is past now a drifter's forecast overrides
-// its observed clip / point head and walks the marker along the violet forecast.
+// its observed clip / point head and walks the marker along the forecast, drawn in the
+// drifter's own identity colour.
 registerClockTick(CLOCK_PRIORITY.forecast, (ms) => {
   for (const entry of forecastClockEntries) clipForecast(entry, ms);
 });
@@ -491,12 +492,12 @@ const observedTrackHandles = [];
 // with the tracks, outside the outlier rebuild.
 const deploymentDots = [];
 
-// Real-drifter forecast clips (#22). Each is one violet polyline per deployed drifter,
-// its vertices timed from the /api/forecast advection, driving the SAME head as the
-// drifter's observed track. Processed after the observed clips + point heads in
-// updateClock, so in the future (clock past the forecast start ≈ now) the forecast wins
-// the head and walks the drifter marker forward; at/before now it doesn't touch the head
-// (the observed/point clock owns the real position) and hides its line. See clipForecast.
+// Real-drifter forecast clips (#22). Each is one polyline per deployed drifter, in that
+// drifter's identity colour, its vertices timed from the /api/forecast advection, driving
+// the SAME head as the drifter's observed track. Processed after the observed clips + point
+// heads in updateClock, so in the future (clock past the forecast start ≈ now) the forecast
+// wins the head and walks the drifter marker forward; at/before now it doesn't touch the
+// head (the observed/point clock owns the real position) and hides its line. See clipForecast.
 const forecastClockEntries = [];
 
 // Whether a real-drifter forecast line is visible for its batch — set by the Instruments
@@ -723,8 +724,9 @@ function clipPathToWindow(times, lats, lngs, tA, tB) {
 
 // Clip one real-drifter forecast to clock `ms` and walk its head (#22, #34). The
 // forecast is seeded at the drifter's last fix, so its full path spans [last fix →
-// field end]; the entry holds two non-interactive violet polylines — a DASHED `bridge`
-// (last fix → now: the un-transmitted reporting-lag gap, #34) and the SOLID `line`
+// field end]; the entry holds two non-interactive polylines in the drifter's identity
+// colour — a DASHED `bridge` (last fix → now: the un-transmitted reporting-lag gap, #34)
+// and the SOLID `line`
 // (now → field end: the forecast). At/before the last fix the entry is inactive (both
 // lines hidden, head owned by the observed/point clock). Otherwise it walks the drifter's
 // own head to the clock along the modeled path REGARDLESS of the "Show tracks" master,
@@ -1238,7 +1240,7 @@ function drawDrifterForecastLines(features, layer, seeds, nowMs) {
 // in-water drifter (latest.geojson batch === deployment_*, so gliders/floats/xspar/
 // waveglider are excluded) at its last fix and forward-advects to the end of the
 // CMEMS field via the same /api/forecast endpoint the deploy tool uses. NOT awaited
-// by main — the map is already live; the violet forecasts register when the POST
+// by main — the map is already live; the identity-coloured forecasts register when the POST
 // resolves and then behave under the clock (future-only, clipped to the scrubber, gated
 // by "Show tracks", walking each drifter's own head — see drawDrifterForecastLines /
 // clipForecast). Gated on getDeployLimits(): a static-only deploy with no /api server
@@ -1302,7 +1304,7 @@ async function kickDrifterForecasts(latest, map, spanHours, nowMs) {
     const data = await resp.json().catch(() => ({}));
     drawDrifterForecastLines(data.features ?? [], group, seeds, nowMs);
   } catch (err) {
-    // Network/API failure is non-fatal — the map stands without violet forecasts.
+    // Network/API failure is non-fatal — the map stands without forecasts.
     console.warn("Drifter forecast unavailable:", err);
   }
 }
@@ -2316,7 +2318,7 @@ async function main() {
   //   shading 350, flow 355 (static streamline overlay), inertial 360 (raster/animation underlays)
   //   observed drifter/glider track lines: default overlayPane 400 (unchanged)
   //   shipTrack 410      — the ship route + its per-fix dots
-  //   driftForecast 420  — the violet real-drifter forecast lines (#22)
+  //   driftForecast 420  — the identity-coloured real-drifter forecast lines (#22)
   //   deployTracks 430   — the PoC deploy tool's drift lines
   //   deployDrops 440    — the deploy tool's drop discs (placement points of the
   //                        PoC tool, part of the drift geometry — kept just above
@@ -2813,7 +2815,7 @@ async function main() {
   // (pollShip / loadAgulhas) reference these consts, defined further down.
   const ship = makeShipLayer(VESSELS.md);
   const agulhas = makeShipLayer(VESSELS.agulhas);
-  ship.setTrackShown(tracksOn); // adopt the current master state (off by default)
+  ship.setTrackShown(tracksOn); // adopt the current master state (on by default)
   agulhas.setTrackShown(tracksOn);
   shipLayers.push(ship, agulhas);
   const mkVessel = (name, color, shipLayer) => {
@@ -2848,7 +2850,7 @@ async function main() {
   // Deploy is the app's primary capability (plan 034, D1), so it leads the strip and
   // opens by default — chosen synchronously at build, so the dock never flashes another
   // tab first. The /limits probe runs off the critical path and only DOWNGRADES: when
-  // the API is unreachable (getDeployLimits resolves null — the static/Pages fallback),
+  // the API is unreachable (getDeployLimits resolves null — no API process reachable),
   // it re-selects Instruments. The Deploy tab stays present either way (placing drops +
   // exporting CSV works without the drift API).
   const hasCurrents =
@@ -2921,7 +2923,7 @@ async function main() {
     updateClock(atTimeClockMs);    // drive the freshly-registered clips + point heads
   });
 
-  // Violet forecast drift for the real deployed drifters (#22): fire once, async,
+  // Identity-coloured forecast drift for the real deployed drifters (#22): fire once, async,
   // now that the map + clock span are live. Not awaited — the layer appears when the
   // /api/forecast POST resolves, and silently no-ops if the dynamic API is absent.
   // Pass the clock's "now" (nowClockMs, the scrubber's default slot) as the bridge/

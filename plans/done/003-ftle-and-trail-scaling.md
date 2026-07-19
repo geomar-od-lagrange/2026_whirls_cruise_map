@@ -1,5 +1,7 @@
 # FTLE (LCS) overlay + trail-velocity scaling
 
+> Superseded. The FTLE overlay was built, redesigned (004/005), then removed from the codebase entirely; the trail-velocity scaling was replaced by the flow-vis pipeline (038). Kept for history.
+
 Two flow-rendering additions: (A) overlay the SPASSO **FTLE** field as red,
 alpha-ramped ridges to expose Lagrangian coherent structures — eddy rims,
 filaments, transport barriers; (B) compress the velocity magnitude that drives
